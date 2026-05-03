@@ -8,7 +8,7 @@ This project depends on the following open-source packages. All are permissively
 - `pydantic`, `pydantic-settings` — MIT
 - `redis-py` — MIT
 - `httpx` — BSD
-- `ulid-py` — MIT
+- `python-ulid` — MIT
 - `structlog` — Apache-2.0 / MIT
 
 Dev-only dependencies (pytest, ruff, pyright, etc.) are not listed here. See `pyproject.toml` for the complete dev set.
