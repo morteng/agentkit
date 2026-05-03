@@ -216,3 +216,21 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# uv
+.venv/
+uv.lock-backup
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# pyright
+.pyright/
+
+# mkdocs
+site/
+
+# OS
+.DS_Store
