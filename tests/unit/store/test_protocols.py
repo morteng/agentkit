@@ -1,0 +1,23 @@
+from agentkit.store import MemoryScope, SessionStore
+
+
+def test_protocols_are_abstract():
+    """Protocols are runtime-checkable; classes that implement them satisfy isinstance."""
+
+    class _DummySessionStore:
+        async def create(self, *a, **kw): ...
+        async def get(self, *a, **kw): ...
+        async def append_message(self, *a, **kw): ...
+        async def list_messages(self, *a, **kw): ...
+        async def list_for_owner(self, *a, **kw): ...
+        async def delete(self, *a, **kw): ...
+        async def touch(self, *a, **kw): ...
+
+    assert isinstance(_DummySessionStore(), SessionStore)
+
+
+def test_memory_scope_distinguishes_session_vs_persistent():
+    persistent = MemoryScope(namespace="ampaera", user_id="u1")
+    session_scoped = MemoryScope(namespace="ampaera", user_id="u1", session_id="sess_a")
+    assert persistent != session_scoped
+    assert persistent.session_id is None
