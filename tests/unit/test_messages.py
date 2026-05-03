@@ -1,5 +1,4 @@
 from datetime import UTC, datetime
-from typing import cast
 
 from agentkit._content import TextBlock, ToolUseBlock
 from agentkit._ids import MessageId, SessionId, new_id
@@ -8,8 +7,8 @@ from agentkit._messages import Message, MessageMetadata, MessageRole, Usage
 
 def test_message_round_trips_json():
     m = Message(
-        id=cast(MessageId, new_id(MessageId)),
-        session_id=cast(SessionId, new_id(SessionId)),
+        id=new_id(MessageId),
+        session_id=new_id(SessionId),
         role=MessageRole.ASSISTANT,
         content=[TextBlock(text="hi")],
         metadata=MessageMetadata(provider="anthropic", model="claude-sonnet-4-6"),
@@ -22,8 +21,8 @@ def test_message_round_trips_json():
 
 def test_message_holds_mixed_content():
     m = Message(
-        id=cast(MessageId, new_id(MessageId)),
-        session_id=cast(SessionId, new_id(SessionId)),
+        id=new_id(MessageId),
+        session_id=new_id(SessionId),
         role=MessageRole.ASSISTANT,
         content=[TextBlock(text="here"), ToolUseBlock(id="c1", name="t", arguments={})],
         metadata=MessageMetadata(),
