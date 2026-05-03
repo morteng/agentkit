@@ -57,7 +57,7 @@ select = ["E", "F", "I", "B", "UP", "SIM", "PIE", "RUF", "PL", "TCH"]
 ignore = ["PLR0913"]   # too-many-arguments — false positive on Pydantic-heavy APIs
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["PLR2004"]   # magic-numbers OK in tests
+"tests/**" = ["PLR2004", "PLC0415"]   # magic-numbers OK in tests; local imports OK in test functions
 
 [tool.pyright]
 include = ["src/agentkit", "tests"]
