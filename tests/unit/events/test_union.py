@@ -1,7 +1,6 @@
 """Test discriminated union round-trip serialization for all event types."""
 
 from datetime import UTC, datetime
-from typing import cast
 
 from agentkit._ids import EventId, MessageId, SessionId, TurnId, new_id
 from agentkit.events import (
@@ -42,7 +41,7 @@ def _common(seq: int = 0) -> dict:
 
 def test_all_event_types_round_trip():
     """Test all event types serialize/deserialize through the discriminated union."""
-    msg_id = cast(MessageId, new_id(MessageId))
+    msg_id = new_id(MessageId)
     samples = [
         PhaseChanged(**_common(0), from_=Phase.IDLE, to=Phase.INTENT_GATE, duration_ms=1),
         TurnStarted(**_common(1), user_message_id=msg_id),

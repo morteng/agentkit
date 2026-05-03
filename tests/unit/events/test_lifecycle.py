@@ -1,5 +1,4 @@
 from datetime import UTC, datetime
-from typing import cast
 
 from agentkit._ids import EventId, SessionId, TurnId, new_id
 from agentkit.events.lifecycle import (
@@ -13,9 +12,9 @@ from agentkit.events.lifecycle import (
 
 def test_turn_ended_carries_metrics():
     ev = TurnEnded(
-        event_id=cast(EventId, new_id(EventId)),
-        session_id=cast(SessionId, new_id(SessionId)),
-        turn_id=cast(TurnId, new_id(TurnId)),
+        event_id=new_id(EventId),
+        session_id=new_id(SessionId),
+        turn_id=new_id(TurnId),
         ts=datetime.now(UTC),
         sequence=99,
         reason=TurnEndReason.COMPLETED,
@@ -26,9 +25,9 @@ def test_turn_ended_carries_metrics():
 
 def test_errored_event_marks_recoverability():
     ev = Errored(
-        event_id=cast(EventId, new_id(EventId)),
-        session_id=cast(SessionId, new_id(SessionId)),
-        turn_id=cast(TurnId, new_id(TurnId)),
+        event_id=new_id(EventId),
+        session_id=new_id(SessionId),
+        turn_id=new_id(TurnId),
         ts=datetime.now(UTC),
         sequence=5,
         code=ErrorCode.RATE_LIMITED,
