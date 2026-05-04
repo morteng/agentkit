@@ -85,7 +85,7 @@ class FakeProvider(Provider):
     async def stream(self, request: ProviderRequest) -> AsyncIterator[ProviderEvent]:
         if not self._queue:
             raise RuntimeError(
-                "FakeProvider out of scripted responses. " "Add more via FakeProvider.script(...)."
+                "FakeProvider out of scripted responses. Add more via FakeProvider.script(...)."
             )
         response = self._queue.popleft()
 
