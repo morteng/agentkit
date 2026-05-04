@@ -1,0 +1,21 @@
+site_name: agentkit
+site_description: Domain-blind agent runtime
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.expand
+    - content.code.copy
+nav:
+  - Home: index.md
+  - Architecture: architecture.md
+  - Concepts: concepts.md
+  - Recipes: recipes.md
+  - API Reference: reference.md
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+strict: true
