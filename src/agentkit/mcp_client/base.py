@@ -1,0 +1,16 @@
+"""MCPClient protocol — uniform interface across transports."""
+
+from typing import Any, Protocol, runtime_checkable
+
+from agentkit.tools.spec import ToolResult, ToolSpec
+
+
+@runtime_checkable
+class MCPClient(Protocol):
+    name: str
+
+    async def initialize(self) -> None: ...
+    async def list_tools(self) -> list[ToolSpec]: ...
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> ToolResult: ...
+    async def shutdown(self) -> None: ...
+    async def health_check(self) -> bool: ...
