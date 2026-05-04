@@ -47,14 +47,20 @@ class StdioMCPClient(MCPClient):
 
     async def initialize(self) -> None:
         self._stdio_ctx = stdio_client(self._params)
-        read, write = await asyncio.wait_for(
-            self._stdio_ctx.__aenter__(),
-            timeout=self._startup_timeout,
-        )
-        self._client_ctx = ClientSession(read, write)
-        session: ClientSession = await self._client_ctx.__aenter__()
-        await session.initialize()
-        self._session = session
+        try:
+            read, write = await asyncio.wait_for(
+                self._stdio_ctx.__aenter__(),
+                timeout=self._startup_timeout,
+            )
+            self._client_ctx = ClientSession(read, write)
+            session: ClientSession = await self._client_ctx.__aenter__()
+            await session.initialize()
+            self._session = session
+        except BaseException:
+            # Subprocess may have spawned and/or session may be partially
+            # entered. shutdown() is idempotent and nulls all handles.
+            await self.shutdown()
+            raise
 
     async def list_tools(self) -> list[ToolSpec]:
         if self._session is None:
