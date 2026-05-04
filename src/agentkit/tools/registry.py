@@ -72,6 +72,9 @@ class ToolRegistry:
     # ---- Listing -----------------------------------------------------------
 
     def list_specs(self, *, available_to_provider: bool = True) -> list[ToolSpec]:
+        # available_to_provider is forward API for risk-based filtering once the
+        # ApprovalGate / TurnContext lands (Phase 7+). Today it is a no-op.
+        _ = available_to_provider
         out = [spec for spec, _ in self._builtins.values()]
         out.extend(self._mcp_specs.values())
         return out
