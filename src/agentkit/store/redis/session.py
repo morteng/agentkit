@@ -85,7 +85,7 @@ class RedisSessionStore(SessionStore):
             self._c.keys.messages(session_id), -limit, -1
         )
         return [
-            Message.model_validate(from_versioned_json(cast(bytes, r))[0])
+            Message.model_validate(from_versioned_json(cast("bytes", r))[0])
             for r in raws  # type: ignore[reportUnknownVariableType]
         ]
 

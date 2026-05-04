@@ -6,9 +6,9 @@ from agentkit.store.redis.memory import RedisMemoryStore
 from agentkit.store.redis.session import RedisSessionStore
 
 __all__ = [
-    "RedisClient",
-    "RedisStoreConfig",
-    "RedisSessionStore",
-    "RedisMemoryStore",
     "RedisCheckpointStore",
+    "RedisClient",
+    "RedisMemoryStore",
+    "RedisSessionStore",
+    "RedisStoreConfig",
 ]

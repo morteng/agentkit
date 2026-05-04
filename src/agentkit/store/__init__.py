@@ -5,13 +5,13 @@ from agentkit.store.memory import MemoryHit, MemoryScope, MemoryStore, MemoryVal
 from agentkit.store.session import Session, SessionStore, SessionSummary
 
 __all__ = [
-    "Session",
-    "SessionStore",
-    "SessionSummary",
+    "CheckpointPayload",
+    "CheckpointStore",
     "MemoryHit",
     "MemoryScope",
     "MemoryStore",
     "MemoryValue",
-    "CheckpointPayload",
-    "CheckpointStore",
+    "Session",
+    "SessionStore",
+    "SessionSummary",
 ]
