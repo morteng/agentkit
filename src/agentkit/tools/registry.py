@@ -7,11 +7,16 @@ Three registration sources:
 3. Stdio MCP clients: subprocess-backed MCP servers; same naming rule.
 """
 
+from __future__ import annotations
+
 from collections.abc import Awaitable, Callable
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from agentkit.errors import ToolError as ToolErr
 from agentkit.tools.spec import ToolCall, ToolResult, ToolSpec
+
+if TYPE_CHECKING:
+    from agentkit.mcp_client.base import MCPClient
 
 
 @runtime_checkable
@@ -19,16 +24,6 @@ class TurnContext(Protocol):
     """Minimal interface for loop context (full definition in agentkit.loop)."""
 
     call_id: str
-
-
-@runtime_checkable
-class MCPClient(Protocol):
-    """Minimal interface for MCP client implementations (full definition in agentkit.mcp_client)."""
-
-    async def initialize(self) -> None: ...
-    async def list_tools(self) -> list[ToolSpec]: ...
-    async def call_tool(self, name: str, arguments: dict[str, Any]) -> ToolResult: ...
-    async def shutdown(self) -> None: ...
 
 
 # A built-in handler signature: (arguments, ctx) -> ToolResult.
