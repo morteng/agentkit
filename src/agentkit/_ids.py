@@ -6,7 +6,7 @@ at the type level without runtime cost.
 """
 
 from collections.abc import Callable
-from typing import NewType, TypeVar
+from typing import NewType
 
 from ulid import ULID
 
@@ -17,10 +17,8 @@ CheckpointId = NewType("CheckpointId", str)
 EventId = NewType("EventId", str)
 OwnerId = NewType("OwnerId", str)
 
-_IdT = TypeVar("_IdT", bound=str)
 
-
-def new_id(kind: Callable[[str], _IdT]) -> _IdT:
+def new_id[IdT: str](kind: Callable[[str], IdT]) -> IdT:
     """Mint a new ULID-backed identifier of the given kind.
 
     The return type is the NewType — callers see e.g. ``SessionId`` not ``str``.
