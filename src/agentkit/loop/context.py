@@ -8,10 +8,14 @@ and a result-cache pointer (later).
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from agentkit._ids import SessionId, TurnId, new_id
 from agentkit._messages import Message
+from agentkit.store.memory import MemoryScope, MemoryStore
+
+if TYPE_CHECKING:
+    import asyncio
 
 
 class Clock(Protocol):
@@ -45,18 +49,29 @@ class TurnContext:
     metadata: dict[str, Any] = field(default_factory=dict)  # type: ignore[reportUnknownVariableType]
     clock: Clock = field(default_factory=SystemClock)
 
+    # Memory + event delivery + approval queue (filled in by Loop, not constructed manually).
+    memory_store: MemoryStore | None = None
+    memory_scope: MemoryScope | None = None
+    event_queue: "asyncio.Queue[Any] | None" = None
+    pending_approvals: list[Any] = field(default_factory=list)  # type: ignore[reportUnknownVariableType]
+    spawn_subagent: Any | None = None  # callable injected by Loop; signature: see subagent.py
+
     @classmethod
     def empty(
         cls,
         *,
         call_id: str = "",
         clock: Clock | None = None,
+        memory_store: MemoryStore | None = None,
+        memory_scope: MemoryScope | None = None,
     ) -> "TurnContext":
         return cls(
             session_id=new_id(SessionId),
             turn_id=new_id(TurnId),
             call_id=call_id,
             clock=clock or SystemClock(),
+            memory_store=memory_store,
+            memory_scope=memory_scope,
         )
 
     def add_message(self, msg: Message) -> None:
