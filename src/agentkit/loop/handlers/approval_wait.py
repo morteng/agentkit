@@ -48,6 +48,16 @@ async def handle_approval_wait(ctx: TurnContext, deps: dict[str, Any]) -> Phase:
             await queue.put(ev)
     ctx.metadata["event_sequence"] = sequence
 
+    # Persist a checkpoint keyed by turn_id so the resume call can find it.
+    checkpoint_store = deps.get("checkpoint_store")
+    if checkpoint_store is not None:
+        from agentkit._ids import CheckpointId
+        from agentkit.loop.context import to_checkpoint_payload
+
+        payload = to_checkpoint_payload(ctx)
+        await checkpoint_store.save(CheckpointId(f"approval:{ctx.turn_id}"), payload)
+        ctx.metadata["checkpoint_id"] = f"approval:{ctx.turn_id}"
+
     # The Loop end_reason for this turn is overridden by the AgentSession when
     # it sees pending_user_approvals; here we transition to TURN_ENDED so the
     # orchestrator emits the suspend.

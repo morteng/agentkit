@@ -79,9 +79,15 @@ class Loop:
             self._ctx.phase_log.append((phase.value, next_phase.value, duration))
             phase = next_phase
 
+        suspend_reason_str = self._ctx.metadata.get("suspend_reason")
+        suspend_reason = TurnEndReason(suspend_reason_str) if suspend_reason_str else None
+        if phase is Phase.TURN_ENDED:
+            reason = suspend_reason if suspend_reason is not None else self._end_reason
+        else:
+            reason = TurnEndReason.ERROR
         yield self._mk(
             TurnEnded,
-            reason=self._end_reason if phase is Phase.TURN_ENDED else TurnEndReason.ERROR,
+            reason=reason,
             metrics=TurnMetrics(),
         )
 
