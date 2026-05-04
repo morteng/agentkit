@@ -10,24 +10,18 @@ Three registration sources:
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any
 
 from agentkit.errors import ToolError as ToolErr
+from agentkit.loop.context import TurnContext
 from agentkit.tools.spec import ToolCall, ToolResult, ToolSpec
 
 if TYPE_CHECKING:
     from agentkit.mcp_client.base import MCPClient
 
 
-@runtime_checkable
-class TurnContext(Protocol):
-    """Minimal interface for loop context (full definition in agentkit.loop)."""
-
-    call_id: str
-
-
 # A built-in handler signature: (arguments, ctx) -> ToolResult.
-BuiltinHandler = Callable[[dict[str, Any], Any], Awaitable[ToolResult]]
+BuiltinHandler = Callable[[dict[str, Any], TurnContext], Awaitable[ToolResult]]
 
 
 class ToolRegistry:
@@ -76,7 +70,7 @@ class ToolRegistry:
 
     # ---- Invocation --------------------------------------------------------
 
-    async def invoke(self, call: ToolCall, ctx: Any) -> ToolResult:
+    async def invoke(self, call: ToolCall, ctx: TurnContext) -> ToolResult:
         if call.name in self._builtins:
             _spec, handler = self._builtins[call.name]
             return await handler(call.arguments, ctx)

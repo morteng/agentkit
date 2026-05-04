@@ -46,7 +46,7 @@ async def test_registry_invokes_registered_builtin():
     specs = reg.list_specs()
     assert any(s.name == "kit.test" for s in specs)
 
-    res = await reg.invoke(ToolCall(id="c1", name="kit.test", arguments={"n": "x"}), ctx=_FakeCtx())
+    res = await reg.invoke(ToolCall(id="c1", name="kit.test", arguments={"n": "x"}), ctx=_FakeCtx())  # type: ignore[arg-type]
     assert res.content[0].text == "hi x"
 
 
@@ -65,7 +65,7 @@ async def test_registry_rejects_duplicate_registration():
 async def test_registry_unknown_tool_raises():
     reg = ToolRegistry()
     with pytest.raises(ToolError):
-        await reg.invoke(ToolCall(id="c", name="missing", arguments={}), ctx=_FakeCtx())
+        await reg.invoke(ToolCall(id="c", name="missing", arguments={}), ctx=_FakeCtx())  # type: ignore[arg-type]
 
 
 class _FakeCtx:
