@@ -76,6 +76,9 @@ def _serialise_message(
                         "function": {"name": b.name, "arguments": json.dumps(b.arguments)},
                     }
                 )
+        if not text_parts and not tool_calls:
+            # OpenAI rejects assistant messages without content or tool_calls.
+            return []
         out: dict[str, Any] = {"role": "assistant", "content": "\n".join(text_parts) or None}
         if tool_calls:
             out["tool_calls"] = tool_calls
