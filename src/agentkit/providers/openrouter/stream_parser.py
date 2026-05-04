@@ -55,9 +55,13 @@ async def parse_openrouter_stream(chunks: AsyncIterator[Any]) -> AsyncIterator[P
         if choice.finish_reason:
             finish_reason_raw = choice.finish_reason
 
-    # End of stream — flush completed tool calls.
-    for ev in _flush_pending_tools(pending_tools):
-        yield ev
+    # End of stream — flush completed tool calls only if finish_reason confirms completion.
+    # Tool calls only "complete" when the stream's finish_reason is "tool_calls".
+    # If a stream terminates abnormally (None/"length"/"stop" with pending tools),
+    # we drop the partial tool calls rather than risk executing with empty args.
+    if finish_reason_raw == "tool_calls":
+        for ev in _flush_pending_tools(pending_tools):
+            yield ev
 
     if final_usage is not None:
         yield UsageEvent(usage=final_usage)
