@@ -5,6 +5,7 @@ finalize flag, scratchpad, clock, an event queue (later), guards (later),
 and a result-cache pointer (later).
 """
 
+import json
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -81,3 +82,29 @@ class TurnContext:
 
     def add_messages(self, msgs: Iterable[Message]) -> None:
         self.history.extend(msgs)
+
+
+def to_checkpoint_payload(ctx: TurnContext) -> bytes:
+    """Serialise the resumable subset of a TurnContext to bytes.
+
+    We don't try to round-trip the entire dataclass — only the fields needed
+    to restart the Loop at TOOL_EXECUTING after user approval. Stores, queues,
+    and clocks are non-portable and rebuilt by the resuming AgentSession.
+    """
+    payload: dict[str, Any] = {
+        "session_id": ctx.session_id,
+        "turn_id": ctx.turn_id,
+        "history": [m.model_dump(mode="json") for m in ctx.history],
+        "scratchpad": list(ctx.scratchpad),
+        "metadata": {
+            k: v
+            for k, v in ctx.metadata.items()
+            if k != "owner"  # rebuilt from session
+        },
+    }
+    return json.dumps(payload, default=str).encode("utf-8")
+
+
+def from_checkpoint_payload(data: bytes) -> dict[str, Any]:
+    """Return a dict that the resuming Loop wires back into a fresh TurnContext."""
+    return json.loads(data)

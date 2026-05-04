@@ -4,13 +4,39 @@ Translates inbound JSON ``ClientCommand``s to AgentSession calls and outbound
 events to JSON frames. Origin check + auth pluggable.
 """
 
-from collections.abc import Awaitable, Callable
-from typing import Protocol
+from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Any, Protocol
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
-from agentkit.events import TurnEnded
+from agentkit.events import Event, TurnEnded
 from agentkit.session import AgentSession
+
+
+async def _stream_to_ws(ws: WebSocket, stream: AsyncIterator[Event]) -> None:
+    async for event in stream:
+        await ws.send_json(event.model_dump(mode="json"))
+        if isinstance(event, TurnEnded):
+            break
+
+
+async def _handle_send_message(ws: WebSocket, session: AgentSession, cmd: dict[str, Any]) -> None:
+    text = str(cmd.get("text", ""))
+    async with session.run(text) as stream:
+        await _stream_to_ws(ws, stream)
+
+
+async def _handle_respond_to_approval(
+    ws: WebSocket, session: AgentSession, cmd: dict[str, Any]
+) -> None:
+    async with session.resume_with_approval(
+        cmd["turn_id"],
+        cmd["call_id"],
+        decision=cmd.get("decision", "deny"),
+        edited_args=cmd.get("edited_args"),
+        reason=cmd.get("reason"),
+    ) as stream:
+        await _stream_to_ws(ws, stream)
 
 
 class WSAuth(Protocol):
@@ -54,14 +80,12 @@ def mount_websocket_route(
         try:
             while True:
                 cmd = await ws.receive_json()
-                if cmd.get("type") == "send_message":
-                    text = str(cmd.get("text", ""))
-                    async with session.run(text) as stream:
-                        async for event in stream:
-                            await ws.send_json(event.model_dump(mode="json"))
-                            if isinstance(event, TurnEnded):
-                                break
-                elif cmd.get("type") == "cancel":
+                ctype = cmd.get("type")
+                if ctype == "send_message":
+                    await _handle_send_message(ws, session, cmd)
+                elif ctype == "respond_to_approval":
+                    await _handle_respond_to_approval(ws, session, cmd)
+                elif ctype == "cancel":
                     # In v0.1, cancel just closes the socket. The AgentSession
                     # cancellation surface is async-context-driven; closing the
                     # iterator triggers cleanup via the asynccontextmanager.
@@ -71,7 +95,7 @@ def mount_websocket_route(
                         {
                             "type": "errored",
                             "code": "internal",
-                            "message": f"unknown command: {cmd.get('type')}",
+                            "message": f"unknown command: {ctype}",
                         }
                     )
         except WebSocketDisconnect:
