@@ -54,6 +54,8 @@ class TurnContext:
     memory_scope: MemoryScope | None = None
     event_queue: "asyncio.Queue[Any] | None" = None
     pending_approvals: list[Any] = field(default_factory=list)  # type: ignore[reportUnknownVariableType]
+    phase_log: list[tuple[str, str, int]] = field(default_factory=list)  # type: ignore[reportUnknownVariableType]
+    """List of (from_phase, to_phase, duration_ms). Populated by the orchestrator."""
     spawn_subagent: Any | None = None  # callable injected by Loop; signature: see subagent.py
 
     @classmethod
