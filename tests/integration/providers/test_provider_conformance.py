@@ -20,10 +20,35 @@ from agentkit.providers.base import (
 pytestmark = [pytest.mark.integration]
 
 
+# Cassettes are committed to git, so filter every header that could leak
+# credentials, app-attribution, or runtime fingerprint. Over-filtering is free;
+# under-filtering can ship a key. Keep this list a strict allowlist of "safe to
+# leak" headers — add to it whenever a new SDK lands.
+_SENSITIVE_HEADERS = [
+    "authorization",
+    "x-api-key",
+    "anthropic-version",
+    "anthropic-beta",
+    "openai-organization",
+    "openai-project",
+    "openai-version",
+    "http-referer",
+    "x-title",
+    "user-agent",
+    # OpenAI/Anthropic SDK fingerprinting (OS/arch/runtime).
+    "x-stainless-arch",
+    "x-stainless-async",
+    "x-stainless-lang",
+    "x-stainless-os",
+    "x-stainless-package-version",
+    "x-stainless-runtime",
+    "x-stainless-runtime-version",
+]
+
 _VCR = vcr.VCR(
     cassette_library_dir="tests/integration/providers/cassettes",
     record_mode="once",  # type: ignore[arg-type]
-    filter_headers=["authorization", "x-api-key", "openai-organization"],
+    filter_headers=_SENSITIVE_HEADERS,
     match_on=["method", "scheme", "host", "port", "path", "query", "body"],
 )
 
