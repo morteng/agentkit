@@ -51,8 +51,9 @@ async def handle_approval_wait(ctx: TurnContext, deps: dict[str, Any]) -> Phase:
     # Persist a checkpoint keyed by turn_id so the resume call can find it.
     checkpoint_store = deps.get("checkpoint_store")
     if checkpoint_store is not None:
-        from agentkit._ids import CheckpointId
-        from agentkit.loop.context import to_checkpoint_payload
+        # Local imports to avoid module-level import cycle.
+        from agentkit._ids import CheckpointId  # noqa: PLC0415
+        from agentkit.loop.context import to_checkpoint_payload  # noqa: PLC0415
 
         payload = to_checkpoint_payload(ctx)
         await checkpoint_store.save(CheckpointId(f"approval:{ctx.turn_id}"), payload)

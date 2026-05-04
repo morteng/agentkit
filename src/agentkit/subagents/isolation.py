@@ -11,7 +11,8 @@ from agentkit.loop.context import TurnContext
 
 
 def fresh_child_context(parent: TurnContext, *, prompt: str) -> TurnContext:
-    from datetime import UTC, datetime
+    # Local import for readability; no cycle risk.
+    from datetime import UTC, datetime  # noqa: PLC0415
 
     child_session = new_id(SessionId)
     user_msg = Message(
