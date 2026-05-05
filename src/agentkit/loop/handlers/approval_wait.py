@@ -25,6 +25,8 @@ async def handle_approval_wait(ctx: TurnContext, deps: dict[str, Any]) -> Phase:
     queue = ctx.event_queue
     pending = ctx.metadata.get("pending_user_approvals", [])
     timeout_at = datetime.now(UTC) + timedelta(seconds=timeout_seconds)
+    # Persist into metadata so resume_with_approval can enforce server-side.
+    ctx.metadata["approval_timeout_at"] = timeout_at.isoformat()
 
     specs_by_name = {s.name: s for s in registry.list_specs()}
     sequence = ctx.metadata.get("event_sequence", 100)

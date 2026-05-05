@@ -22,14 +22,22 @@ from agentkit.events import (
 from agentkit.events.base import BaseEvent
 from agentkit.loop.context import TurnContext
 from agentkit.providers.base import ProviderEvent
+from agentkit.tools.registry import ToolRegistry
 from agentkit.tools.spec import RiskLevel
 
 
 class StreamMux:
-    def __init__(self, ctx: TurnContext, *, sequence_start: int) -> None:
+    def __init__(
+        self,
+        ctx: TurnContext,
+        *,
+        sequence_start: int,
+        registry: ToolRegistry | None = None,
+    ) -> None:
         self._ctx = ctx
         self._seq = sequence_start
         self._message_id: MessageId = new_id(MessageId)
+        self._registry = registry
 
     @property
     def message_id(self) -> MessageId:
@@ -73,12 +81,13 @@ class StreamMux:
                     pass  # consumers don't see argument deltas; complete event carries final args
 
                 case "tool_call_complete":
+                    risk_value = self._risk_for(ev.tool_name)
                     yield self._mk(
                         ToolCallStarted,
                         call_id=ev.call_id,
                         tool_name=ev.tool_name,
                         arguments=ev.arguments,
-                        risk=RiskLevel.READ.value,
+                        risk=risk_value,
                     )
                     pending_tool_starts.pop(ev.call_id, None)
 
@@ -94,12 +103,31 @@ class StreamMux:
                     self._ctx.metadata.setdefault("usages", []).append(ev.usage)
 
                 case "error":
+                    code = (
+                        ErrorCode.RATE_LIMITED
+                        if ev.code == "rate_limited"
+                        else ErrorCode.PROVIDER_FAULT
+                    )
                     yield self._mk(
                         Errored,
-                        code=ErrorCode.PROVIDER_FAULT,
+                        code=code,
                         message=ev.message,
                         recoverable=ev.recoverable,
                     )
+
+    def _risk_for(self, tool_name: str) -> str:
+        """Look up the registered tool's risk level; fall back to READ for unknown.
+
+        Unknown-tool fallback matches the runtime behavior in tool_phase, which
+        treats a missing spec as auto-deny rather than letting it through; the
+        ``risk`` value here is informational for the consumer's UI.
+        """
+        if self._registry is None:
+            return RiskLevel.READ.value
+        for spec in self._registry.list_specs():
+            if spec.name == tool_name:
+                return spec.risk.value
+        return RiskLevel.READ.value
 
     def _mk(self, cls: type[BaseEvent], **payload: Any) -> BaseEvent:
         seq = self._seq

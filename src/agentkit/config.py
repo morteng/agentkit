@@ -15,6 +15,9 @@ class LoopConfig(BaseModel):
     max_claim_corrections: int = 1
     streaming_chunk_timeout_seconds: float = 60.0
     builtin_tool_note_enabled: bool = False  # the kit.note opt-in
+    max_subagent_depth: int = 3  # how deep nested kit.subagent.spawn can recurse
+    # Force-end the turn after N back-to-back errors from the same tool name.
+    max_consecutive_tool_errors: int = 3
 
 
 class ToolDispatchConfig(BaseModel):
