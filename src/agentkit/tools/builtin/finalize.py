@@ -20,7 +20,9 @@ FINALIZE_SPEC = ToolSpec(
     name="kit.finalize",
     description=(
         "Signal that you have completed the user's request. "
-        "Provide a one-sentence summary of what you accomplished. "
+        "Provide a one-sentence summary of what you accomplished — it "
+        "surfaces to the consumer on TurnEnded.summary, so write it for a "
+        "human reading an audit log, not for yourself. "
         "Only call this once you have actually invoked the tools needed to "
         "carry out the user's request — do NOT call it just because you have "
         "produced a written response."
@@ -30,7 +32,9 @@ FINALIZE_SPEC = ToolSpec(
         "properties": {
             "reason": {
                 "type": "string",
-                "description": "Brief summary of what was completed.",
+                "description": (
+                    "One-sentence summary of what was completed. Surfaced on TurnEnded.summary."
+                ),
             },
         },
         "required": ["reason"],

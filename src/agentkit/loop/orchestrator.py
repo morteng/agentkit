@@ -88,6 +88,7 @@ class Loop:
             TurnEnded,
             reason=reason,
             metrics=TurnMetrics(),
+            summary=self._ctx.finalize_reason,
         )
 
     def _mk(self, cls: type[BaseEvent], **payload: Any) -> BaseEvent:
