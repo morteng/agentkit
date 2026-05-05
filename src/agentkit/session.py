@@ -203,6 +203,7 @@ class AgentSession:
             memory_store=self.config.stores.memory,
             event_queue=queue,
         )
+        ctx.event_sequence = int(data.get("event_sequence", 0))
         ctx.metadata.update(data.get("metadata", {}))
         ctx.metadata["owner"] = self.owner
         # Clear suspend marker so the orchestrator doesn't override end_reason.
@@ -311,7 +312,6 @@ class AgentSession:
 
         # Emit the verdict event before any further work so consumers see it
         # at the top of the resumed stream.
-        sequence = ctx.metadata.get("event_sequence", 200)
         verdict_event: ApprovalGranted | ApprovalDenied
         if decision == "approve":
             verdict_event = ApprovalGranted(
@@ -319,7 +319,7 @@ class AgentSession:
                 session_id=self.id,
                 turn_id=turn_id,
                 ts=datetime.now(UTC),
-                sequence=sequence,
+                sequence=ctx.next_sequence(),
                 call_id=call_id,
                 edited_args=edited_args,
             )
@@ -329,11 +329,10 @@ class AgentSession:
                 session_id=self.id,
                 turn_id=turn_id,
                 ts=datetime.now(UTC),
-                sequence=sequence,
+                sequence=ctx.next_sequence(),
                 call_id=call_id,
                 reason=reason,
             )
-        ctx.metadata["event_sequence"] = sequence + 1
         await queue.put(verdict_event)
 
         # Restart the Loop at TOOL_EXECUTING. Any further pending approvals

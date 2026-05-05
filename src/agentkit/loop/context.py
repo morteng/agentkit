@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol
 
-from agentkit._ids import SessionId, TurnId, new_id
+from agentkit._ids import EventId, SessionId, TurnId, new_id
 from agentkit._messages import Message
 from agentkit.store.memory import MemoryScope, MemoryStore
 
@@ -59,6 +59,61 @@ class TurnContext:
     """List of (from_phase, to_phase, duration_ms). Populated by the orchestrator."""
     spawn_subagent: Any | None = None  # callable injected by Loop; signature: see subagent.py
 
+    # Single source of truth for per-turn event sequence numbers. Every
+    # component that emits a BaseEvent into ``event_queue`` allocates via
+    # :meth:`next_sequence` so consumers see a totally ordered stream.
+    # Survives across an approval suspend/resume via the checkpoint payload.
+    event_sequence: int = 0
+
+    def next_sequence(self) -> int:
+        """Allocate and return the next event sequence number for this turn."""
+        s = self.event_sequence
+        self.event_sequence += 1
+        return s
+
+    async def report_tool_progress(
+        self,
+        message: str,
+        *,
+        call_id: str | None = None,
+        progress: float | None = None,
+        total: float | None = None,
+    ) -> None:
+        """Emit a :class:`ToolCallProgress` event onto the user-facing stream.
+
+        Tool handlers — both builtin and MCP-bridged — can call this between
+        ``ToolCallStarted`` and ``ToolCallResult`` to surface progress to the
+        consumer's UI. ``call_id`` defaults to :attr:`call_id`, which the
+        ``ToolDispatcher`` sets per call before invoking the handler. ``progress``
+        and ``total`` mirror MCP's progress-notification shape; pass either or
+        both when the tool can report a numeric ratio.
+
+        No-op if the context has no event queue (e.g., subagent-internal
+        contexts) or no current call_id is known.
+        """
+        if self.event_queue is None:
+            return
+        cid = call_id or self.call_id
+        if not cid:
+            return
+        # Local import — agentkit.events.tool transitively pulls in
+        # agentkit.tools.registry, which imports TurnContext, so a
+        # module-level import would cycle.
+        from agentkit.events.tool import ToolCallProgress  # noqa: PLC0415
+
+        evt = ToolCallProgress(
+            event_id=new_id(EventId),
+            session_id=self.session_id,
+            turn_id=self.turn_id,
+            ts=self.clock.now(),
+            sequence=self.next_sequence(),
+            call_id=cid,
+            message=message,
+            progress=progress,
+            total=total,
+        )
+        await self.event_queue.put(evt)
+
     @classmethod
     def empty(
         cls,
@@ -101,6 +156,7 @@ def to_checkpoint_payload(ctx: TurnContext) -> bytes:
             for k, v in ctx.metadata.items()
             if k != "owner"  # rebuilt from session
         },
+        "event_sequence": ctx.event_sequence,
     }
     return json.dumps(payload, default=str).encode("utf-8")
 
