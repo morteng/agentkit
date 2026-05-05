@@ -21,9 +21,13 @@ DEFAULT_BUILTINS = [
     (CURRENT_TIME_SPEC, current_time_handler),
     (MEMORY_SAVE_SPEC, memory_save_handler),
     (MEMORY_RECALL_SPEC, memory_recall_handler),
-    (REQUEST_APPROVAL_SPEC, request_approval_handler),
     (SUBAGENT_SPAWN_SPEC, subagent_spawn_handler),
     # NOTE_SPEC is opt-in; not in DEFAULT_BUILTINS.
+    # REQUEST_APPROVAL_SPEC is exported but not registered by default — the
+    # current handler appends to ctx.pending_approvals which no orchestrator
+    # phase currently surfaces, so the user is never actually prompted.
+    # Consumers who want agent-initiated approvals can register it manually
+    # and supply their own surfacing path. See docs/recipes.md.
 ]
 
 

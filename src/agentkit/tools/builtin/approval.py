@@ -1,8 +1,15 @@
 """kit.request_approval — let the agent explicitly ask the user mid-flow.
 
+⚠ Not enabled in DEFAULT_BUILTINS as of v0.1.1. The current implementation
+appends to ``ctx.pending_approvals`` but **no orchestrator phase reads that
+list** — calling this tool today is effectively a no-op for the user. Wiring
+it through ``approval_wait`` requires an extra ``chosen_option`` parameter on
+``AgentSession.resume_with_approval``; that work is tracked for a future
+release. Consumers who want agent-initiated approvals today can register the
+spec/handler manually and surface ``ctx.pending_approvals`` themselves.
+
 Distinct from the per-tool ApprovalGate: this is a deliberate agent-initiated
-request (e.g. "should I delete X or Y?"). The handler appends a structured
-record to ctx.pending_approvals; the loop's approval_wait phase surfaces it.
+request (e.g. "should I delete X or Y?").
 """
 
 from dataclasses import dataclass

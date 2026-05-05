@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from agentkit._content import TextBlock, ToolUseBlock
 from agentkit._messages import Message, MessageRole
-from agentkit.events import TextDelta, ToolCallStarted
+from agentkit.events import Errored, TextDelta, ToolCallStarted
 from agentkit.loop.context import TurnContext
 from agentkit.loop.phase import Phase
 from agentkit.loop.stream_mux import StreamMux
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from agentkit.tools.registry import ToolRegistry
 
 
-async def handle_streaming(ctx: TurnContext, deps: dict[str, Any]) -> Phase:
+async def handle_streaming(ctx: TurnContext, deps: dict[str, Any]) -> Phase:  # noqa: PLR0912 — turn-level dispatch necessarily branches per event type
     provider: Provider = deps["provider"]
     builder: MessageBuilder = deps["message_builder"]
     registry: ToolRegistry = deps["registry"]
@@ -42,14 +42,20 @@ async def handle_streaming(ctx: TurnContext, deps: dict[str, Any]) -> Phase:
         history=ctx.history,
         tool_specs=registry.list_specs(),
     )
-    mux = StreamMux(ctx, sequence_start=0)
+    mux = StreamMux(ctx, sequence_start=0, registry=registry)
 
     text_so_far: list[str] = []
     tool_calls_seen: list[dict[str, Any]] = []
     text_blocks: list[TextBlock] = []
+    saw_error = False
 
     async for event in mux.translate(provider.stream(request)):
         await queue.put(event)
+        if isinstance(event, Errored):
+            saw_error = True
+            ctx.metadata["last_error_message"] = event.message
+            ctx.metadata["last_error_code"] = event.code.value
+            continue
         if isinstance(event, TextDelta):
             text_so_far.append(event.delta)
             # Build up text blocks for history insertion.
@@ -88,6 +94,8 @@ async def handle_streaming(ctx: TurnContext, deps: dict[str, Any]) -> Phase:
 
     ctx.metadata["pending_tool_calls"] = tool_calls_seen
 
+    if saw_error:
+        return Phase.ERRORED
     if tool_calls_seen:
         return Phase.TOOL_PHASE
     return Phase.FINALIZE_CHECK

@@ -3,6 +3,7 @@
 from collections.abc import AsyncIterator
 from decimal import Decimal
 
+import anthropic
 from anthropic import AsyncAnthropic
 
 from agentkit._content import TextBlock
@@ -11,11 +12,37 @@ from agentkit.providers.anthropic.pricing import estimate_cost_usd
 from agentkit.providers.anthropic.request_builder import build_anthropic_request
 from agentkit.providers.anthropic.stream_parser import parse_anthropic_stream
 from agentkit.providers.base import (
+    ErrorEvent,
     Provider,
     ProviderCapabilities,
     ProviderEvent,
     ProviderRequest,
 )
+
+
+def _map_anthropic_error(exc: BaseException) -> ErrorEvent:  # noqa: PLR0911 — exhaustive SDK exception mapping
+    """Map an Anthropic SDK exception to a provider ErrorEvent.
+
+    The mapped ``code`` is consumed by StreamMux to pick a top-level ``ErrorCode``;
+    the ``message`` is forwarded verbatim to the consumer for diagnostics.
+    """
+    if isinstance(exc, anthropic.AuthenticationError):
+        return ErrorEvent(code="auth_failed", message=str(exc), recoverable=False)
+    if isinstance(exc, anthropic.NotFoundError):
+        return ErrorEvent(code="not_found", message=str(exc), recoverable=False)
+    if isinstance(exc, anthropic.BadRequestError):
+        return ErrorEvent(code="bad_request", message=str(exc), recoverable=False)
+    if isinstance(exc, anthropic.RateLimitError):
+        return ErrorEvent(code="rate_limited", message=str(exc), recoverable=True)
+    if isinstance(exc, anthropic.APITimeoutError):
+        return ErrorEvent(code="timeout", message=str(exc), recoverable=True)
+    if isinstance(exc, anthropic.APIConnectionError):
+        return ErrorEvent(code="connection", message=str(exc), recoverable=True)
+    if isinstance(exc, anthropic.APIError):
+        return ErrorEvent(code="provider_error", message=str(exc), recoverable=False)
+    return ErrorEvent(
+        code="provider_error", message=f"{type(exc).__name__}: {exc}", recoverable=False
+    )
 
 
 class AnthropicProvider(Provider):
@@ -35,9 +62,12 @@ class AnthropicProvider(Provider):
 
     async def stream(self, request: ProviderRequest) -> AsyncIterator[ProviderEvent]:
         payload = build_anthropic_request(request)
-        async with self._client.messages.stream(**payload) as stream:
-            async for ev in parse_anthropic_stream(stream):
-                yield ev
+        try:
+            async with self._client.messages.stream(**payload) as stream:
+                async for ev in parse_anthropic_stream(stream):
+                    yield ev
+        except Exception as exc:
+            yield _map_anthropic_error(exc)
 
     def estimate_tokens(self, messages: list[Message]) -> int:
         # Rough token estimate — adapter could call Anthropic's token-count API

@@ -9,9 +9,17 @@ from agentkit.providers.openrouter.stream_parser import parse_openrouter_stream
 
 
 class _Delta:
-    def __init__(self, content: str | None = None, tool_calls: list[Any] | None = None) -> None:
+    def __init__(
+        self,
+        content: str | None = None,
+        tool_calls: list[Any] | None = None,
+        reasoning_content: str | None = None,
+        reasoning: str | None = None,
+    ) -> None:
         self.content = content
         self.tool_calls = tool_calls
+        self.reasoning_content = reasoning_content
+        self.reasoning = reasoning
 
 
 class _Choice:
@@ -81,3 +89,33 @@ async def test_pending_tool_calls_flush_when_finish_reason_is_tool_calls():
     assert len(tcc) == 1
     assert tcc[0].tool_name == "add"
     assert tcc[0].arguments == {"a": 1, "b": 2}
+
+
+@pytest.mark.asyncio
+async def test_reasoning_content_emitted_as_thinking_delta():
+    """F1: OpenRouter reasoning_content (DeepSeek chain-of-thought) maps to ThinkingDelta."""
+    chunks: list[Any] = [
+        _Chunk([_Choice(_Delta(reasoning_content="thinking about it..."))]),
+        _Chunk([_Choice(_Delta(reasoning_content=" still thinking"))]),
+        _Chunk([_Choice(_Delta(content="Hi!"))]),
+        _Chunk([_Choice(_Delta(), finish_reason="stop")]),
+    ]
+    events = [ev async for ev in parse_openrouter_stream(_aiter(chunks))]
+    thinking = [ev for ev in events if ev.type == "thinking_delta"]
+    text = [ev for ev in events if ev.type == "text_delta"]
+    assert [t.delta for t in thinking] == ["thinking about it...", " still thinking"]
+    assert [t.delta for t in text] == ["Hi!"]
+
+
+@pytest.mark.asyncio
+async def test_reasoning_field_alias_also_emits_thinking_delta():
+    """F1: some OpenRouter providers use ``reasoning`` instead of ``reasoning_content``."""
+    chunks: list[Any] = [
+        _Chunk([_Choice(_Delta(reasoning="hmm"))]),
+        _Chunk([_Choice(_Delta(content="ok"))]),
+        _Chunk([_Choice(_Delta(), finish_reason="stop")]),
+    ]
+    events = [ev async for ev in parse_openrouter_stream(_aiter(chunks))]
+    thinking = [ev for ev in events if ev.type == "thinking_delta"]
+    assert len(thinking) == 1
+    assert thinking[0].delta == "hmm"
