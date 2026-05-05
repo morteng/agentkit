@@ -1,9 +1,11 @@
 """StreamMux — translate ProviderEvents into user-facing Events.
 
-Owns the per-turn ``sequence`` counter and the assistant message_id used by
-streaming events. Deferred ``ToolCallStarted`` (with arguments) emits when the
-provider sends ``tool_call_complete`` so the consumer sees a single event with
-the full args, not a deluge of partial-JSON deltas.
+Owns the assistant ``message_id`` used by streaming events. Sequence numbers
+are allocated via :meth:`TurnContext.next_sequence` so the whole turn shares
+a single monotonic counter across orchestrator, mux, and tool-progress
+emitters. Deferred ``ToolCallStarted`` (with arguments) emits when the
+provider sends ``tool_call_complete`` so the consumer sees a single event
+with the full args, not a deluge of partial-JSON deltas.
 """
 
 from collections.abc import AsyncIterator
@@ -31,11 +33,9 @@ class StreamMux:
         self,
         ctx: TurnContext,
         *,
-        sequence_start: int,
         registry: ToolRegistry | None = None,
     ) -> None:
         self._ctx = ctx
-        self._seq = sequence_start
         self._message_id: MessageId = new_id(MessageId)
         self._registry = registry
 
@@ -45,7 +45,8 @@ class StreamMux:
 
     @property
     def sequence(self) -> int:
-        return self._seq
+        """The next sequence number that would be emitted (peek, no advance)."""
+        return self._ctx.event_sequence
 
     async def translate(
         self,
@@ -130,13 +131,11 @@ class StreamMux:
         return RiskLevel.READ.value
 
     def _mk(self, cls: type[BaseEvent], **payload: Any) -> BaseEvent:
-        seq = self._seq
-        self._seq += 1
         return cls(
             event_id=new_id(EventId),
             session_id=self._ctx.session_id,
             turn_id=self._ctx.turn_id,
             ts=self._ctx.clock.now(),
-            sequence=seq,
+            sequence=self._ctx.next_sequence(),
             **payload,
         )

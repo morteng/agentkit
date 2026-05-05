@@ -41,7 +41,6 @@ class Loop:
         self._deps = deps or {}
         self._starting = starting_phase
         self._end_reason = end_reason
-        self._sequence = 0
 
     async def run(self) -> AsyncIterator[BaseEvent]:
         # Synthesise a user_message_id placeholder for TurnStarted events; if the
@@ -89,17 +88,16 @@ class Loop:
             TurnEnded,
             reason=reason,
             metrics=TurnMetrics(),
+            summary=self._ctx.finalize_reason,
         )
 
     def _mk(self, cls: type[BaseEvent], **payload: Any) -> BaseEvent:
-        seq = self._sequence
-        self._sequence += 1
         return cls(
             event_id=new_id(EventId),
             session_id=self._ctx.session_id,
             turn_id=self._ctx.turn_id,
             ts=self._ctx.clock.now(),
-            sequence=seq,
+            sequence=self._ctx.next_sequence(),
             **payload,
         )
 

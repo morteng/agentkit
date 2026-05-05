@@ -64,3 +64,55 @@ def _terminal_handler(target):
         return target
 
     return h
+
+
+def _walk_through(visited_summary: str | None) -> dict[Phase, PhaseHandler]:
+    """Build handlers that walk a valid INTENT_GATE → ... → TURN_ENDED path,
+    setting ``ctx.finalize_reason`` to ``visited_summary`` along the way (or
+    leaving it None when the argument is None)."""
+
+    def make_handler(next_phase: Phase, *, set_finalize: bool = False) -> PhaseHandler:
+        async def h(ctx, deps):
+            if set_finalize and visited_summary is not None:
+                ctx.finalize_called = True
+                ctx.finalize_reason = visited_summary
+            return next_phase
+
+        return h
+
+    return {
+        Phase.INTENT_GATE: make_handler(Phase.CONTEXT_BUILD),
+        Phase.CONTEXT_BUILD: make_handler(Phase.STREAMING),
+        Phase.STREAMING: make_handler(Phase.FINALIZE_CHECK, set_finalize=True),
+        Phase.FINALIZE_CHECK: make_handler(Phase.MEMORY_EXTRACT),
+        Phase.MEMORY_EXTRACT: make_handler(Phase.TURN_ENDED),
+    }
+
+
+@pytest.mark.asyncio
+async def test_loop_surfaces_finalize_reason_as_turn_ended_summary():
+    """F6: kit.finalize's freeform `reason` argument is dead weight unless it
+    flows through to TurnEnded. This test proves the orchestrator does the
+    wiring on a valid INTENT_GATE → … → TURN_ENDED path."""
+    summary = "Reversed the string and wrote it to disk."
+    ctx = TurnContext.empty()
+    loop = Loop(ctx=ctx, handlers=_walk_through(summary), end_reason=TurnEndReason.COMPLETED)
+
+    events = [ev async for ev in loop.run()]
+    ended = events[-1]
+    assert isinstance(ended, TurnEnded)
+    assert ended.reason is TurnEndReason.COMPLETED
+    assert ended.summary == summary
+
+
+@pytest.mark.asyncio
+async def test_loop_turn_ended_summary_is_none_when_finalize_not_called():
+    """No kit.finalize means no summary — explicit absence, not stale state."""
+    ctx = TurnContext.empty()
+    loop = Loop(ctx=ctx, handlers=_walk_through(None), end_reason=TurnEndReason.COMPLETED)
+
+    events = [ev async for ev in loop.run()]
+    ended = events[-1]
+    assert isinstance(ended, TurnEnded)
+    assert ended.reason is TurnEndReason.COMPLETED
+    assert ended.summary is None

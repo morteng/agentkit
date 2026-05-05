@@ -29,9 +29,20 @@ class ToolCallStarted(BaseEvent):
 
 
 class ToolCallProgress(BaseEvent):
+    """Heartbeat / status event between :class:`ToolCallStarted` and :class:`ToolCallResult`.
+
+    Emitted by tool handlers via :meth:`TurnContext.report_tool_progress`.
+    ``progress`` and ``total`` are optional structured fields mirroring the
+    MCP progress-notification shape; pass either or both when the tool can
+    report a numeric ratio (e.g. "12 of 50 rows fetched") so consumers can
+    render a real progress bar instead of just a status line.
+    """
+
     type: Literal["tool_call_progress"] = Field(default="tool_call_progress")  # type: ignore[reportIncompatibleVariableOverride]
     call_id: str
     message: str
+    progress: float | None = None
+    total: float | None = None
 
 
 class ToolCallResult(BaseEvent):
