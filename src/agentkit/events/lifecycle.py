@@ -44,9 +44,21 @@ class TurnStarted(BaseEvent):
 
 
 class TurnEnded(BaseEvent):
+    """Terminal event for a turn.
+
+    ``reason`` is the structured outcome (the enum). ``summary`` is the
+    optional freeform string the model passed to :func:`kit.finalize` —
+    populated only when the model actually called the tool with a non-empty
+    ``reason`` argument. Audit logs and UIs that want to render
+    "Completed: <one-line summary>" instead of just "Completed" should read
+    this field; the structured ``reason`` enum remains the source of truth
+    for control flow.
+    """
+
     type: Literal["turn_ended"] = Field(default="turn_ended")  # type: ignore[reportIncompatibleVariableOverride]
     reason: TurnEndReason
     metrics: TurnMetrics
+    summary: str | None = None
 
 
 class Errored(BaseEvent):
