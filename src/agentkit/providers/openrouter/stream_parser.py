@@ -10,6 +10,7 @@ from agentkit.providers.base import (
     MessageStart,
     ProviderEvent,
     TextDelta,
+    ThinkingDelta,
     ToolCallComplete,
     ToolCallDelta,
     ToolCallStart,
@@ -42,6 +43,15 @@ async def parse_openrouter_stream(chunks: AsyncIterator[Any]) -> AsyncIterator[P
             continue
 
         delta = choice.delta
+
+        # F1: Reasoning content (DeepSeek and other reasoning models). OpenRouter
+        # surfaces chain-of-thought via ``reasoning_content`` (or ``reasoning``);
+        # forward as ThinkingDelta so consumers can render a "thinking..." UI
+        # affordance during the latency before the first visible TextDelta.
+        if reasoning := getattr(delta, "reasoning_content", None) or getattr(
+            delta, "reasoning", None
+        ):
+            yield ThinkingDelta(delta=reasoning)
 
         # Text content.
         if text := getattr(delta, "content", None):
