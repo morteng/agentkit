@@ -4,7 +4,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from agentkit.mcp_client.base import MCPClient
+from agentkit.mcp_client.base import MCPClient, ProgressCallback
 from agentkit.tools.spec import ToolError, ToolResult, ToolSpec
 
 InProcessHandler = Callable[[dict[str, Any]], Awaitable[ToolResult]]
@@ -38,7 +38,20 @@ class InProcessMCPClient(MCPClient):
             raise RuntimeError("InProcessMCPClient not initialized")
         return [spec for spec, _ in self._handlers.values()]
 
-    async def call_tool(self, name: str, arguments: dict[str, Any]) -> ToolResult:
+    async def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        on_progress: ProgressCallback | None = None,
+    ) -> ToolResult:
+        # In-process handlers have signature (arguments) -> ToolResult and run
+        # synchronously to completion; there is no transport to deliver mid-
+        # call progress over. Accept the parameter for protocol uniformity
+        # (subprocess/stdio honors it) and silently ignore — handlers needing
+        # real progress should be wired as builtins, which can call
+        # ``ctx.report_tool_progress`` directly.
+        _ = on_progress
         if name not in self._handlers:
             raise KeyError(name)
         _spec, handler = self._handlers[name]

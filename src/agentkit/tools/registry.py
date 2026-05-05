@@ -116,5 +116,17 @@ class ToolRegistry:
             client = self._mcp_servers.get(server)
             if client is None:
                 raise ToolErr(f"server not found for tool: {call.name}")
-            return await client.call_tool(bare, call.arguments)
+
+            # Bridge MCP server-side progress notifications to user-facing
+            # ToolCallProgress events. The dispatcher sets ctx.call_id to the
+            # current call before invoking; report_tool_progress no-ops if
+            # ctx has no event_queue (e.g., subagent-internal contexts).
+            async def _on_progress(
+                message: str, progress: float | None, total: float | None
+            ) -> None:
+                await ctx.report_tool_progress(
+                    message, call_id=call.id, progress=progress, total=total
+                )
+
+            return await client.call_tool(bare, call.arguments, on_progress=_on_progress)
         raise ToolErr(f"unknown tool: {call.name}")
