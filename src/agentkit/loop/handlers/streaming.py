@@ -42,7 +42,7 @@ async def handle_streaming(ctx: TurnContext, deps: dict[str, Any]) -> Phase:  # 
         history=ctx.history,
         tool_specs=registry.list_specs(),
     )
-    mux = StreamMux(ctx, sequence_start=0, registry=registry)
+    mux = StreamMux(ctx, registry=registry)
 
     text_so_far: list[str] = []
     tool_calls_seen: list[dict[str, Any]] = []

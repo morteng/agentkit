@@ -29,7 +29,6 @@ async def handle_approval_wait(ctx: TurnContext, deps: dict[str, Any]) -> Phase:
     ctx.metadata["approval_timeout_at"] = timeout_at.isoformat()
 
     specs_by_name = {s.name: s for s in registry.list_specs()}
-    sequence = ctx.metadata.get("event_sequence", 100)
     for call in pending:
         spec = specs_by_name.get(call["name"])
         risk_value = spec.risk.value if spec else "unknown"
@@ -38,17 +37,15 @@ async def handle_approval_wait(ctx: TurnContext, deps: dict[str, Any]) -> Phase:
             session_id=ctx.session_id,
             turn_id=ctx.turn_id,
             ts=ctx.clock.now(),
-            sequence=sequence,
+            sequence=ctx.next_sequence(),
             call_id=call["id"],
             tool_name=call["name"],
             arguments=call["arguments"],
             risk=risk_value,
             timeout_at=timeout_at,
         )
-        sequence += 1
         if queue is not None:
             await queue.put(ev)
-    ctx.metadata["event_sequence"] = sequence
 
     # Persist a checkpoint keyed by turn_id so the resume call can find it.
     checkpoint_store = deps.get("checkpoint_store")

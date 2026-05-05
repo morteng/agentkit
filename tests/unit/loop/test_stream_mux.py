@@ -24,7 +24,11 @@ from agentkit.providers.base import (
 @pytest.mark.asyncio
 async def test_stream_mux_translates_text_delta():
     ctx = TurnContext.empty(clock=FixedClock(datetime.now(UTC)))
-    mux = StreamMux(ctx, sequence_start=10)
+    # Sequence numbers come from ctx.next_sequence(); pre-advance to verify the
+    # mux honors the centralized counter rather than starting at zero.
+    for _ in range(10):
+        ctx.next_sequence()
+    mux = StreamMux(ctx)
 
     async def src():
         yield MessageStart()
@@ -42,12 +46,18 @@ async def test_stream_mux_translates_text_delta():
     assert types[-1] == "MessageCompleted"
     deltas = [e.delta for e in out if isinstance(e, PubTextDelta)]
     assert deltas == ["he", "llo"]
+    # First emitted event should have sequence=10 (the next free slot).
+    assert out[0].sequence == 10
+    # Sequence numbers are strictly increasing.
+    seqs = [e.sequence for e in out]
+    assert seqs == sorted(seqs)
+    assert len(set(seqs)) == len(seqs)
 
 
 @pytest.mark.asyncio
 async def test_stream_mux_translates_tool_call():
     ctx = TurnContext.empty(clock=FixedClock(datetime.now(UTC)))
-    mux = StreamMux(ctx, sequence_start=0)
+    mux = StreamMux(ctx)
 
     async def src():
         yield MessageStart()

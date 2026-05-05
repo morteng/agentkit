@@ -19,7 +19,6 @@ async def handle_tool_results(ctx: TurnContext, deps: dict[str, Any]) -> Phase:
 
     # Append each result as a MessageRole.TOOL message and emit ToolCallResult events.
     if results:
-        sequence = ctx.metadata.get("event_sequence", 200)
         for r in results:
             tr_blocks: list[ContentBlock] = [
                 TextBlock(text=cb.text or "") for cb in r.content if cb.type == "text"
@@ -49,7 +48,7 @@ async def handle_tool_results(ctx: TurnContext, deps: dict[str, Any]) -> Phase:
                     session_id=ctx.session_id,
                     turn_id=ctx.turn_id,
                     ts=ctx.clock.now(),
-                    sequence=sequence,
+                    sequence=ctx.next_sequence(),
                     call_id=r.call_id,
                     status=r.status,
                     content_summary=content_summary,
@@ -58,9 +57,7 @@ async def handle_tool_results(ctx: TurnContext, deps: dict[str, Any]) -> Phase:
                     error=r.error,
                     content=list(r.content),
                 )
-                sequence += 1
                 await queue.put(ev)
-        ctx.metadata["event_sequence"] = sequence
 
     # F20: track consecutive errors per tool name and abort the turn if any
     # tool fails ``max_consecutive_tool_errors`` times in a row. Stops the
