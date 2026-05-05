@@ -407,7 +407,7 @@ async def test_success_claim_no_flag_when_non_kit_tool_was_called() -> None:
 @pytest.mark.asyncio
 async def test_stream_mux_thinking_and_error_branches() -> None:
     ctx = TurnContext.empty(clock=FixedClock(datetime.now(UTC)))
-    mux = StreamMux(ctx, sequence_start=0)
+    mux = StreamMux(ctx)
 
     # Touch the sequence property at least once for coverage of the getter body.
     assert mux.sequence == 0

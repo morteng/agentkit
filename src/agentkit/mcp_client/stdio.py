@@ -7,7 +7,7 @@ from typing import Any
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from agentkit.mcp_client.base import MCPClient
+from agentkit.mcp_client.base import MCPClient, ProgressCallback
 from agentkit.tools.spec import (
     ApprovalPolicy,
     ContentBlockOut,
@@ -68,12 +68,31 @@ class StdioMCPClient(MCPClient):
         result = await self._session.list_tools()
         return [_mcp_tool_to_spec(t) for t in result.tools]
 
-    async def call_tool(self, name: str, arguments: dict[str, Any]) -> ToolResult:
+    async def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        on_progress: ProgressCallback | None = None,
+    ) -> ToolResult:
         if self._session is None:
             raise RuntimeError("call initialize() first")
+        # The MCP SDK's progress callback signature is
+        # (progress, total, message) — adapt to our (message, progress, total)
+        # so callers can forward straight to ctx.report_tool_progress.
+        progress_callback = None
+        if on_progress is not None:
+
+            async def _adapter(progress: float, total: float | None, message: str | None) -> None:
+                await on_progress(message or "", progress, total)
+
+            progress_callback = _adapter
+
         started = time.perf_counter()
         try:
-            response = await self._session.call_tool(name, arguments)
+            response = await self._session.call_tool(
+                name, arguments, progress_callback=progress_callback
+            )
         except Exception as exc:
             elapsed = int((time.perf_counter() - started) * 1000)
             return ToolResult(
