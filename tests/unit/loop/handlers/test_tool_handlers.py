@@ -120,3 +120,96 @@ async def test_tool_results_routes_to_context_build_when_more_iteration_needed()
     ctx.metadata["tool_results"] = []
     next_ = await handle_tool_results(ctx, {})
     assert next_ is Phase.CONTEXT_BUILD
+
+
+@pytest.mark.asyncio
+async def test_tool_results_event_carries_error_and_content():
+    """F19: ToolCallResult event must propagate ToolError + content for failed calls."""
+    import asyncio
+
+    from agentkit.events import ToolCallResult
+    from agentkit.tools.spec import ToolError
+
+    ctx = TurnContext.empty()
+    ctx.event_queue = asyncio.Queue()
+    ctx.metadata["tool_results"] = [
+        ToolResult(
+            call_id="c1",
+            status="error",
+            content=[ContentBlockOut(type="text", text="oops")],
+            error=ToolError(code="boom", message="something exploded", retryable=True),
+            duration_ms=42,
+            cached=False,
+        )
+    ]
+
+    await handle_tool_results(ctx, {})
+
+    ev = ctx.event_queue.get_nowait()
+    assert isinstance(ev, ToolCallResult)
+    assert ev.status == "error"
+    assert ev.error is not None
+    assert ev.error.code == "boom"
+    assert ev.error.message == "something exploded"
+    assert ev.error.retryable is True
+    assert len(ev.content) == 1
+    assert ev.content[0].text == "oops"
+
+
+@pytest.mark.asyncio
+async def test_tool_results_aborts_after_max_consecutive_errors():
+    """F20: 3 back-to-back errors from the same tool transitions to ERRORED."""
+    import asyncio
+
+    from agentkit.tools.spec import ToolError
+
+    def _make_ctx_with_one_error_for(name: str):
+        c = TurnContext.empty()
+        c.event_queue = asyncio.Queue()
+        c.metadata["approved_tool_calls"] = [{"id": "c1", "name": name, "arguments": {}}]
+        c.metadata["denied_tool_calls"] = []
+        c.metadata["tool_results"] = [
+            ToolResult(
+                call_id="c1",
+                status="error",
+                content=[],
+                error=ToolError(code="boom", message="x"),
+                duration_ms=0,
+                cached=False,
+            )
+        ]
+        return c
+
+    ctx = _make_ctx_with_one_error_for("kit.broken")
+    ctx.metadata["consecutive_tool_errors"] = {"kit.broken": 2}  # this would be the 3rd
+    deps = {"max_consecutive_tool_errors": 3}
+    next_ = await handle_tool_results(ctx, deps)
+    assert next_ is Phase.ERRORED
+    assert ctx.metadata["tool_error_loop"]["tool"] == "kit.broken"
+    assert ctx.metadata["tool_error_loop"]["count"] == 3
+    assert ctx.metadata["tool_error_loop"]["last_error"]["code"] == "boom"
+
+
+@pytest.mark.asyncio
+async def test_tool_results_resets_counter_on_success():
+    """F20: a successful call resets the consecutive-error counter for that tool."""
+    import asyncio
+
+    ctx = TurnContext.empty()
+    ctx.event_queue = asyncio.Queue()
+    ctx.metadata["approved_tool_calls"] = [{"id": "c1", "name": "kit.recovered", "arguments": {}}]
+    ctx.metadata["denied_tool_calls"] = []
+    ctx.metadata["consecutive_tool_errors"] = {"kit.recovered": 2}
+    ctx.metadata["tool_results"] = [
+        ToolResult(
+            call_id="c1",
+            status="ok",
+            content=[ContentBlockOut(type="text", text="ok")],
+            duration_ms=0,
+            cached=False,
+        )
+    ]
+    next_ = await handle_tool_results(ctx, {"max_consecutive_tool_errors": 3})
+    assert next_ is Phase.CONTEXT_BUILD
+    # Counter for the recovered tool was wiped.
+    assert "kit.recovered" not in ctx.metadata["consecutive_tool_errors"]

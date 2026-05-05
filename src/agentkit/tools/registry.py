@@ -9,6 +9,7 @@ Three registration sources:
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
@@ -29,6 +30,7 @@ class ToolRegistry:
         self._builtins: dict[str, tuple[ToolSpec, BuiltinHandler]] = {}
         self._mcp_servers: dict[str, MCPClient] = {}
         self._mcp_specs: dict[str, ToolSpec] = {}  # qualified_name -> spec
+        self._failed_servers: dict[str, str] = {}  # name -> error message; tools unavailable
 
     # ---- Registration ------------------------------------------------------
 
@@ -37,6 +39,19 @@ class ToolRegistry:
             raise ToolErr(f"duplicate builtin registration: {spec.name}")
         self._builtins[spec.name] = (spec, handler)
 
+    def register_default_builtins(self) -> None:
+        """Register every entry of :data:`DEFAULT_BUILTINS`.
+
+        Convenience for the common case — equivalent to looping over
+        ``DEFAULT_BUILTINS`` and calling :meth:`register_builtin` for each entry.
+        """
+        # Local import to avoid a module-load cycle (builtin handlers may import
+        # from ``agentkit.tools`` indirectly).
+        from agentkit.tools.builtin import DEFAULT_BUILTINS  # noqa: PLC0415
+
+        for spec, handler in DEFAULT_BUILTINS:
+            self.register_builtin(spec, handler)
+
     def register_mcp_server(self, name: str, client: MCPClient) -> None:
         """Register an MCP server. Call ``initialize_mcp_servers`` after to load tools."""
         if name in self._mcp_servers:
@@ -44,15 +59,37 @@ class ToolRegistry:
         self._mcp_servers[name] = client
 
     async def initialize_mcp_servers(self) -> None:
-        """Connect to every registered MCP server and import its tools."""
+        """Connect to every registered MCP server and import its tools.
+
+        A server whose ``initialize()`` or ``list_tools()`` raises is marked as
+        failed (see :attr:`failed_servers`) but does **not** abort the loop —
+        other servers continue to load. The session can still run; the failed
+        server's tools simply aren't available.
+        """
         for server_name, client in self._mcp_servers.items():
-            await client.initialize()
-            specs = await client.list_tools()
+            try:
+                await client.initialize()
+                specs = await client.list_tools()
+            except Exception as exc:
+                self._failed_servers[server_name] = f"{type(exc).__name__}: {exc}"
+                # Best-effort cleanup — shutdown may itself raise on a partially
+                # initialized client; we record the original error regardless.
+                with contextlib.suppress(Exception):
+                    await client.shutdown()
+                continue
             for spec in specs:
                 qualified = f"{server_name}.{spec.name}"
                 if qualified in self._mcp_specs or qualified in self._builtins:
                     raise ToolErr(f"namespace collision: {qualified}")
                 self._mcp_specs[qualified] = spec.model_copy(update={"name": qualified})
+
+    @property
+    def failed_servers(self) -> dict[str, str]:
+        """Map of MCP server name to the error message from initialization.
+
+        Empty when all registered servers initialized cleanly.
+        """
+        return dict(self._failed_servers)
 
     async def shutdown(self) -> None:
         for client in self._mcp_servers.values():
