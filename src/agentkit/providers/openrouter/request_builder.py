@@ -5,7 +5,7 @@ from typing import Any
 
 from agentkit._content import ImageBlock, TextBlock, ToolResultBlock, ToolUseBlock
 from agentkit._messages import Message, MessageRole
-from agentkit.providers.base import ProviderRequest
+from agentkit.providers.base import NamedToolChoice, ProviderRequest
 from agentkit.providers.caching import compute_breakpoints
 from agentkit.providers.openrouter.model_quirks import requires_cache_blocks
 from agentkit.providers.openrouter.tool_translator import to_openai_tool
@@ -45,6 +45,9 @@ def build_openrouter_request(req: ProviderRequest) -> dict[str, Any]:
     }
     if req.tools:
         payload["tools"] = [to_openai_tool(t) for t in req.tools]
+        tc = _to_openai_tool_choice(req.tool_choice)
+        if tc is not None:
+            payload["tool_choice"] = tc
     if req.temperature is not None:
         payload["temperature"] = req.temperature
     if req.stop_when and req.stop_when.stop_sequences:
@@ -52,6 +55,28 @@ def build_openrouter_request(req: ProviderRequest) -> dict[str, Any]:
     if req.metadata:
         payload["metadata"] = req.metadata
     return payload
+
+
+def _to_openai_tool_choice(
+    choice: str | NamedToolChoice,
+) -> str | dict[str, Any] | None:
+    """Translate a ProviderRequest.tool_choice into OpenAI/OpenRouter's wire shape.
+
+    OpenAI Chat Completions accepts:
+      - ``"auto"`` (default behaviour when tools are present)
+      - ``"none"`` (forbid tool calls)
+      - ``"required"`` (must call some tool)
+      - ``{"type": "function", "function": {"name": "<name>"}}``
+    Returns ``None`` for ``"auto"`` so we don't bloat the payload with the
+    provider's default.
+    """
+    if isinstance(choice, NamedToolChoice):
+        return {"type": "function", "function": {"name": choice.name}}
+    if choice == "required":
+        return "required"
+    if choice == "none":
+        return "none"
+    return None
 
 
 def _serialise_message(
