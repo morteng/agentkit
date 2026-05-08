@@ -123,6 +123,38 @@ async def test_tool_results_routes_to_context_build_when_more_iteration_needed()
 
 
 @pytest.mark.asyncio
+async def test_tool_results_sets_max_iterations_suspend_reason_when_budget_hit():
+    """Hitting the iteration cap must surface as ``MAX_ITERATIONS`` on
+    TurnEnded, not the default COMPLETED. The handler signals this by
+    setting ``suspend_reason`` in metadata; the orchestrator picks it up.
+    """
+    from agentkit.events.lifecycle import TurnEndReason
+
+    ctx = TurnContext.empty()
+    ctx.metadata["tool_results"] = []
+    ctx.metadata["iterations"] = 9  # next iteration hits 10 == max
+    next_ = await handle_tool_results(ctx, {"max_iterations": 10})
+    assert next_ is Phase.FINALIZE_CHECK
+    assert ctx.metadata["max_iterations_hit"] is True
+    assert ctx.metadata["suspend_reason"] == TurnEndReason.MAX_ITERATIONS.value
+
+
+@pytest.mark.asyncio
+async def test_tool_results_does_not_overwrite_existing_suspend_reason():
+    """If a prior handler already set suspend_reason (e.g. AWAITING_APPROVAL),
+    the iteration-budget check must not clobber it.
+    """
+    from agentkit.events.lifecycle import TurnEndReason
+
+    ctx = TurnContext.empty()
+    ctx.metadata["tool_results"] = []
+    ctx.metadata["iterations"] = 9
+    ctx.metadata["suspend_reason"] = TurnEndReason.AWAITING_APPROVAL.value
+    await handle_tool_results(ctx, {"max_iterations": 10})
+    assert ctx.metadata["suspend_reason"] == TurnEndReason.AWAITING_APPROVAL.value
+
+
+@pytest.mark.asyncio
 async def test_tool_results_event_carries_error_and_content():
     """F19: ToolCallResult event must propagate ToolError + content for failed calls."""
     import asyncio

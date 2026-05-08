@@ -6,6 +6,7 @@ from agentkit._content import ContentBlock, TextBlock, ToolResultBlock
 from agentkit._ids import EventId, MessageId, new_id
 from agentkit._messages import Message, MessageRole
 from agentkit.events import ToolCallResult
+from agentkit.events.lifecycle import TurnEndReason
 from agentkit.loop.context import TurnContext
 from agentkit.loop.phase import Phase
 
@@ -93,5 +94,10 @@ async def handle_tool_results(ctx: TurnContext, deps: dict[str, Any]) -> Phase:
     max_iter = deps.get("max_iterations", 10)
     if iterations >= max_iter:
         ctx.metadata["max_iterations_hit"] = True
+        # Surface the iteration-budget exhaustion to the consumer via TurnEnded.
+        # The orchestrator reads ``suspend_reason`` and uses it as the TurnEnded
+        # reason in preference to the default COMPLETED. We don't overwrite an
+        # existing suspend_reason (e.g. AWAITING_APPROVAL) — it has priority.
+        ctx.metadata.setdefault("suspend_reason", TurnEndReason.MAX_ITERATIONS.value)
         return Phase.FINALIZE_CHECK
     return Phase.CONTEXT_BUILD

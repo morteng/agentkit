@@ -116,3 +116,42 @@ async def test_loop_turn_ended_summary_is_none_when_finalize_not_called():
     assert isinstance(ended, TurnEnded)
     assert ended.reason is TurnEndReason.COMPLETED
     assert ended.summary is None
+
+
+@pytest.mark.asyncio
+async def test_loop_emits_max_iterations_when_metadata_signals_it():
+    """The iteration-cap signal flows through the orchestrator: when
+    ``ctx.metadata["suspend_reason"]`` is set to MAX_ITERATIONS, the final
+    ``TurnEnded`` event reflects that, not the default COMPLETED. Mirrors
+    how the AWAITING_APPROVAL suspend path already works.
+    """
+
+    async def streaming_handler(ctx, deps):
+        # Simulate: tool_results decided we hit max-iter, stamped the reason,
+        # and routed to FINALIZE_CHECK. We compress that into the legal path
+        # the phase machine allows from STREAMING.
+        ctx.metadata["suspend_reason"] = TurnEndReason.MAX_ITERATIONS.value
+        return Phase.FINALIZE_CHECK
+
+    async def passthrough(ctx, deps):
+        return {
+            Phase.INTENT_GATE: Phase.CONTEXT_BUILD,
+            Phase.CONTEXT_BUILD: Phase.STREAMING,
+            Phase.FINALIZE_CHECK: Phase.MEMORY_EXTRACT,
+            Phase.MEMORY_EXTRACT: Phase.TURN_ENDED,
+        }[deps["current_phase"]]
+
+    handlers: dict[Phase, PhaseHandler] = {
+        Phase.INTENT_GATE: passthrough,
+        Phase.CONTEXT_BUILD: passthrough,
+        Phase.STREAMING: streaming_handler,
+        Phase.FINALIZE_CHECK: passthrough,
+        Phase.MEMORY_EXTRACT: passthrough,
+    }
+
+    ctx = TurnContext.empty()
+    loop = Loop(ctx=ctx, handlers=handlers)
+    events = [ev async for ev in loop.run()]
+    ended = events[-1]
+    assert isinstance(ended, TurnEnded)
+    assert ended.reason is TurnEndReason.MAX_ITERATIONS
