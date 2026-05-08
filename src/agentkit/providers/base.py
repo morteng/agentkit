@@ -11,6 +11,18 @@ from pydantic import BaseModel, Field
 
 from agentkit._messages import Message, Usage
 
+# ---- Tool-choice -----------------------------------------------------------
+
+
+ToolChoiceMode = Literal["auto", "none", "required"]
+
+
+class NamedToolChoice(BaseModel):
+    """Force the model to call a specific tool by name."""
+
+    name: str
+
+
 # ---- Request types ---------------------------------------------------------
 
 
@@ -49,6 +61,17 @@ class ProviderRequest(BaseModel):
     temperature: float | None = None
     thinking: ThinkingConfig | None = None
     stop_when: StopCondition | None = None
+    tool_choice: ToolChoiceMode | NamedToolChoice = "auto"
+    """Tool-call constraint for this request.
+
+    - ``"auto"`` (default): provider picks whether to call a tool.
+    - ``"none"``: model must not call any tool — text-only reply.
+    - ``"required"``: model must call at least one tool.
+    - ``NamedToolChoice(name=...)``: model must call the named tool.
+
+    Adapters translate to provider-native shapes. Has no effect when ``tools``
+    is empty (the provider has nothing to choose from).
+    """
     metadata: dict[str, str] = Field(default_factory=dict)  # type: ignore[reportUnknownVariableType]
 
 
