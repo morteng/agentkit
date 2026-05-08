@@ -11,7 +11,7 @@ from agentkit._content import (
 )
 from agentkit._messages import Message, MessageRole
 from agentkit.providers.anthropic.tool_translator import to_anthropic_tool
-from agentkit.providers.base import ProviderRequest
+from agentkit.providers.base import NamedToolChoice, ProviderRequest
 from agentkit.providers.caching import compute_breakpoints
 
 
@@ -46,6 +46,9 @@ def build_anthropic_request(req: ProviderRequest) -> dict[str, Any]:
         payload["system"] = system_payload
     if req.tools:
         payload["tools"] = [to_anthropic_tool(t) for t in req.tools]
+        tc = _to_anthropic_tool_choice(req.tool_choice)
+        if tc is not None:
+            payload["tool_choice"] = tc
     if req.temperature is not None:
         payload["temperature"] = req.temperature
     if req.thinking and req.thinking.enabled:
@@ -58,6 +61,29 @@ def build_anthropic_request(req: ProviderRequest) -> dict[str, Any]:
     if req.metadata:
         payload["metadata"] = req.metadata
     return payload
+
+
+def _to_anthropic_tool_choice(
+    choice: str | NamedToolChoice,
+) -> dict[str, Any] | None:
+    """Translate a ProviderRequest.tool_choice into Anthropic's wire shape.
+
+    Anthropic accepts:
+      - ``{"type": "auto"}``  (default behaviour)
+      - ``{"type": "none"}``  (forbid tool calls)
+      - ``{"type": "any"}``   (must call some tool)
+      - ``{"type": "tool", "name": "<name>"}``
+    Returns ``None`` for ``"auto"`` so we don't bloat the payload with the
+    provider's default.
+    """
+    if isinstance(choice, NamedToolChoice):
+        return {"type": "tool", "name": choice.name}
+    if choice == "required":
+        return {"type": "any"}
+    if choice == "none":
+        return {"type": "none"}
+    # "auto" — omit; matches Anthropic default and keeps payloads minimal.
+    return None
 
 
 def _role(role: MessageRole) -> str:
