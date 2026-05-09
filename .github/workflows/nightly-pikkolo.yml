@@ -110,7 +110,7 @@ jobs:
       # db=db (a single AsyncSession), but the function signature now requires
       # session_factory (a Callable[[], AbstractAsyncContextManager[AsyncSession]]).
       # Fix needs care around pytest's transactional rollback fixture.
-      # Tracking issue: https://github.com/morteng/pikkolo-cms-mvp/issues  (TBD)
+      # Tracking: https://github.com/morteng/pikkolo-cms-mvp/issues/184
       # - name: Run majority-of-3 eval (smoke mode)
       #   env:
       #     DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/aispot_test
