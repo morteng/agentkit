@@ -1,0 +1,164 @@
+name: nightly-pikkolo
+
+on:
+  schedule:
+    - cron: "0 3 * * *"   # 03:00 UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  pikkolo-against-agentkit-head:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout agentkit (HEAD)
+        uses: actions/checkout@v4
+        with:
+          path: agentkit
+
+      - name: Checkout Pikkolo (main)
+        uses: actions/checkout@v4
+        with:
+          repository: morteng/pikkolo-cms-mvp
+          token: ${{ secrets.PIKKOLO_REPO_TOKEN }}
+          path: pikkolo
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Resolve agentkit HEAD SHA
+        id: agentkit_sha
+        run: |
+          cd agentkit
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Install Pikkolo against agentkit HEAD
+        env:
+          AGENTKIT_SHA: ${{ steps.agentkit_sha.outputs.sha }}
+        run: |
+          cd pikkolo
+          uv sync
+          uv pip install --force-reinstall \
+            "agentkit @ git+file://$GITHUB_WORKSPACE/agentkit@${AGENTKIT_SHA}"
+
+      - name: Run Pikkolo lint + tests
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/test
+          REDIS_URL: redis://localhost:6379/0
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          JWT_SECRET: nightly-stub
+        run: |
+          cd pikkolo
+          uv run ruff check api/ scripts/ || true
+          PYTHONPATH=. uv run pytest api/tests/ -q --ignore=api/tests/e2e
+
+      - name: Run majority-of-3 eval (smoke mode)
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/test
+          REDIS_URL: redis://localhost:6379/0
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          JWT_SECRET: nightly-stub
+        run: |
+          cd pikkolo
+          PYTHONPATH=. uv run pytest api/tests/agents/sdk/eval/ -m agent_eval --eval-mode=smoke -v
+
+      - name: Record success state
+        if: success()
+        env:
+          AGENTKIT_SHA: ${{ steps.agentkit_sha.outputs.sha }}
+        run: |
+          mkdir -p .nightly-state
+          echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) GREEN ${AGENTKIT_SHA}" \
+            > .nightly-state/last-status
+
+      - name: Two-strike issue
+        if: failure()
+        uses: actions/github-script@v7
+        env:
+          AGENTKIT_SHA: ${{ steps.agentkit_sha.outputs.sha }}
+        with:
+          script: |
+            // Only open/update an issue if the previous run also failed.
+            const runs = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'nightly-pikkolo.yml',
+              per_page: 5,
+            });
+            const completed = runs.data.workflow_runs
+              .filter(r => r.id !== context.runId && r.status === 'completed')
+              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+            const previous = completed[0];
+            if (!previous || previous.conclusion === 'success') {
+              core.info('Single failure — not opening issue (two-strike rule).');
+              return;
+            }
+
+            const agenkitSha = process.env.AGENTKIT_SHA;
+            const title = '[nightly-regression] Pikkolo against agentkit HEAD failing 2+ runs';
+            const body = [
+              `Two consecutive nightly runs failing.`,
+              ``,
+              `- Previous failure: ${previous.html_url}`,
+              `- Current failure: https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              `- agentkit HEAD: ${agenkitSha}`,
+              ``,
+              `Investigate before next agentkit tag.`,
+            ].join('\n');
+
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'nightly-regression',
+              state: 'open',
+            });
+            if (existing.data.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.data[0].number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['nightly-regression'],
+              });
+            }
