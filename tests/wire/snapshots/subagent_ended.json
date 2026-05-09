@@ -1,0 +1,11 @@
+{
+  "event_id": "ev_canonical",
+  "reason": "completed",
+  "sequence": 1,
+  "session_id": "sess_canonical",
+  "subagent_id": "subagent_canonical",
+  "summary": "Translation complete",
+  "ts": "2026-01-01T00:00:00Z",
+  "turn_id": "turn_canonical",
+  "type": "subagent_ended"
+}

@@ -1,0 +1,11 @@
+{
+  "block_index": 0,
+  "delta": "Hello, world!",
+  "event_id": "ev_canonical",
+  "message_id": "msg_canonical",
+  "sequence": 1,
+  "session_id": "sess_canonical",
+  "ts": "2026-01-01T00:00:00Z",
+  "turn_id": "turn_canonical",
+  "type": "text_delta"
+}
