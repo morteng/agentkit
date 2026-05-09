@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncIterator
 from decimal import Decimal
+from typing import Any
 
 import openai
 from openai import AsyncOpenAI
@@ -103,6 +104,7 @@ class OpenRouterProvider(Provider):
         http_referer: str | None = None,
         x_title: str | None = None,
         model_capabilities: dict[str, ProviderCapabilities] | None = None,
+        reasoning: dict[str, Any] | None = None,
     ) -> None:
         self._client = client or AsyncOpenAI(api_key=api_key, base_url=base_url)
         self._extra_headers: dict[str, str] = {}
@@ -112,6 +114,14 @@ class OpenRouterProvider(Provider):
             self._extra_headers["X-Title"] = x_title
         # Caller-supplied overrides win over the built-in table.
         self._model_capabilities = {**_MODEL_CAPABILITIES, **(model_capabilities or {})}
+        # Per-provider-instance reasoning config. OpenRouter accepts a top-level
+        # ``reasoning`` object on chat-completions requests for reasoning-capable
+        # models (DeepSeek-R1, GPT-5 reasoning, Claude extended thinking, etc.).
+        # Shape: {"effort": "xhigh"|"high"|"medium"|"low"|"minimal"|"none"} OR
+        # {"max_tokens": int} OR {"enabled": bool} OR {"exclude": bool}. Forwarded
+        # verbatim so consumers control the wire shape; ``None`` (the default)
+        # omits the field entirely.
+        self._reasoning = reasoning
 
     def capabilities_for(self, model: str) -> ProviderCapabilities:
         """Return capabilities for ``model`` if known, else the conservative default.
@@ -126,6 +136,14 @@ class OpenRouterProvider(Provider):
         payload = build_openrouter_request(request)
         # Always include usage info per chunk via stream_options when supported.
         payload.setdefault("stream_options", {"include_usage": True})
+        # Reasoning config is provider-instance-scoped (set in __init__) rather
+        # than per-request because the typical use case is "always send effort=
+        # medium for this DeepSeek-V4 deployment" — a model-level deployment
+        # decision, not a per-turn one. Callers needing per-turn variation can
+        # construct multiple providers or extend ProviderRequest in a future
+        # revision.
+        if self._reasoning is not None:
+            payload["reasoning"] = self._reasoning
         try:
             chunks = await self._client.chat.completions.create(  # type: ignore[reportUnknownVariableType]
                 extra_headers=self._extra_headers or None,
