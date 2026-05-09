@@ -100,3 +100,73 @@ def real_anthropic_client(stub_anthropic_transport: httpx.MockTransport):
         base_url="http://stub.invalid",
         http_client=httpx.AsyncClient(transport=stub_anthropic_transport),
     )
+
+
+def _stub_chat_with_malformed_tool_call(_request: httpx.Request) -> httpx.Response:
+    """Simulate DeepSeek emitting an SSE tool_call with unquoted-value JSON."""
+    chunks = [
+        # Standard chunk-with-tool_call shape; arguments contains malformed JSON.
+        {
+            "id": "chatcmpl-stub",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": "deepseek/deepseek-v4-flash",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_stub",
+                                "type": "function",
+                                "function": {
+                                    "name": "store_fact",
+                                    # Malformed JSON: unquoted value, as emitted by DeepSeek
+                                    "arguments": (
+                                        '{"facts": Drammens Teater ble bygd i 1869,'
+                                        ' "category": "history"}'
+                                    ),
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {
+            "id": "chatcmpl-stub",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": "deepseek/deepseek-v4-flash",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+        },
+    ]
+    body = "".join(f"data: {json.dumps(c)}\n\n" for c in chunks) + "data: [DONE]\n\n"
+    return httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream"},
+        content=body.encode(),
+    )
+
+
+@pytest.fixture
+def stub_openai_transport_malformed_tool_call() -> Iterator[httpx.MockTransport]:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/chat/completions"):
+            return _stub_chat_with_malformed_tool_call(request)
+        return httpx.Response(404)
+
+    yield httpx.MockTransport(handler)
+
+
+@pytest.fixture
+def real_openai_client_malformed_tool_call(stub_openai_transport_malformed_tool_call):
+    from openai import AsyncOpenAI
+
+    return AsyncOpenAI(
+        api_key="stub",
+        base_url="http://stub.invalid/v1",
+        http_client=httpx.AsyncClient(transport=stub_openai_transport_malformed_tool_call),
+    )
