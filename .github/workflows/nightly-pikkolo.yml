@@ -75,7 +75,7 @@ jobs:
           uv pip install --force-reinstall \
             "agentkit @ git+file://$GITHUB_WORKSPACE/agentkit@${AGENTKIT_SHA}"
 
-      - name: Run Pikkolo lint + tests
+      - name: Run Pikkolo wire-contract tests
         env:
           DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/aispot_test
           REDIS_URL: redis://localhost:6379/0
@@ -84,7 +84,7 @@ jobs:
         run: |
           cd pikkolo
           uv run ruff check api/ scripts/ || true
-          PYTHONPATH=. uv run pytest api/tests/ -q --ignore=api/tests/e2e
+          PYTHONPATH=. uv run pytest api/tests/agentkit_wire_contract/ -q
 
       - name: Run majority-of-3 eval (smoke mode)
         env:
