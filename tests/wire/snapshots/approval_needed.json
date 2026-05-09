@@ -1,0 +1,16 @@
+{
+  "arguments": {
+    "content_id": "cnt_abc123"
+  },
+  "call_id": "call_canonical",
+  "event_id": "ev_canonical",
+  "rationale": "Destructive operation requires confirmation",
+  "risk": "destructive",
+  "sequence": 1,
+  "session_id": "sess_canonical",
+  "timeout_at": "2026-01-01T00:05:00Z",
+  "tool_name": "pikkolo.delete_content",
+  "ts": "2026-01-01T00:00:00Z",
+  "turn_id": "turn_canonical",
+  "type": "approval_needed"
+}

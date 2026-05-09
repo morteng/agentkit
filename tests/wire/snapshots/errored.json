@@ -1,0 +1,11 @@
+{
+  "code": "provider_fault",
+  "event_id": "ev_canonical",
+  "message": "upstream provider returned 500",
+  "recoverable": true,
+  "sequence": 1,
+  "session_id": "sess_canonical",
+  "ts": "2026-01-01T00:00:00Z",
+  "turn_id": "turn_canonical",
+  "type": "errored"
+}

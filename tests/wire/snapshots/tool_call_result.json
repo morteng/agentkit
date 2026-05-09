@@ -1,0 +1,15 @@
+{
+  "cached": false,
+  "call_id": "call_canonical",
+  "content": [],
+  "content_summary": "Found 3 results",
+  "duration_ms": 128,
+  "error": null,
+  "event_id": "ev_canonical",
+  "sequence": 1,
+  "session_id": "sess_canonical",
+  "status": "ok",
+  "ts": "2026-01-01T00:00:00Z",
+  "turn_id": "turn_canonical",
+  "type": "tool_call_result"
+}
