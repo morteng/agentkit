@@ -75,6 +75,21 @@ jobs:
           uv pip install --force-reinstall \
             "agentkit @ git+file://$GITHUB_WORKSPACE/agentkit@${AGENTKIT_SHA}"
 
+      - name: Install PostGIS into the pgvector service container
+        # Pikkolo's conftest creates tables that require postgis (Location etc.).
+        # Pikkolo's own dev image (docker/Dockerfile.db) extends pgvector/pgvector
+        # with postgresql-16-postgis-3 via apt. Mirror that here. Without postgis,
+        # CREATE EXTENSION fails inside the conftest setup transaction and
+        # poisons every subsequent statement (pg_advisory_unlock cascade).
+        run: |
+          PG_CID=$(docker ps --filter "ancestor=pgvector/pgvector:pg16" --format "{{.ID}}" | head -1)
+          if [ -z "$PG_CID" ]; then
+            echo "could not locate pgvector service container" >&2
+            docker ps >&2
+            exit 1
+          fi
+          docker exec -u 0 "$PG_CID" bash -c 'apt-get update -qq && apt-get install -y --no-install-recommends postgresql-16-postgis-3'
+
       - name: Run Pikkolo wire-contract tests
         env:
           DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/aispot_test
