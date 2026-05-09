@@ -17,6 +17,22 @@ from agentkit.providers.base import (
     UsageEvent,
 )
 from agentkit.providers.openrouter.model_quirks import parse_finish_reason
+from agentkit.providers.openrouter.tool_translator import parse_tool_args_with_repair
+
+
+def parse_tool_call_arguments(args_str: str) -> dict[str, Any] | None:
+    """Parse tool-call argument JSON, using json_repair as a fallback.
+
+    Wraps ``parse_tool_args_with_repair`` for the stream parser's tool-call
+    argument path. Returns a dict on success (including repaired JSON).
+    Raises ``json.JSONDecodeError`` on unrecoverable parse failure so callers
+    that previously caught ``json.JSONDecodeError`` from ``json.loads`` continue
+    to work unchanged.
+    """
+    parsed, err = parse_tool_args_with_repair(args_str)
+    if err is not None:
+        raise json.JSONDecodeError(err, args_str, 0)
+    return parsed
 
 
 async def parse_openrouter_stream(chunks: AsyncIterator[Any]) -> AsyncIterator[ProviderEvent]:
@@ -110,7 +126,7 @@ def _flush_pending_tools(
         if slot["name"] is None:
             continue
         try:
-            parsed: Any = json.loads(slot["args_buf"] or "{}")
+            parsed: Any = parse_tool_call_arguments(slot["args_buf"] or "")
             args: dict[str, Any] = dict(parsed) if isinstance(parsed, dict) else {}  # type: ignore[reportUnknownArgumentType]
         except json.JSONDecodeError:
             args = {}
