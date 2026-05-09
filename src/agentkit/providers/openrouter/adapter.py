@@ -142,11 +142,16 @@ class OpenRouterProvider(Provider):
         # decision, not a per-turn one. Callers needing per-turn variation can
         # construct multiple providers or extend ProviderRequest in a future
         # revision.
+        # The openai SDK validates kwargs against the OpenAI schema and rejects
+        # unknown fields, so OpenRouter passthroughs like ``reasoning`` must go
+        # through ``extra_body`` rather than as a top-level kwarg.
+        extra_body: dict[str, Any] = {}
         if self._reasoning is not None:
-            payload["reasoning"] = self._reasoning
+            extra_body["reasoning"] = self._reasoning
         try:
             chunks = await self._client.chat.completions.create(  # type: ignore[reportUnknownVariableType]
                 extra_headers=self._extra_headers or None,
+                extra_body=extra_body or None,
                 **payload,
             )
             async for ev in parse_openrouter_stream(chunks):  # type: ignore[reportUnknownArgumentType]
