@@ -12,7 +12,7 @@ that's how a SDK TypeError (unknown kwarg) surfaces to a caller.
 
 import pytest
 
-from agentkit.providers.base import ErrorEvent, ProviderRequest
+from agentkit.providers.base import ErrorEvent, ProviderRequest, ToolCallComplete
 from agentkit.providers.openrouter.adapter import OpenRouterProvider
 
 
@@ -45,3 +45,36 @@ async def test_no_reasoning_is_clean(real_openai_client):
     events = [ev async for ev in provider.stream(req)]
     error_events = [ev for ev in events if isinstance(ev, ErrorEvent)]
     assert error_events == [], f"Unexpected error events: {error_events}"
+
+
+@pytest.mark.asyncio
+async def test_malformed_tool_call_args_repaired_via_json_repair(
+    real_openai_client_malformed_tool_call,
+):
+    """Real openai SDK + agentkit's stream parser must recover from malformed
+    tool-call JSON via json_repair, not crash the stream.
+
+    The stub emits a DeepSeek-style malformed arguments string with an unquoted
+    value. The adapter must surface a ToolCallComplete with a recovered dict —
+    not an ErrorEvent (crash) and not an empty dict (silent drop).
+    """
+    provider = OpenRouterProvider(api_key="stub", client=real_openai_client_malformed_tool_call)
+    req = ProviderRequest(model="deepseek/deepseek-v4-flash")
+
+    events = [ev async for ev in provider.stream(req)]
+
+    error_events = [ev for ev in events if isinstance(ev, ErrorEvent)]
+    assert error_events == [], f"Repair path should not surface errors: {error_events}"
+
+    tool_calls = [ev for ev in events if isinstance(ev, ToolCallComplete)]
+    assert len(tool_calls) == 1, f"Expected exactly one ToolCallComplete, got: {tool_calls}"
+    tc = tool_calls[0]
+
+    assert tc.tool_name == "store_fact", f"Expected tool_name='store_fact', got: {tc.tool_name}"
+    assert isinstance(tc.arguments, dict), (
+        f"arguments should be a dict after repair, got {type(tc.arguments)}: {tc.arguments}"
+    )
+    # json_repair should recover the well-formed "category" key at minimum.
+    assert "category" in tc.arguments, (
+        f"Expected 'category' key in repaired arguments, got: {tc.arguments}"
+    )
