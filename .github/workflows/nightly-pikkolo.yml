@@ -101,25 +101,15 @@ jobs:
           uv run ruff check api/ scripts/ || true
           PYTHONPATH=. uv run pytest api/tests/agentkit_wire_contract/ -q
 
-      # TODO: re-enable once Pikkolo eval call sites are migrated to the
-      # session_factory pattern (the v0.112.5 concurrent-flush fix).
-      # Currently fails with:
-      #   TypeError: run_pikkolo_turn_via_agentkit() got an unexpected
-      #   keyword argument 'db'
-      # because test_fabrication_eval.py and _screening_driver.py still pass
-      # db=db (a single AsyncSession), but the function signature now requires
-      # session_factory (a Callable[[], AbstractAsyncContextManager[AsyncSession]]).
-      # Fix needs care around pytest's transactional rollback fixture.
-      # Tracking: https://github.com/morteng/pikkolo-cms-mvp/issues/184
-      # - name: Run majority-of-3 eval (smoke mode)
-      #   env:
-      #     DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/aispot_test
-      #     REDIS_URL: redis://localhost:6379/0
-      #     OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-      #     JWT_SECRET: nightly-eval-stub-not-used-in-production-padding
-      #   run: |
-      #     cd pikkolo
-      #     PYTHONPATH=. uv run pytest api/tests/agents/sdk/eval/ -m agent_eval --eval-mode=smoke -v
+      - name: Run majority-of-3 eval (smoke mode)
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/aispot_test
+          REDIS_URL: redis://localhost:6379/0
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          JWT_SECRET: nightly-eval-stub-not-used-in-production-padding
+        run: |
+          cd pikkolo
+          PYTHONPATH=. uv run pytest api/tests/agents/sdk/eval/ -m agent_eval --eval-mode=smoke -v
 
       - name: Record success state
         if: success()
