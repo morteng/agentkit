@@ -26,7 +26,7 @@ def _empty_chat_completion_response() -> dict[str, Any]:
     }
 
 
-def _stub_chat_handler(request: httpx.Request) -> httpx.Response:
+def _stub_chat_handler(_request: httpx.Request) -> httpx.Response:
     """Return an empty SSE stream so SDK clients exit cleanly."""
     body = f"data: {json.dumps(_empty_chat_completion_response())}\n\ndata: [DONE]\n\n"
     return httpx.Response(
@@ -36,7 +36,7 @@ def _stub_chat_handler(request: httpx.Request) -> httpx.Response:
     )
 
 
-def _stub_anthropic_messages_handler(request: httpx.Request) -> httpx.Response:
+def _stub_anthropic_messages_handler(_request: httpx.Request) -> httpx.Response:
     """Return an empty Anthropic SSE stream so SDK clients exit cleanly."""
     body = (
         "event: message_start\n"
