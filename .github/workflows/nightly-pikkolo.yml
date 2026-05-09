@@ -80,7 +80,7 @@ jobs:
           DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/test
           REDIS_URL: redis://localhost:6379/0
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          JWT_SECRET: nightly-stub
+          JWT_SECRET: nightly-eval-stub-not-used-in-production-padding
         run: |
           cd pikkolo
           uv run ruff check api/ scripts/ || true
@@ -91,7 +91,7 @@ jobs:
           DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/test
           REDIS_URL: redis://localhost:6379/0
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          JWT_SECRET: nightly-stub
+          JWT_SECRET: nightly-eval-stub-not-used-in-production-padding
         run: |
           cd pikkolo
           PYTHONPATH=. uv run pytest api/tests/agents/sdk/eval/ -m agent_eval --eval-mode=smoke -v
