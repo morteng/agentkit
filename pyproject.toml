@@ -10,6 +10,7 @@ readme = "README.md"
 dependencies = [
     "anthropic>=0.40",
     "openai>=1.50",
+    "json_repair>=0.30",
     "mcp>=1.0",
     "pydantic>=2.7",
     "pydantic-settings>=2.4",
