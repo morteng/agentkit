@@ -41,3 +41,23 @@ need to do.
 **Adding a new event class:** Add a fixture entry in
 `tests/wire/test_event_snapshots.py:EVENT_FIXTURES`. The meta-test
 `test_no_event_class_lacks_snapshot` will fail otherwise.
+
+## Nightly cross-repo eval
+
+`.github/workflows/nightly-pikkolo.yml` runs once daily at 03:00 UTC. It
+checks out Pikkolo at `main`, force-installs agentkit at the current `main`
+SHA, and runs Pikkolo's full test suite plus the smoke-mode eval harness
+(5 canonical prompts × 3 replicates ≈ 3 minutes, ~$1 OpenRouter spend).
+
+**On a single failure:** the workflow logs red but does not page. This
+absorbs single-run flakiness in the eval scoring.
+
+**On two consecutive failures:** the workflow opens or comments on a
+GitHub Issue tagged `nightly-regression`, listing both failing run URLs.
+Investigate before the next agentkit tag.
+
+**Required repo secrets:** `PIKKOLO_REPO_TOKEN` (read-only token for
+morteng/pikkolo-cms-mvp), `OPENROUTER_API_KEY` (budget-capped via
+OpenRouter dashboard, ~$1/night).
+
+**Manual trigger:** Actions → nightly-pikkolo → Run workflow.
