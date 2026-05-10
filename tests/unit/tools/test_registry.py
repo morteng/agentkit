@@ -143,3 +143,77 @@ async def test_registry_invoke_passes_progress_callback_to_mcp_client() -> None:
     assert [e.progress for e in progress_events] == [0.0, 1.0]
     assert all(e.total == 2.0 for e in progress_events)
     assert all(e.call_id == "call-42" for e in progress_events)
+
+
+@pytest.mark.asyncio
+async def test_registry_stamps_call_id_on_mcp_result() -> None:
+    """ToolRegistry.invoke must overwrite ``ToolResult.call_id`` with the
+    dispatcher-supplied ``call.id``, regardless of what the MCP client
+    returned.
+
+    The MCP ``call_tool`` signature does not carry the call_id, so handlers
+    cannot fill it in themselves. Without this guarantee the resulting
+    OpenAI-shape request emits ``{"role": "tool", "tool_call_id": ""}``,
+    which Gemini rejects with "Tool message must have either name or
+    tool_call_id" (DeepSeek/Anthropic happen to tolerate the empty string).
+    The contract belongs at the registry boundary so every client benefits.
+    """
+    from datetime import UTC, datetime
+
+    from agentkit.loop.context import FixedClock, TurnContext
+
+    class _NoCallIdClient:
+        name = "srv"
+
+        async def initialize(self) -> None: ...
+        async def list_tools(self) -> list[ToolSpec]:
+            return [_spec("ping")]
+
+        async def call_tool(self, name: str, arguments, *, on_progress=None):
+            return ToolResult(
+                call_id="",
+                status="ok",
+                content=[ContentBlockOut(type="text", text="pong")],
+                error=None,
+                duration_ms=0,
+                cached=False,
+            )
+
+        async def shutdown(self) -> None: ...
+        async def health_check(self) -> bool:
+            return True
+
+    reg = ToolRegistry()
+    reg.register_mcp_server("srv", _NoCallIdClient())  # type: ignore[arg-type]
+    await reg.initialize_mcp_servers()
+
+    ctx = TurnContext.empty(clock=FixedClock(datetime.now(UTC)), call_id="call-99")
+    res = await reg.invoke(
+        ToolCall(id="call-99", name="srv.ping", arguments={}),
+        ctx=ctx,  # type: ignore[arg-type]
+    )
+    assert res.call_id == "call-99"
+
+
+@pytest.mark.asyncio
+async def test_registry_stamps_call_id_on_builtin_result() -> None:
+    """Same guarantee for built-in handlers: the registry returns a result
+    whose call_id matches the dispatched call, even if the handler set a
+    different value. This keeps the contract uniform across MCP and built-in
+    sources so downstream tool-message serialization is always well-formed.
+    """
+    reg = ToolRegistry()
+
+    async def handler(args, ctx):
+        return ToolResult(
+            call_id="wrong-id",
+            status="ok",
+            content=[ContentBlockOut(type="text", text="ok")],
+            error=None,
+            duration_ms=1,
+            cached=False,
+        )
+
+    reg.register_builtin(_spec("kit.test"), handler)
+    res = await reg.invoke(ToolCall(id="c-real", name="kit.test", arguments={}), ctx=_FakeCtx())  # type: ignore[arg-type]
+    assert res.call_id == "c-real"

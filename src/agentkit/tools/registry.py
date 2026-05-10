@@ -108,9 +108,16 @@ class ToolRegistry:
     # ---- Invocation --------------------------------------------------------
 
     async def invoke(self, call: ToolCall, ctx: TurnContext) -> ToolResult:
+        # Built-in and MCP handlers each construct their own ToolResult; the
+        # MCP ``call_tool`` signature does not even carry the call_id. Stamp
+        # ``call.id`` onto the returned result here so downstream serialisation
+        # always emits a well-formed ``tool_call_id`` — Gemini rejects empty
+        # strings outright ("Tool message must have either name or
+        # tool_call_id"); other providers tolerate the gap silently.
         if call.name in self._builtins:
             _spec, handler = self._builtins[call.name]
-            return await handler(call.arguments, ctx)
+            result = await handler(call.arguments, ctx)
+            return result.model_copy(update={"call_id": call.id})
         if call.name in self._mcp_specs:
             server, _, bare = call.name.partition(".")
             client = self._mcp_servers.get(server)
@@ -128,5 +135,6 @@ class ToolRegistry:
                     message, call_id=call.id, progress=progress, total=total
                 )
 
-            return await client.call_tool(bare, call.arguments, on_progress=_on_progress)
+            result = await client.call_tool(bare, call.arguments, on_progress=_on_progress)
+            return result.model_copy(update={"call_id": call.id})
         raise ToolErr(f"unknown tool: {call.name}")
