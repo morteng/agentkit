@@ -53,7 +53,7 @@ class Envelope(BaseModel):
     status: Literal["done", "partial", "blocked"]
     intent_kind: Literal["action", "answer", "clarify"]
     summary: str | None = None
-    actions_performed: list[Action] = Field(default_factory=list)
+    actions_performed: list[Action] = Field(default_factory=list)  # pyright: ignore[reportUnknownVariableType]
     pending_confirmation: PendingConfirmation | None = None
     expected_count: int | None = Field(
         default=None,
@@ -61,7 +61,7 @@ class Envelope(BaseModel):
         description="When the user named a count (e.g. '3 articles'), the model "
         "fills this. 0 is invalid — use null for 'no count implied'.",
     )
-    proposed_autonomous_scope: dict | None = None
+    proposed_autonomous_scope: dict[str, object] | None = None
 
 
 class Violation(BaseModel):
@@ -89,4 +89,4 @@ class ValidationResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     ok: bool
-    violations: list[Violation] = Field(default_factory=list)
+    violations: list[Violation] = Field(default_factory=list)  # pyright: ignore[reportUnknownVariableType]
