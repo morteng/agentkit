@@ -28,7 +28,7 @@ from agentkit.events import (
     TurnMetrics,
 )
 from agentkit.guards.approval import RiskBasedApprovalGate
-from agentkit.guards.finalize import RuleBasedFinalizeValidator
+from agentkit.guards.finalize import StructuralFinalizeValidator
 from agentkit.loop.context import SystemClock, TurnContext, from_checkpoint_payload
 from agentkit.loop.handlers.approval_wait import handle_approval_wait
 from agentkit.loop.handlers.context_build import handle_context_build
@@ -396,7 +396,7 @@ class AgentSession:
                 registry=self.registry,
                 policy=DispatchPolicy(max_parallel=self.config.tool_dispatch.max_parallel),
             ),
-            "finalize_validator": gc.finalize or RuleBasedFinalizeValidator(),
+            "finalize_validator": gc.finalize or StructuralFinalizeValidator(),
             "success_claim": gc.success_claim if gc.success_claim_enabled else None,
             "approval_timeout_seconds": gc.approval_timeout_seconds,
             "max_finalize_retries": self.config.loop.max_finalize_retries,

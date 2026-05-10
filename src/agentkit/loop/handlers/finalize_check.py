@@ -23,7 +23,9 @@ async def handle_finalize_check(ctx: TurnContext, deps: dict[str, Any]) -> Phase
     finalize_call = ToolCall(
         id="finalize",
         name="kit.finalize",
-        arguments={"reason": ctx.finalize_reason or ""},
+        arguments=ctx.finalize_args
+        if ctx.finalize_args is not None
+        else {"reason": ctx.finalize_reason or ""},
     )
     verdict = await validator.validate(finalize_call, ctx)
     if verdict.accept:

@@ -47,6 +47,7 @@ class TurnContext:
     scratchpad: list[str] = field(default_factory=list)  # type: ignore[reportUnknownVariableType]
     finalize_called: bool = False
     finalize_reason: str | None = None
+    finalize_args: dict[str, Any] | None = None  # full tool-call arguments from the finalize call
     metadata: dict[str, Any] = field(default_factory=dict)  # type: ignore[reportUnknownVariableType]
     clock: Clock = field(default_factory=SystemClock)
 
