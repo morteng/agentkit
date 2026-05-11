@@ -4,7 +4,7 @@ import pytest
 
 from agentkit.events import ApprovalNeeded, TurnEnded
 from agentkit.guards.approval import RiskBasedApprovalGate
-from agentkit.guards.finalize import RuleBasedFinalizeValidator
+from agentkit.guards.finalize import StructuralFinalizeValidator
 from agentkit.loop.context import TurnContext
 from agentkit.loop.message_builder import MessageBuilder
 from agentkit.loop.orchestrator import Loop
@@ -69,7 +69,7 @@ async def test_high_write_call_suspends_for_approval():
         "intent_gate": None,
         "approval_gate": RiskBasedApprovalGate(),
         "dispatcher": ToolDispatcher(registry=registry, policy=DispatchPolicy()),
-        "finalize_validator": RuleBasedFinalizeValidator(),
+        "finalize_validator": StructuralFinalizeValidator(),
         "approval_timeout_seconds": 60,
         "max_finalize_retries": 2,
         "max_iterations": 10,

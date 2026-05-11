@@ -3,7 +3,7 @@ import pytest
 from agentkit import AgentConfig, AgentSession
 from agentkit._ids import OwnerId
 from agentkit.guards.approval import RiskBasedApprovalGate
-from agentkit.guards.finalize import RuleBasedFinalizeValidator
+from agentkit.guards.finalize import StructuralFinalizeValidator
 from agentkit.providers.fakes import FakeProvider
 from agentkit.store.fakes import FakeCheckpointStore, FakeMemoryStore, FakeSessionStore
 from agentkit.tools.builtin import DEFAULT_BUILTINS
@@ -14,7 +14,7 @@ from agentkit.tools.registry import ToolRegistry
 async def test_agent_session_runs_text_turn():
     config = AgentConfig()
     config.guards.approval = RiskBasedApprovalGate()
-    config.guards.finalize = RuleBasedFinalizeValidator()
+    config.guards.finalize = StructuralFinalizeValidator()
     config.stores.session = FakeSessionStore()
     config.stores.memory = FakeMemoryStore()
     config.stores.checkpoint = FakeCheckpointStore()

@@ -1,13 +1,27 @@
-"""FinalizeValidator — gate the agent's "I'm done" claim."""
+"""FinalizeValidator — gate the agent's "I'm done" claim via the envelope.
 
-import re
+Structural validator: parses the finalize tool call's input dict into an
+``Envelope``, walks the turn's tool-call history to build the call log,
+runs ``validate_envelope``, and turns the result into a ``FinalizeVerdict``.
+
+No regex. No user-message inspection. The model self-classifies via
+``Envelope.intent_kind``; the validator checks structural consistency.
+"""
+
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from agentkit._content import TextBlock, ToolUseBlock
-from agentkit._messages import Message, MessageRole
-from agentkit.loop.context import TurnContext
-from agentkit.tools.spec import ToolCall
+from pydantic import ValidationError
+
+from agentkit._content import ToolResultBlock, ToolUseBlock
+from agentkit.envelope import Envelope, ToolCallSummary, Violation
+from agentkit.finalize_validator import validate_envelope
+
+if TYPE_CHECKING:
+    from agentkit.loop.context import TurnContext
+    from agentkit.tools.spec import ToolCall
 
 
 @dataclass(frozen=True)
@@ -21,59 +35,82 @@ class FinalizeValidator(Protocol):
     async def validate(self, finalize_call: ToolCall, ctx: TurnContext) -> FinalizeVerdict: ...
 
 
-# Rough action-intent heuristic. Keep simple: imperative-style verbs.
-_ACTION_VERBS = re.compile(
-    r"\b(turn|switch|set|create|delete|remove|cancel|schedule|enable|disable|"
-    r"send|update|change|start|stop|run|restart|configure|add|"
-    r"slå|skru|sett|opprett|slett|fjern|kanseller|aktiver|deaktiver|send|"
-    r"oppdater|endre|start|stopp|kjør|konfigurer|legg)\b",
-    flags=re.IGNORECASE,
+# Tool names recognised as "writes" for envelope rule 1. By default,
+# everything that isn't on this conservative read-only list is treated as
+# a write — consumers tag their own tools via their adapter and pass a
+# pre-classified ``ToolCallSummary`` list when they need fine-grained
+# control. The default heuristic is good enough for the canonical
+# fabricated-tool check.
+_DEFAULT_READ_PREFIXES: frozenset[str] = frozenset(
+    {"search", "get_", "list_", "validate_", "evaluate_", "smart_search"}
 )
 
 
-class RuleBasedFinalizeValidator(FinalizeValidator):
-    """Rules:
-    - If the latest user message was action-oriented AND no tool call (other
-      than ``kit.*``) appears in the assistant's turn-history, reject.
-    - Otherwise accept.
+def _is_default_write(name: str) -> bool:
+    bare = name.split(".", 1)[-1]  # strip "kit.foo" / "pikkolo.foo" prefixes
+    return not any(bare.startswith(p) for p in _DEFAULT_READ_PREFIXES)
+
+
+def _ctx_to_summaries(ctx: TurnContext) -> list[ToolCallSummary]:
+    """Walk ctx.history to build a ToolCallSummary list for the validator."""
+    use_names: dict[str, str] = {}
+    result_errors: dict[str, bool] = {}
+    for msg in ctx.history:
+        for block in msg.content:
+            if isinstance(block, ToolUseBlock):
+                use_names[block.id] = block.name
+            elif isinstance(block, ToolResultBlock):
+                result_errors[block.tool_use_id] = block.is_error
+
+    summaries: list[ToolCallSummary] = []
+    for use_id, name in use_names.items():
+        # Skip the finalize_response call itself — it's not "work".
+        bare = name.split(".", 1)[-1]
+        if bare in ("finalize_response", "finalize"):
+            continue
+        summaries.append(
+            ToolCallSummary(
+                name=bare,
+                is_error=result_errors.get(use_id, False),
+                is_write=_is_default_write(name),
+            )
+        )
+    return summaries
+
+
+def _format_violations(violations: list[Violation]) -> str:
+    if not violations:
+        return ""
+    lines = [f"- {v.rule}: {v.detail}" for v in violations]
+    return "Envelope failed structural validation:\n" + "\n".join(lines)
+
+
+class StructuralFinalizeValidator:
+    """Default structural validator. Parses the envelope, runs validate_envelope.
+
+    Rejects when the envelope fails Pydantic parsing OR when the validator
+    returns any blocking violation. The feedback string lists the rule
+    names so the agent can self-correct on retry.
     """
 
-    def __init__(self, *, kit_namespace: str = "kit.") -> None:
-        self._kit = kit_namespace
-
     async def validate(self, finalize_call: ToolCall, ctx: TurnContext) -> FinalizeVerdict:
-        latest_user = self._latest_user_message(ctx)
-        if latest_user is None:
-            return FinalizeVerdict(accept=True)
-        is_action = self._is_action_request(latest_user)
-        if not is_action:
-            return FinalizeVerdict(accept=True)
-        if self._has_non_kit_tool_call(ctx):
-            return FinalizeVerdict(accept=True)
-        return FinalizeVerdict(
-            accept=False,
-            feedback=(
-                "You called kit.finalize but the user asked for an action and you "
-                "did not invoke any non-kit tool. Call the appropriate tool to "
-                "actually carry out the request, then finalize."
-            ),
-        )
+        try:
+            envelope = Envelope.model_validate(finalize_call.arguments)
+        except ValidationError as e:
+            missing = [  # pyright: ignore[reportUnknownMemberType]
+                str(err.get("loc", ["?"])[0]) for err in e.errors()
+            ]
+            return FinalizeVerdict(
+                accept=False,
+                feedback=(
+                    "Envelope failed schema validation. "
+                    f"Required field issues: {', '.join(missing) or 'unknown'}. "
+                    "intent_kind must be one of: action, answer, clarify."
+                ),
+            )
 
-    def _latest_user_message(self, ctx: TurnContext) -> Message | None:
-        for msg in reversed(ctx.history):
-            if msg.role is MessageRole.USER:
-                return msg
-        return None
-
-    def _is_action_request(self, msg: Message) -> bool:
-        text = "\n".join(b.text for b in msg.content if isinstance(b, TextBlock))
-        return bool(_ACTION_VERBS.search(text))
-
-    def _has_non_kit_tool_call(self, ctx: TurnContext) -> bool:
-        for msg in ctx.history:
-            if msg.role is not MessageRole.ASSISTANT:
-                continue
-            for block in msg.content:
-                if isinstance(block, ToolUseBlock) and not block.name.startswith(self._kit):
-                    return True
-        return False
+        summaries = _ctx_to_summaries(ctx)
+        result = validate_envelope(envelope, summaries)
+        if result.ok:
+            return FinalizeVerdict(accept=True)
+        return FinalizeVerdict(accept=False, feedback=_format_violations(result.violations))

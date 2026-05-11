@@ -5,7 +5,7 @@ import pytest
 from agentkit.events import ToolCallResult as PubToolCallResult
 from agentkit.events import TurnEnded, TurnEndReason
 from agentkit.guards.approval import RiskBasedApprovalGate
-from agentkit.guards.finalize import RuleBasedFinalizeValidator
+from agentkit.guards.finalize import StructuralFinalizeValidator
 from agentkit.loop.context import TurnContext
 from agentkit.loop.message_builder import MessageBuilder
 from agentkit.loop.orchestrator import Loop
@@ -44,7 +44,7 @@ async def test_finalize_tool_completes_turn():
         "intent_gate": None,
         "approval_gate": RiskBasedApprovalGate(),
         "dispatcher": ToolDispatcher(registry=registry, policy=DispatchPolicy()),
-        "finalize_validator": RuleBasedFinalizeValidator(),
+        "finalize_validator": StructuralFinalizeValidator(),
         "max_finalize_retries": 2,
         "max_iterations": 10,
     }

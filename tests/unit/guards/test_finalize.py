@@ -1,64 +1,126 @@
+"""Tests for StructuralFinalizeValidator (replaces RuleBasedFinalizeValidator)."""
+
+from datetime import UTC, datetime
+
 import pytest
 
 from agentkit._content import TextBlock, ToolUseBlock
 from agentkit._ids import MessageId, SessionId, new_id
 from agentkit._messages import Message, MessageRole
-from agentkit.guards.finalize import RuleBasedFinalizeValidator
+from agentkit.guards.finalize import (
+    StructuralFinalizeValidator,
+)
 from agentkit.loop.context import TurnContext
 from agentkit.tools.spec import ToolCall
 
 
-def _user(text: str) -> Message:
-    from datetime import UTC, datetime
+def _make_finalize_call(args: dict) -> ToolCall:
+    return ToolCall(id="test-call-1", name="finalize_response", arguments=args)
 
+
+def _msg(role: MessageRole, content: list) -> Message:
     return Message(
         id=new_id(MessageId),
         session_id=new_id(SessionId),
-        role=MessageRole.USER,
-        content=[TextBlock(text=text)],
+        role=role,
+        content=content,
         created_at=datetime.now(UTC),
     )
 
 
-def _assistant_with_tool(name: str) -> Message:
-    from datetime import UTC, datetime
-
-    return Message(
-        id=new_id(MessageId),
-        session_id=new_id(SessionId),
-        role=MessageRole.ASSISTANT,
-        content=[ToolUseBlock(id="c1", name=name, arguments={})],
-        created_at=datetime.now(UTC),
-    )
+def _make_ctx(
+    history: list[Message] | None = None,
+    *,
+    tool_use_blocks: list[ToolUseBlock] | None = None,
+) -> TurnContext:
+    """Build a minimal TurnContext. The validator only reads ctx.history."""
+    ctx = TurnContext.empty()
+    for msg in history or []:
+        ctx.add_message(msg)
+    if tool_use_blocks:
+        ctx.add_message(_msg(MessageRole.ASSISTANT, list(tool_use_blocks)))
+    return ctx
 
 
 @pytest.mark.asyncio
-async def test_accept_when_action_request_with_matching_tool():
-    v = RuleBasedFinalizeValidator()
-    ctx = TurnContext.empty()
-    ctx.add_message(_user("turn off the heat pump"))
-    ctx.add_message(_assistant_with_tool("ampaera.devices.control"))
-    finalize = ToolCall(id="c1", name="kit.finalize", arguments={"reason": "device off"})
-    verdict = await v.validate(finalize, ctx)
+async def test_validator_accepts_valid_action_envelope():
+    validator = StructuralFinalizeValidator()
+    args = {
+        "status": "done",
+        "intent_kind": "action",
+        "actions_performed": [
+            {"tool": "patch_content", "target": "X", "description": "ok"},
+        ],
+    }
+    ctx = _make_ctx(
+        tool_use_blocks=[
+            ToolUseBlock(id="u1", name="patch_content", arguments={}),
+        ],
+    )
+    verdict = await validator.validate(_make_finalize_call(args), ctx)
     assert verdict.accept is True
 
 
 @pytest.mark.asyncio
-async def test_reject_action_request_without_any_tool_call():
-    v = RuleBasedFinalizeValidator()
-    ctx = TurnContext.empty()
-    ctx.add_message(_user("turn off the heat pump"))
-    finalize = ToolCall(id="c1", name="kit.finalize", arguments={"reason": "done"})
-    verdict = await v.validate(finalize, ctx)
+async def test_validator_rejects_empty_on_done_action():
+    validator = StructuralFinalizeValidator()
+    args = {
+        "status": "done",
+        "intent_kind": "action",
+        "actions_performed": [],
+    }
+    ctx = _make_ctx()
+    verdict = await validator.validate(_make_finalize_call(args), ctx)
     assert verdict.accept is False
-    assert verdict.feedback
+    assert verdict.feedback is not None
+    assert "empty_on_done" in verdict.feedback or "actions_performed" in verdict.feedback
 
 
 @pytest.mark.asyncio
-async def test_accept_for_pure_question():
-    v = RuleBasedFinalizeValidator()
-    ctx = TurnContext.empty()
-    ctx.add_message(_user("what was last week's average price?"))
-    finalize = ToolCall(id="c1", name="kit.finalize", arguments={"reason": "answered"})
-    verdict = await v.validate(finalize, ctx)
+async def test_validator_accepts_empty_on_done_answer():
+    validator = StructuralFinalizeValidator()
+    args = {
+        "status": "done",
+        "intent_kind": "answer",
+        "actions_performed": [],
+    }
+    verdict = await validator.validate(_make_finalize_call(args), _make_ctx())
     assert verdict.accept is True
+
+
+@pytest.mark.asyncio
+async def test_validator_rejects_unparseable_envelope():
+    validator = StructuralFinalizeValidator()
+    args = {"status": "done"}  # missing intent_kind
+    verdict = await validator.validate(_make_finalize_call(args), _make_ctx())
+    assert verdict.accept is False
+    assert verdict.feedback is not None
+    assert "intent_kind" in verdict.feedback
+
+
+@pytest.mark.asyncio
+async def test_validator_does_not_inspect_user_messages():
+    """Regression: the validator MUST NOT use user message text for any decision."""
+    validator = StructuralFinalizeValidator()
+    args = {"status": "done", "intent_kind": "answer", "actions_performed": []}
+    user_msg = _msg(
+        MessageRole.USER,
+        [TextBlock(text="please publish all the articles right now")],
+    )
+    ctx = _make_ctx([user_msg])
+    verdict = await validator.validate(_make_finalize_call(args), ctx)
+    # intent_kind=answer + done + no writes is structurally fine; the
+    # legacy regex would have rejected this because "publish all" looks
+    # like an action request. Structural validator must accept.
+    assert verdict.accept is True
+
+
+def test_no_action_verbs_regex_remains():
+    """Regression: the _ACTION_VERBS regex must be deleted."""
+    import agentkit.guards.finalize as mod
+
+    assert not hasattr(mod, "_ACTION_VERBS")
+    assert not hasattr(mod, "_is_action_request")
+    assert not hasattr(mod, "_latest_user_message")
+    assert not hasattr(mod, "_has_non_kit_tool_call")
+    assert not hasattr(mod, "RuleBasedFinalizeValidator")
