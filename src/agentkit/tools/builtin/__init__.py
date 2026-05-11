@@ -6,6 +6,10 @@ from agentkit.tools.builtin.approval import (
     request_approval_handler,
 )
 from agentkit.tools.builtin.finalize import FINALIZE_SPEC, finalize_handler
+from agentkit.tools.builtin.finalize_response import (
+    FINALIZE_RESPONSE_DESCRIPTION,
+    FINALIZE_RESPONSE_SCHEMA,
+)
 from agentkit.tools.builtin.memory import (
     MEMORY_RECALL_SPEC,
     MEMORY_SAVE_SPEC,
@@ -34,6 +38,8 @@ DEFAULT_BUILTINS = [
 __all__ = [
     "CURRENT_TIME_SPEC",
     "DEFAULT_BUILTINS",
+    "FINALIZE_RESPONSE_DESCRIPTION",
+    "FINALIZE_RESPONSE_SCHEMA",
     "FINALIZE_SPEC",
     "MEMORY_RECALL_SPEC",
     "MEMORY_SAVE_SPEC",

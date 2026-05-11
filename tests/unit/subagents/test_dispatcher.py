@@ -1,7 +1,7 @@
 import pytest
 
 from agentkit.guards.approval import RiskBasedApprovalGate
-from agentkit.guards.finalize import RuleBasedFinalizeValidator
+from agentkit.guards.finalize import StructuralFinalizeValidator
 from agentkit.loop.context import TurnContext
 from agentkit.loop.message_builder import MessageBuilder
 from agentkit.loop.tool_dispatcher import DispatchPolicy, ToolDispatcher
@@ -28,7 +28,7 @@ async def test_subagent_dispatcher_returns_summary():
         "intent_gate": None,
         "approval_gate": RiskBasedApprovalGate(),
         "dispatcher": ToolDispatcher(registry=registry, policy=DispatchPolicy()),
-        "finalize_validator": RuleBasedFinalizeValidator(),
+        "finalize_validator": StructuralFinalizeValidator(),
         "max_finalize_retries": 2,
         "max_iterations": 5,
     }

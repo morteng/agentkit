@@ -52,6 +52,7 @@ FINALIZE_SPEC = ToolSpec(
 async def finalize_handler(args: dict[str, Any], ctx: TurnContext) -> ToolResult:
     ctx.finalize_called = True
     ctx.finalize_reason = str(args.get("reason", "")).strip() or None
+    ctx.finalize_args = dict(args)  # store full args for StructuralFinalizeValidator
     return ToolResult(
         call_id=ctx.call_id,
         status="ok",

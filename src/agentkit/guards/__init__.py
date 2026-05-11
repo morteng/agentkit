@@ -9,7 +9,7 @@ from agentkit.guards.approval import (
 from agentkit.guards.finalize import (
     FinalizeValidator,
     FinalizeVerdict,
-    RuleBasedFinalizeValidator,
+    StructuralFinalizeValidator,
 )
 from agentkit.guards.intent import (
     ContentBlocklistCheck,
@@ -42,6 +42,6 @@ __all__ = [
     "MaxMessageLengthCheck",
     "RegexSuccessClaimGuard",
     "RiskBasedApprovalGate",
-    "RuleBasedFinalizeValidator",
+    "StructuralFinalizeValidator",
     "SuccessClaimGuard",
 ]

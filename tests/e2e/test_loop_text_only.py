@@ -13,7 +13,7 @@ from agentkit.events import (
     TurnEndReason,
 )
 from agentkit.guards.approval import RiskBasedApprovalGate
-from agentkit.guards.finalize import RuleBasedFinalizeValidator
+from agentkit.guards.finalize import StructuralFinalizeValidator
 from agentkit.loop.context import TurnContext
 from agentkit.loop.handlers.approval_wait import handle_approval_wait
 from agentkit.loop.handlers.context_build import handle_context_build
@@ -77,7 +77,7 @@ async def test_text_only_turn_completes():
         "intent_gate": None,
         "approval_gate": RiskBasedApprovalGate(),
         "dispatcher": ToolDispatcher(registry=registry, policy=DispatchPolicy()),
-        "finalize_validator": RuleBasedFinalizeValidator(),
+        "finalize_validator": StructuralFinalizeValidator(),
         "max_finalize_retries": 2,
         "max_iterations": 10,
     }

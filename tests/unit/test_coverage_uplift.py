@@ -21,7 +21,7 @@ from agentkit._messages import Message, MessageRole, Usage
 from agentkit.errors import ToolError as ToolErr
 from agentkit.events import PhaseChanged, ToolCallResult, TurnEnded, TurnEndReason
 from agentkit.guards.approval import RiskBasedApprovalGate
-from agentkit.guards.finalize import RuleBasedFinalizeValidator
+from agentkit.guards.finalize import StructuralFinalizeValidator
 from agentkit.guards.success_claim import RegexSuccessClaimGuard
 from agentkit.loop.context import FixedClock, TurnContext
 from agentkit.loop.handlers.errored import handle_errored
@@ -344,7 +344,7 @@ async def test_finalize_check_routes_to_memory_when_retries_exhausted() -> None:
     ctx.add_message(_user("turn off the heat pump"))
     ctx.finalize_called = True
     ctx.metadata["finalize_retries"] = 2
-    deps = {"finalize_validator": RuleBasedFinalizeValidator(), "max_finalize_retries": 2}
+    deps = {"finalize_validator": StructuralFinalizeValidator(), "max_finalize_retries": 2}
     next_ = await handle_finalize_check(ctx, deps)
     assert next_ is Phase.MEMORY_EXTRACT
     assert ctx.metadata["finalize_exhausted"] is True
@@ -354,10 +354,14 @@ async def test_finalize_check_routes_to_memory_when_retries_exhausted() -> None:
 
 
 @pytest.mark.asyncio
-async def test_finalize_validator_accepts_when_no_user_message() -> None:
-    v = RuleBasedFinalizeValidator()
+async def test_finalize_validator_accepts_valid_answer_envelope() -> None:
+    """Structural validator accepts a well-formed answer envelope with no writes."""
+    v = StructuralFinalizeValidator()
     ctx = TurnContext.empty()  # no history
-    verdict = await v.validate(ToolCall(id="finalize", name="kit.finalize", arguments={}), ctx)
+    valid_args = {"status": "done", "intent_kind": "answer", "actions_performed": []}
+    verdict = await v.validate(
+        ToolCall(id="finalize", name="kit.finalize", arguments=valid_args), ctx
+    )
     assert verdict.accept is True
 
 
