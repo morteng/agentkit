@@ -5,6 +5,8 @@ these tests pass a user_message — by design, the validator is purely
 structural.
 """
 
+from typing import TYPE_CHECKING
+
 from agentkit.envelope import (
     Action,
     Envelope,
@@ -12,6 +14,9 @@ from agentkit.envelope import (
     ToolCallSummary,
 )
 from agentkit.finalize_validator import validate_envelope
+
+if TYPE_CHECKING:
+    from agentkit._messages import Message
 
 
 def _summary(name: str, *, is_error: bool = False, is_write: bool = True) -> ToolCallSummary:
@@ -223,4 +228,201 @@ def test_validate_envelope_signature_only_takes_envelope_and_log():
     import inspect
 
     sig = inspect.signature(validate_envelope)
-    assert list(sig.parameters.keys()) == ["envelope", "tool_calls"]
+    assert list(sig.parameters.keys()) == ["envelope", "tool_calls", "turn_summaries"]
+
+
+# ---------------------------------------------------------------------------
+# _summaries_since_last_user_turn helper (used by Rule 9)
+# ---------------------------------------------------------------------------
+
+
+def _make_msg(role, content):
+    """Build a fully-valid Message for tests (id/session_id/created_at required)."""
+    from datetime import UTC, datetime
+
+    from agentkit._ids import MessageId, SessionId, new_id
+    from agentkit._messages import Message
+
+    return Message(
+        id=new_id(MessageId),
+        session_id=new_id(SessionId),
+        role=role,
+        content=content,
+        created_at=datetime.now(UTC),
+    )
+
+
+def test_helper_returns_empty_when_no_history():
+    from agentkit.finalize_validator import _summaries_since_last_user_turn
+
+    history: list[Message] = []
+    result = _summaries_since_last_user_turn(history)
+    assert result == []
+
+
+def test_helper_returns_only_tools_after_last_user_message():
+    from agentkit._content import TextBlock, ToolResultBlock, ToolUseBlock
+    from agentkit._messages import MessageRole
+    from agentkit.finalize_validator import _summaries_since_last_user_turn
+
+    history = [
+        _make_msg(MessageRole.USER, [TextBlock(text="first question")]),
+        _make_msg(
+            MessageRole.ASSISTANT,
+            [ToolUseBlock(id="t1", name="search", arguments={})],
+        ),
+        _make_msg(
+            MessageRole.USER,
+            [ToolResultBlock(tool_use_id="t1", content=[TextBlock(text="ok")], is_error=False)],
+        ),
+        # ===== second user turn starts here =====
+        _make_msg(MessageRole.USER, [TextBlock(text="second question")]),
+        _make_msg(
+            MessageRole.ASSISTANT,
+            [ToolUseBlock(id="t2", name="recall_memories", arguments={})],
+        ),
+        _make_msg(
+            MessageRole.USER,
+            [ToolResultBlock(tool_use_id="t2", content=[TextBlock(text="ok")], is_error=False)],
+        ),
+    ]
+    result = _summaries_since_last_user_turn(history)
+    assert [s.name for s in result] == ["recall_memories"]
+    assert result[0].is_error is False
+
+
+def test_helper_skips_finalize_response_tool():
+    from agentkit._content import TextBlock, ToolUseBlock
+    from agentkit._messages import MessageRole
+    from agentkit.finalize_validator import _summaries_since_last_user_turn
+
+    history = [
+        _make_msg(MessageRole.USER, [TextBlock(text="hi")]),
+        _make_msg(
+            MessageRole.ASSISTANT,
+            [
+                ToolUseBlock(id="t1", name="search", arguments={}),
+                ToolUseBlock(id="t2", name="finalize_response", arguments={}),
+            ],
+        ),
+    ]
+    result = _summaries_since_last_user_turn(history)
+    assert [s.name for s in result] == ["search"]
+
+
+# ---------------------------------------------------------------------------
+# Rule 8 — answer_evidence_required
+# ---------------------------------------------------------------------------
+
+
+def test_rule8_answer_without_evidence_fires():
+    env = Envelope(status="done", intent_kind="answer", answer_evidence=None)
+    result = validate_envelope(env, [])
+    assert {"answer_evidence_required"} <= {v.rule for v in result.violations}
+
+
+def test_rule8_action_without_evidence_passes():
+    """answer_evidence is ignored for non-answer intent kinds."""
+    env = Envelope(
+        status="done",
+        intent_kind="action",
+        actions_performed=[Action(tool="patch_content", target=None, description="ok")],
+    )
+    result = validate_envelope(env, [_summary("patch_content")])
+    assert result.ok
+
+
+def test_rule8_clarify_without_evidence_passes():
+    env = Envelope(
+        status="blocked",
+        intent_kind="clarify",
+        pending_confirmation=PendingConfirmation(question="?"),
+    )
+    result = validate_envelope(env, [])
+    assert "answer_evidence_required" not in {v.rule for v in result.violations}
+
+
+def test_rule8_answer_with_evidence_passes():
+    env = Envelope(
+        status="done",
+        intent_kind="answer",
+        answer_evidence="general_knowledge",
+    )
+    result = validate_envelope(env, [])
+    assert result.ok
+
+
+# ---------------------------------------------------------------------------
+# Rule 9 — answer_evidence_consistent
+# ---------------------------------------------------------------------------
+
+
+def test_rule9_tool_results_with_no_reads_fires():
+    env = Envelope(
+        status="done",
+        intent_kind="answer",
+        answer_evidence="tool_results",
+    )
+    # No reads in the turn — only a (successful) write call.
+    result = validate_envelope(
+        env,
+        [_summary("patch_content")],
+        turn_summaries=[_summary("patch_content")],
+    )
+    assert "answer_evidence_consistent" in {v.rule for v in result.violations}
+
+
+def test_rule9_tool_results_with_errored_read_fires():
+    env = Envelope(
+        status="done",
+        intent_kind="answer",
+        answer_evidence="tool_results",
+    )
+    failed_read = _summary("search", is_error=True, is_write=False)
+    result = validate_envelope(env, [failed_read], turn_summaries=[failed_read])
+    assert "answer_evidence_consistent" in {v.rule for v in result.violations}
+
+
+def test_rule9_tool_results_with_successful_read_passes():
+    env = Envelope(
+        status="done",
+        intent_kind="answer",
+        answer_evidence="tool_results",
+    )
+    ok_read = _summary("recall_memories", is_error=False, is_write=False)
+    result = validate_envelope(env, [ok_read], turn_summaries=[ok_read])
+    assert result.ok
+
+
+def test_rule9_context_with_no_reads_passes():
+    env = Envelope(
+        status="done",
+        intent_kind="answer",
+        answer_evidence="context",
+    )
+    result = validate_envelope(env, [], turn_summaries=[])
+    assert result.ok
+
+
+def test_rule9_general_knowledge_with_no_reads_passes():
+    env = Envelope(
+        status="done",
+        intent_kind="answer",
+        answer_evidence="general_knowledge",
+    )
+    result = validate_envelope(env, [], turn_summaries=[])
+    assert result.ok
+
+
+def test_rule9_default_turn_summaries_falls_back_to_tool_calls():
+    """Callers that don't pass turn_summaries get the existing behavior:
+    Rule 9 checks the full tool_calls log. Preserves backwards-compat for
+    any agentkit consumer that hasn't migrated to per-turn scoping yet."""
+    env = Envelope(
+        status="done",
+        intent_kind="answer",
+        answer_evidence="tool_results",
+    )
+    ok_read = _summary("search", is_error=False, is_write=False)
+    result = validate_envelope(env, [ok_read])  # turn_summaries omitted
+    assert result.ok

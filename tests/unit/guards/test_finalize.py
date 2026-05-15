@@ -83,6 +83,7 @@ async def test_validator_accepts_empty_on_done_answer():
         "status": "done",
         "intent_kind": "answer",
         "actions_performed": [],
+        "answer_evidence": "general_knowledge",
     }
     verdict = await validator.validate(_make_finalize_call(args), _make_ctx())
     assert verdict.accept is True
@@ -102,7 +103,12 @@ async def test_validator_rejects_unparseable_envelope():
 async def test_validator_does_not_inspect_user_messages():
     """Regression: the validator MUST NOT use user message text for any decision."""
     validator = StructuralFinalizeValidator()
-    args = {"status": "done", "intent_kind": "answer", "actions_performed": []}
+    args = {
+        "status": "done",
+        "intent_kind": "answer",
+        "actions_performed": [],
+        "answer_evidence": "general_knowledge",
+    }
     user_msg = _msg(
         MessageRole.USER,
         [TextBlock(text="please publish all the articles right now")],
@@ -124,3 +130,91 @@ def test_no_action_verbs_regex_remains():
     assert not hasattr(mod, "_latest_user_message")
     assert not hasattr(mod, "_has_non_kit_tool_call")
     assert not hasattr(mod, "RuleBasedFinalizeValidator")
+
+
+def test_recall_memories_classifies_as_read():
+    """recall_memories is a read tool, not a write. See Task A2 in plan
+    2026-05-15-answer-evidence-envelope.md — this was a latent
+    misclassification fixed alongside the answer_evidence work."""
+    from agentkit.guards.finalize import _is_default_write
+
+    assert _is_default_write("recall_memories") is False
+    assert _is_default_write("pikkolo.recall_memories") is False
+    # Sanity: actual writes still classify as writes.
+    assert _is_default_write("patch_content") is True
+    assert _is_default_write("create_content") is True
+
+
+@pytest.mark.asyncio
+async def test_structural_validator_rejects_tool_results_with_no_turn_reads():
+    """End-to-end: model declares answer_evidence='tool_results' but the
+    current turn has no successful read tool call. The validator pulls
+    turn-scoped summaries from ctx.history and rejects."""
+    from agentkit._content import TextBlock, ToolResultBlock, ToolUseBlock
+    from agentkit._messages import MessageRole
+    from agentkit.guards.finalize import StructuralFinalizeValidator
+    from agentkit.loop.context import TurnContext
+    from agentkit.tools.spec import ToolCall
+
+    history = [
+        # Prior turn read (should NOT count for Rule 9)
+        _msg(MessageRole.USER, [TextBlock(text="prior question")]),
+        _msg(
+            MessageRole.ASSISTANT,
+            [ToolUseBlock(id="old1", name="search", arguments={})],
+        ),
+        _msg(
+            MessageRole.USER,
+            [
+                ToolResultBlock(
+                    tool_use_id="old1",
+                    content=[TextBlock(text="ok")],
+                    is_error=False,
+                )
+            ],
+        ),
+        # Current turn: no read tools.
+        _msg(MessageRole.USER, [TextBlock(text="what do you know about me?")]),
+    ]
+    ctx = TurnContext.empty()
+    for msg in history:
+        ctx.add_message(msg)
+    call = ToolCall(
+        id="f1",
+        name="finalize_response",
+        arguments={
+            "status": "done",
+            "intent_kind": "answer",
+            "answer_evidence": "tool_results",
+        },
+    )
+    verdict = await StructuralFinalizeValidator().validate(call, ctx)
+    assert verdict.accept is False
+    assert "answer_evidence_consistent" in (verdict.feedback or "")
+
+
+@pytest.mark.asyncio
+async def test_structural_validator_accepts_general_knowledge_with_no_reads():
+    from agentkit._content import TextBlock
+    from agentkit._messages import MessageRole
+    from agentkit.guards.finalize import StructuralFinalizeValidator
+    from agentkit.loop.context import TurnContext
+    from agentkit.tools.spec import ToolCall
+
+    history = [
+        _msg(MessageRole.USER, [TextBlock(text="hi")]),
+    ]
+    ctx = TurnContext.empty()
+    for msg in history:
+        ctx.add_message(msg)
+    call = ToolCall(
+        id="f1",
+        name="finalize_response",
+        arguments={
+            "status": "done",
+            "intent_kind": "answer",
+            "answer_evidence": "general_knowledge",
+        },
+    )
+    verdict = await StructuralFinalizeValidator().validate(call, ctx)
+    assert verdict.accept is True

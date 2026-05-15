@@ -61,6 +61,18 @@ class Envelope(BaseModel):
         description="When the user named a count (e.g. '3 articles'), the model "
         "fills this. 0 is invalid — use null for 'no count implied'.",
     )
+    answer_evidence: Literal["tool_results", "context", "general_knowledge"] | None = Field(
+        default=None,
+        description=(
+            "When intent_kind='answer', the model self-declares what kind of "
+            "evidence the answer rests on. 'tool_results' = grounded in a read "
+            "tool called this turn; 'context' = answer is in the system prompt "
+            "(page state, brand voice, prior turn) — NOT the memory index summary; "
+            "'general_knowledge' = training data (math, language, world facts). "
+            "Required for intent_kind='answer' (enforced by validate_envelope), "
+            "ignored otherwise."
+        ),
+    )
     proposed_autonomous_scope: dict[str, object] | None = None
 
 

@@ -17,7 +17,11 @@ from pydantic import ValidationError
 
 from agentkit._content import ToolResultBlock, ToolUseBlock
 from agentkit.envelope import Envelope, ToolCallSummary, Violation
-from agentkit.finalize_validator import validate_envelope
+from agentkit.finalize_validator import (
+    _is_default_write,  # pyright: ignore[reportPrivateUsage]
+    _summaries_since_last_user_turn,  # pyright: ignore[reportPrivateUsage]
+    validate_envelope,
+)
 
 if TYPE_CHECKING:
     from agentkit.loop.context import TurnContext
@@ -33,22 +37,6 @@ class FinalizeVerdict:
 @runtime_checkable
 class FinalizeValidator(Protocol):
     async def validate(self, finalize_call: ToolCall, ctx: TurnContext) -> FinalizeVerdict: ...
-
-
-# Tool names recognised as "writes" for envelope rule 1. By default,
-# everything that isn't on this conservative read-only list is treated as
-# a write — consumers tag their own tools via their adapter and pass a
-# pre-classified ``ToolCallSummary`` list when they need fine-grained
-# control. The default heuristic is good enough for the canonical
-# fabricated-tool check.
-_DEFAULT_READ_PREFIXES: frozenset[str] = frozenset(
-    {"search", "get_", "list_", "validate_", "evaluate_", "smart_search"}
-)
-
-
-def _is_default_write(name: str) -> bool:
-    bare = name.split(".", 1)[-1]  # strip "kit.foo" / "pikkolo.foo" prefixes
-    return not any(bare.startswith(p) for p in _DEFAULT_READ_PREFIXES)
 
 
 def _ctx_to_summaries(ctx: TurnContext) -> list[ToolCallSummary]:
@@ -110,7 +98,8 @@ class StructuralFinalizeValidator:
             )
 
         summaries = _ctx_to_summaries(ctx)
-        result = validate_envelope(envelope, summaries)
+        turn_summaries = _summaries_since_last_user_turn(ctx.history)
+        result = validate_envelope(envelope, summaries, turn_summaries=turn_summaries)
         if result.ok:
             return FinalizeVerdict(accept=True)
         return FinalizeVerdict(accept=False, feedback=_format_violations(result.violations))

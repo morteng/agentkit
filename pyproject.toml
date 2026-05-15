@@ -1,6 +1,6 @@
 [project]
 name = "agentkit"
-version = "0.6.0"
+version = "0.7.0"
 description = "Domain-blind agent runtime with provider abstraction, MCP tool boundary, and pluggable guards."
 requires-python = ">=3.12"
 license = { text = "Proprietary - All Rights Reserved" }
