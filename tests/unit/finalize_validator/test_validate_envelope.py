@@ -308,3 +308,45 @@ def test_helper_skips_finalize_response_tool():
     ]
     result = _summaries_since_last_user_turn(history)
     assert [s.name for s in result] == ["search"]
+
+
+# ---------------------------------------------------------------------------
+# Rule 8 — answer_evidence_required
+# ---------------------------------------------------------------------------
+
+
+def test_rule8_answer_without_evidence_fires():
+    env = Envelope(status="done", intent_kind="answer", answer_evidence=None)
+    result = validate_envelope(env, [])
+    assert {"answer_evidence_required"} <= {v.rule for v in result.violations}
+
+
+def test_rule8_action_without_evidence_passes():
+    """answer_evidence is ignored for non-answer intent kinds."""
+    env = Envelope(
+        status="done",
+        intent_kind="action",
+        actions_performed=[Action(tool="patch_content", target=None, description="ok")],
+    )
+    result = validate_envelope(env, [_summary("patch_content")])
+    assert result.ok
+
+
+def test_rule8_clarify_without_evidence_passes():
+    env = Envelope(
+        status="blocked",
+        intent_kind="clarify",
+        pending_confirmation=PendingConfirmation(question="?"),
+    )
+    result = validate_envelope(env, [])
+    assert "answer_evidence_required" not in {v.rule for v in result.violations}
+
+
+def test_rule8_answer_with_evidence_passes():
+    env = Envelope(
+        status="done",
+        intent_kind="answer",
+        answer_evidence="general_knowledge",
+    )
+    result = validate_envelope(env, [])
+    assert result.ok

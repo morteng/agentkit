@@ -82,6 +82,9 @@ def validate_envelope(  # noqa: PLR0912
 ) -> ValidationResult:
     """Validate an envelope against the turn's tool-call log.
 
+    ``turn_summaries`` (optional) scopes Rule 9 to this turn's reads only.
+    When omitted, falls back to ``tool_calls`` for backwards compatibility.
+
     Rules (see spec section "Validator rules"):
 
     1. fabricated_tool: every actions_performed[].tool must be a successful
@@ -96,6 +99,10 @@ def validate_envelope(  # noqa: PLR0912
     6. clarify_needs_blocked: intent_kind='clarify' requires status='blocked'
        AND pending_confirmation.
     7. answer_with_writes: intent_kind='answer' AND actions_performed != [].
+    8. answer_evidence_required: intent_kind='answer' requires answer_evidence
+       to be set.
+    9. answer_evidence_consistent: answer_evidence='tool_results' requires at
+       least one successful read tool call in this turn's tool log.
 
     Rule 8 (CTA coverage) is consumer-specific and lives in Pikkolo's
     adapter, not here.
@@ -196,6 +203,21 @@ def validate_envelope(  # noqa: PLR0912
             Violation(
                 rule="answer_with_writes",
                 detail="intent_kind=answer but actions_performed is non-empty",
+            )
+        )
+
+    # Rule 8
+    if envelope.intent_kind == "answer" and envelope.answer_evidence is None:
+        violations.append(
+            Violation(
+                rule="answer_evidence_required",
+                detail=(
+                    "intent_kind=answer requires answer_evidence. Pick one: "
+                    "'tool_results' (you called a read tool this turn), "
+                    "'context' (the answer is in your system prompt — page "
+                    "state, brand voice, prior turn), or 'general_knowledge' "
+                    "(training data — math, language, world facts)."
+                ),
             )
         )
 
