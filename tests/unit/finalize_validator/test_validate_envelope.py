@@ -5,6 +5,8 @@ these tests pass a user_message — by design, the validator is purely
 structural.
 """
 
+from typing import TYPE_CHECKING
+
 from agentkit.envelope import (
     Action,
     Envelope,
@@ -12,6 +14,9 @@ from agentkit.envelope import (
     ToolCallSummary,
 )
 from agentkit.finalize_validator import validate_envelope
+
+if TYPE_CHECKING:
+    from agentkit._messages import Message
 
 
 def _summary(name: str, *, is_error: bool = False, is_write: bool = True) -> ToolCallSummary:
@@ -248,7 +253,6 @@ def _make_msg(role, content):
 
 
 def test_helper_returns_empty_when_no_history():
-    from agentkit._messages import Message
     from agentkit.finalize_validator import _summaries_since_last_user_turn
 
     history: list[Message] = []

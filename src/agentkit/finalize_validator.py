@@ -12,6 +12,15 @@ from agentkit._content import ToolResultBlock, ToolUseBlock
 from agentkit._messages import Message, MessageRole
 from agentkit.envelope import Envelope, ToolCallSummary, ValidationResult, Violation
 
+_DEFAULT_READ_PREFIXES: frozenset[str] = frozenset(
+    {"search", "get_", "list_", "validate_", "evaluate_", "smart_search", "recall_"}
+)
+
+
+def _is_default_write(name: str) -> bool:
+    bare = name.split(".", 1)[-1]
+    return not any(bare.startswith(p) for p in _DEFAULT_READ_PREFIXES)
+
 
 def _summaries_since_last_user_turn(history: list[Message]) -> list[ToolCallSummary]:
     """Walk history backwards; return ToolCallSummary entries for tool calls
@@ -61,11 +70,9 @@ def _summaries_since_last_user_turn(history: list[Message]) -> list[ToolCallSumm
         bare = name.split(".", 1)[-1]
         if bare in ("finalize_response", "finalize"):
             continue
-        # Read classification mirrors guards/finalize.py: anything not on
-        # the conservative read-prefix list counts as a write. For Rule 9
-        # we only care about the read/write flag; reuse the same heuristic.
-        from agentkit.guards.finalize import _is_default_write
-
+        # Read classification: anything not on the conservative read-prefix
+        # list counts as a write. For Rule 9 we only care about the
+        # read/write flag; reuse the same heuristic.
         summaries.append(
             ToolCallSummary(
                 name=bare,

@@ -27,7 +27,12 @@ async def test_finalize_check_accepts_valid_finalize():
     ctx = TurnContext.empty()
     ctx.add_message(_user("what time is it?"))
     ctx.finalize_called = True
-    ctx.finalize_args = {"status": "done", "intent_kind": "answer", "actions_performed": [], "answer_evidence": "general_knowledge"}
+    ctx.finalize_args = {
+        "status": "done",
+        "intent_kind": "answer",
+        "actions_performed": [],
+        "answer_evidence": "general_knowledge",
+    }
     deps = {"finalize_validator": StructuralFinalizeValidator()}
     next_ = await handle_finalize_check(ctx, deps)
     assert next_ is Phase.MEMORY_EXTRACT

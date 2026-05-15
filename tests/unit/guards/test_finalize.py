@@ -145,9 +145,6 @@ def test_recall_memories_classifies_as_read():
     assert _is_default_write("create_content") is True
 
 
-import pytest
-
-
 @pytest.mark.asyncio
 async def test_structural_validator_rejects_tool_results_with_no_turn_reads():
     """End-to-end: model declares answer_evidence='tool_results' but the
