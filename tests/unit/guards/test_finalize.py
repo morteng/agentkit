@@ -124,3 +124,16 @@ def test_no_action_verbs_regex_remains():
     assert not hasattr(mod, "_latest_user_message")
     assert not hasattr(mod, "_has_non_kit_tool_call")
     assert not hasattr(mod, "RuleBasedFinalizeValidator")
+
+
+def test_recall_memories_classifies_as_read():
+    """recall_memories is a read tool, not a write. See Task A2 in plan
+    2026-05-15-answer-evidence-envelope.md — this was a latent
+    misclassification fixed alongside the answer_evidence work."""
+    from agentkit.guards.finalize import _is_default_write
+
+    assert _is_default_write("recall_memories") is False
+    assert _is_default_write("pikkolo.recall_memories") is False
+    # Sanity: actual writes still classify as writes.
+    assert _is_default_write("patch_content") is True
+    assert _is_default_write("create_content") is True

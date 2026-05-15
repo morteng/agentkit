@@ -42,7 +42,7 @@ class FinalizeValidator(Protocol):
 # control. The default heuristic is good enough for the canonical
 # fabricated-tool check.
 _DEFAULT_READ_PREFIXES: frozenset[str] = frozenset(
-    {"search", "get_", "list_", "validate_", "evaluate_", "smart_search"}
+    {"search", "get_", "list_", "validate_", "evaluate_", "smart_search", "recall_"}
 )
 
 
