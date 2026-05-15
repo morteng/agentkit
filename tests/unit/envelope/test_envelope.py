@@ -102,8 +102,8 @@ def test_envelope_answer_evidence_accepts_three_literals():
 
 def test_envelope_answer_evidence_rejects_unknown_value():
     with pytest.raises(ValidationError):
-        Envelope(  # type: ignore[arg-type]
+        Envelope(
             status="done",
             intent_kind="answer",
-            answer_evidence="from_memory",
+            answer_evidence="from_memory",  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
         )

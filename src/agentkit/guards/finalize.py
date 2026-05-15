@@ -18,9 +18,8 @@ from pydantic import ValidationError
 from agentkit._content import ToolResultBlock, ToolUseBlock
 from agentkit.envelope import Envelope, ToolCallSummary, Violation
 from agentkit.finalize_validator import (
-    _DEFAULT_READ_PREFIXES,  # noqa: F401  (re-export for backwards compat)
-    _is_default_write,
-    _summaries_since_last_user_turn,
+    _is_default_write,  # pyright: ignore[reportPrivateUsage]
+    _summaries_since_last_user_turn,  # pyright: ignore[reportPrivateUsage]
     validate_envelope,
 )
 

@@ -22,7 +22,9 @@ def _is_default_write(name: str) -> bool:
     return not any(bare.startswith(p) for p in _DEFAULT_READ_PREFIXES)
 
 
-def _summaries_since_last_user_turn(history: list[Message]) -> list[ToolCallSummary]:
+def _summaries_since_last_user_turn(  # pyright: ignore[reportUnusedFunction]
+    history: list[Message],
+) -> list[ToolCallSummary]:
     """Walk history backwards; return ToolCallSummary entries for tool calls
     made AFTER the most recent USER message.
 
@@ -232,9 +234,7 @@ def validate_envelope(  # noqa: PLR0912
     # Rule 9
     if envelope.answer_evidence == "tool_results":
         scope = turn_summaries if turn_summaries is not None else tool_calls
-        has_successful_read = any(
-            (not c.is_write) and (not c.is_error) for c in scope
-        )
+        has_successful_read = any((not c.is_write) and (not c.is_error) for c in scope)
         if not has_successful_read:
             violations.append(
                 Violation(
