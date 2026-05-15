@@ -82,3 +82,28 @@ def test_envelope_status_only_three_values():
         Envelope(status=status, intent_kind="action")
     with pytest.raises(ValidationError):
         Envelope(status="finished", intent_kind="action")  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# answer_evidence field (added in agentkit v0.7.0)
+# ---------------------------------------------------------------------------
+
+
+def test_envelope_answer_evidence_defaults_to_none():
+    e = Envelope(status="done", intent_kind="action")
+    assert e.answer_evidence is None
+
+
+def test_envelope_answer_evidence_accepts_three_literals():
+    for value in ("tool_results", "context", "general_knowledge"):
+        e = Envelope(status="done", intent_kind="answer", answer_evidence=value)
+        assert e.answer_evidence == value
+
+
+def test_envelope_answer_evidence_rejects_unknown_value():
+    with pytest.raises(ValidationError):
+        Envelope(  # type: ignore[arg-type]
+            status="done",
+            intent_kind="answer",
+            answer_evidence="from_memory",
+        )
