@@ -17,7 +17,7 @@ from pydantic import ValidationError
 
 from agentkit._content import ToolResultBlock, ToolUseBlock
 from agentkit.envelope import Envelope, ToolCallSummary, Violation
-from agentkit.finalize_validator import validate_envelope
+from agentkit.finalize_validator import _summaries_since_last_user_turn, validate_envelope
 
 if TYPE_CHECKING:
     from agentkit.loop.context import TurnContext
@@ -108,8 +108,6 @@ class StructuralFinalizeValidator:
                     "intent_kind must be one of: action, answer, clarify."
                 ),
             )
-
-        from agentkit.finalize_validator import _summaries_since_last_user_turn
 
         summaries = _ctx_to_summaries(ctx)
         turn_summaries = _summaries_since_last_user_turn(ctx.history)

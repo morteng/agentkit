@@ -154,7 +154,7 @@ async def test_structural_validator_rejects_tool_results_with_no_turn_reads():
     current turn has no successful read tool call. The validator pulls
     turn-scoped summaries from ctx.history and rejects."""
     from agentkit._content import TextBlock, ToolResultBlock, ToolUseBlock
-    from agentkit._messages import Message, MessageRole
+    from agentkit._messages import MessageRole
     from agentkit.guards.finalize import StructuralFinalizeValidator
     from agentkit.loop.context import TurnContext
     from agentkit.tools.spec import ToolCall
@@ -199,7 +199,7 @@ async def test_structural_validator_rejects_tool_results_with_no_turn_reads():
 @pytest.mark.asyncio
 async def test_structural_validator_accepts_general_knowledge_with_no_reads():
     from agentkit._content import TextBlock
-    from agentkit._messages import Message, MessageRole
+    from agentkit._messages import MessageRole
     from agentkit.guards.finalize import StructuralFinalizeValidator
     from agentkit.loop.context import TurnContext
     from agentkit.tools.spec import ToolCall

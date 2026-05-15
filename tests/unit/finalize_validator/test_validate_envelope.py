@@ -248,7 +248,7 @@ def _make_msg(role, content):
 
 
 def test_helper_returns_empty_when_no_history():
-    from agentkit._messages import Message, MessageRole
+    from agentkit._messages import Message
     from agentkit.finalize_validator import _summaries_since_last_user_turn
 
     history: list[Message] = []
