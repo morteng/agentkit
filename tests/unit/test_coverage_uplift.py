@@ -358,7 +358,7 @@ async def test_finalize_validator_accepts_valid_answer_envelope() -> None:
     """Structural validator accepts a well-formed answer envelope with no writes."""
     v = StructuralFinalizeValidator()
     ctx = TurnContext.empty()  # no history
-    valid_args = {"status": "done", "intent_kind": "answer", "actions_performed": []}
+    valid_args = {"status": "done", "intent_kind": "answer", "actions_performed": [], "answer_evidence": "general_knowledge"}
     verdict = await v.validate(
         ToolCall(id="finalize", name="kit.finalize", arguments=valid_args), ctx
     )
