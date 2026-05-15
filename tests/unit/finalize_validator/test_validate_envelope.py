@@ -273,9 +273,7 @@ def test_helper_returns_only_tools_after_last_user_message():
         ),
         _make_msg(
             MessageRole.USER,
-            [
-                ToolResultBlock(tool_use_id="t1", content=[TextBlock(text="ok")], is_error=False)
-            ],
+            [ToolResultBlock(tool_use_id="t1", content=[TextBlock(text="ok")], is_error=False)],
         ),
         # ===== second user turn starts here =====
         _make_msg(MessageRole.USER, [TextBlock(text="second question")]),
@@ -285,9 +283,7 @@ def test_helper_returns_only_tools_after_last_user_message():
         ),
         _make_msg(
             MessageRole.USER,
-            [
-                ToolResultBlock(tool_use_id="t2", content=[TextBlock(text="ok")], is_error=False)
-            ],
+            [ToolResultBlock(tool_use_id="t2", content=[TextBlock(text="ok")], is_error=False)],
         ),
     ]
     result = _summaries_since_last_user_turn(history)
