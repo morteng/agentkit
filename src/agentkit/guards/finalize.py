@@ -109,8 +109,11 @@ class StructuralFinalizeValidator:
                 ),
             )
 
+        from agentkit.finalize_validator import _summaries_since_last_user_turn
+
         summaries = _ctx_to_summaries(ctx)
-        result = validate_envelope(envelope, summaries)
+        turn_summaries = _summaries_since_last_user_turn(ctx.history)
+        result = validate_envelope(envelope, summaries, turn_summaries=turn_summaries)
         if result.ok:
             return FinalizeVerdict(accept=True)
         return FinalizeVerdict(accept=False, feedback=_format_violations(result.violations))

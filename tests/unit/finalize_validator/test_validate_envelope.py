@@ -223,7 +223,7 @@ def test_validate_envelope_signature_only_takes_envelope_and_log():
     import inspect
 
     sig = inspect.signature(validate_envelope)
-    assert list(sig.parameters.keys()) == ["envelope", "tool_calls"]
+    assert list(sig.parameters.keys()) == ["envelope", "tool_calls", "turn_summaries"]
 
 
 # ---------------------------------------------------------------------------
@@ -349,4 +349,80 @@ def test_rule8_answer_with_evidence_passes():
         answer_evidence="general_knowledge",
     )
     result = validate_envelope(env, [])
+    assert result.ok
+
+
+# ---------------------------------------------------------------------------
+# Rule 9 — answer_evidence_consistent
+# ---------------------------------------------------------------------------
+
+
+def test_rule9_tool_results_with_no_reads_fires():
+    env = Envelope(
+        status="done",
+        intent_kind="answer",
+        answer_evidence="tool_results",
+    )
+    # No reads in the turn — only a (successful) write call.
+    result = validate_envelope(
+        env,
+        [_summary("patch_content")],
+        turn_summaries=[_summary("patch_content")],
+    )
+    assert "answer_evidence_consistent" in {v.rule for v in result.violations}
+
+
+def test_rule9_tool_results_with_errored_read_fires():
+    env = Envelope(
+        status="done",
+        intent_kind="answer",
+        answer_evidence="tool_results",
+    )
+    failed_read = _summary("search", is_error=True, is_write=False)
+    result = validate_envelope(env, [failed_read], turn_summaries=[failed_read])
+    assert "answer_evidence_consistent" in {v.rule for v in result.violations}
+
+
+def test_rule9_tool_results_with_successful_read_passes():
+    env = Envelope(
+        status="done",
+        intent_kind="answer",
+        answer_evidence="tool_results",
+    )
+    ok_read = _summary("recall_memories", is_error=False, is_write=False)
+    result = validate_envelope(env, [ok_read], turn_summaries=[ok_read])
+    assert result.ok
+
+
+def test_rule9_context_with_no_reads_passes():
+    env = Envelope(
+        status="done",
+        intent_kind="answer",
+        answer_evidence="context",
+    )
+    result = validate_envelope(env, [], turn_summaries=[])
+    assert result.ok
+
+
+def test_rule9_general_knowledge_with_no_reads_passes():
+    env = Envelope(
+        status="done",
+        intent_kind="answer",
+        answer_evidence="general_knowledge",
+    )
+    result = validate_envelope(env, [], turn_summaries=[])
+    assert result.ok
+
+
+def test_rule9_default_turn_summaries_falls_back_to_tool_calls():
+    """Callers that don't pass turn_summaries get the existing behavior:
+    Rule 9 checks the full tool_calls log. Preserves backwards-compat for
+    any agentkit consumer that hasn't migrated to per-turn scoping yet."""
+    env = Envelope(
+        status="done",
+        intent_kind="answer",
+        answer_evidence="tool_results",
+    )
+    ok_read = _summary("search", is_error=False, is_write=False)
+    result = validate_envelope(env, [ok_read])  # turn_summaries omitted
     assert result.ok
