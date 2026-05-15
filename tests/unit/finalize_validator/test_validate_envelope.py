@@ -224,3 +224,87 @@ def test_validate_envelope_signature_only_takes_envelope_and_log():
 
     sig = inspect.signature(validate_envelope)
     assert list(sig.parameters.keys()) == ["envelope", "tool_calls"]
+
+
+# ---------------------------------------------------------------------------
+# _summaries_since_last_user_turn helper (used by Rule 9)
+# ---------------------------------------------------------------------------
+
+
+def _make_msg(role, content):
+    """Build a fully-valid Message for tests (id/session_id/created_at required)."""
+    from datetime import UTC, datetime
+
+    from agentkit._ids import MessageId, SessionId, new_id
+    from agentkit._messages import Message
+
+    return Message(
+        id=new_id(MessageId),
+        session_id=new_id(SessionId),
+        role=role,
+        content=content,
+        created_at=datetime.now(UTC),
+    )
+
+
+def test_helper_returns_empty_when_no_history():
+    from agentkit._messages import Message, MessageRole
+    from agentkit.finalize_validator import _summaries_since_last_user_turn
+
+    history: list[Message] = []
+    result = _summaries_since_last_user_turn(history)
+    assert result == []
+
+
+def test_helper_returns_only_tools_after_last_user_message():
+    from agentkit._content import TextBlock, ToolResultBlock, ToolUseBlock
+    from agentkit._messages import MessageRole
+    from agentkit.finalize_validator import _summaries_since_last_user_turn
+
+    history = [
+        _make_msg(MessageRole.USER, [TextBlock(text="first question")]),
+        _make_msg(
+            MessageRole.ASSISTANT,
+            [ToolUseBlock(id="t1", name="search", arguments={})],
+        ),
+        _make_msg(
+            MessageRole.USER,
+            [
+                ToolResultBlock(tool_use_id="t1", content=[TextBlock(text="ok")], is_error=False)
+            ],
+        ),
+        # ===== second user turn starts here =====
+        _make_msg(MessageRole.USER, [TextBlock(text="second question")]),
+        _make_msg(
+            MessageRole.ASSISTANT,
+            [ToolUseBlock(id="t2", name="recall_memories", arguments={})],
+        ),
+        _make_msg(
+            MessageRole.USER,
+            [
+                ToolResultBlock(tool_use_id="t2", content=[TextBlock(text="ok")], is_error=False)
+            ],
+        ),
+    ]
+    result = _summaries_since_last_user_turn(history)
+    assert [s.name for s in result] == ["recall_memories"]
+    assert result[0].is_error is False
+
+
+def test_helper_skips_finalize_response_tool():
+    from agentkit._content import TextBlock, ToolUseBlock
+    from agentkit._messages import MessageRole
+    from agentkit.finalize_validator import _summaries_since_last_user_turn
+
+    history = [
+        _make_msg(MessageRole.USER, [TextBlock(text="hi")]),
+        _make_msg(
+            MessageRole.ASSISTANT,
+            [
+                ToolUseBlock(id="t1", name="search", arguments={}),
+                ToolUseBlock(id="t2", name="finalize_response", arguments={}),
+            ],
+        ),
+    ]
+    result = _summaries_since_last_user_turn(history)
+    assert [s.name for s in result] == ["search"]

@@ -8,7 +8,72 @@ in the Pikkolo repo.
 
 from __future__ import annotations
 
+from agentkit._content import ToolResultBlock, ToolUseBlock
+from agentkit._messages import Message, MessageRole
 from agentkit.envelope import Envelope, ToolCallSummary, ValidationResult, Violation
+
+
+def _summaries_since_last_user_turn(history: list[Message]) -> list[ToolCallSummary]:
+    """Walk history backwards; return ToolCallSummary entries for tool calls
+    made AFTER the most recent USER message.
+
+    Used by Rule 9 (answer_evidence_consistent) so the model can't claim
+    ``answer_evidence='tool_results'`` based on stale reads from prior turns.
+    The existing ``_ctx_to_summaries`` in ``guards/finalize.py`` walks the
+    full history and remains unchanged — its write-mandate semantics
+    legitimately span turns.
+
+    The ``finalize_response`` tool itself is filtered out: it's the
+    terminal call being validated, not "evidence".
+    """
+    # Find the index of the most recent USER message that represents a genuine
+    # human prompt. In Anthropic-style history, a USER message may carry
+    # ToolResultBlock entries for tools the prior assistant turn called —
+    # those belong to the PRIOR turn. We skip USER messages that consist
+    # entirely of ToolResultBlocks (tool-return carriers) and keep scanning
+    # until we find a USER message with non-ToolResultBlock content (or any
+    # message after which the agent's tool calls belong to the current turn).
+    last_user_idx = -1
+    for i in range(len(history) - 1, -1, -1):
+        if history[i].role is MessageRole.USER:
+            # If this USER message contains only ToolResultBlocks, it is a
+            # tool-return carrier for the current turn — keep scanning.
+            if all(isinstance(b, ToolResultBlock) for b in history[i].content):
+                continue
+            # Otherwise this is the genuine prompt boundary.
+            last_user_idx = i
+            break
+
+    if last_user_idx < 0:
+        return []
+
+    use_names: dict[str, str] = {}
+    result_errors: dict[str, bool] = {}
+    for msg in history[last_user_idx + 1 :]:
+        for block in msg.content:
+            if isinstance(block, ToolUseBlock):
+                use_names[block.id] = block.name
+            elif isinstance(block, ToolResultBlock):
+                result_errors[block.tool_use_id] = block.is_error
+
+    summaries: list[ToolCallSummary] = []
+    for use_id, name in use_names.items():
+        bare = name.split(".", 1)[-1]
+        if bare in ("finalize_response", "finalize"):
+            continue
+        # Read classification mirrors guards/finalize.py: anything not on
+        # the conservative read-prefix list counts as a write. For Rule 9
+        # we only care about the read/write flag; reuse the same heuristic.
+        from agentkit.guards.finalize import _is_default_write
+
+        summaries.append(
+            ToolCallSummary(
+                name=bare,
+                is_error=result_errors.get(use_id, False),
+                is_write=_is_default_write(name),
+            )
+        )
+    return summaries
 
 
 def validate_envelope(  # noqa: PLR0912
