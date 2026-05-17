@@ -363,6 +363,138 @@ class AgentSession:
         finally:
             pass
 
+    @asynccontextmanager
+    async def resume_with_approval_batch(
+        self,
+        turn_id: TurnId,
+        decisions: list[dict[str, Any]],
+    ) -> AsyncGenerator[AsyncIterator[Event], None]:
+        """Resume a suspended turn applying multiple verdicts at once.
+
+        Use this when a single editor action represents a verdict on N
+        parallel pending tool calls (e.g. a batched "approve all 8
+        merges" UI). The checkpoint is loaded once, every decision is
+        applied in order, then the Loop restarts at TOOL_EXECUTING and
+        runs every approved call in one resumed turn — avoiding the
+        ``resume → suspend → resume`` ping-pong that the single-decision
+        ``resume_with_approval`` produces when more pending calls remain.
+
+        Each entry in ``decisions`` is a dict with:
+
+        * ``call_id`` (str, required) — id of a pending call;
+        * ``decision`` (str, required) — ``"approve"`` or ``"deny"``;
+        * ``edited_args`` (dict | None, optional) — override args before execute;
+        * ``reason`` (str | None, optional) — recorded for denied calls.
+
+        Emits one :class:`ApprovalGranted` or :class:`ApprovalDenied`
+        event per decision at the top of the resumed stream (in the
+        order they were supplied) so consumers can render the per-call
+        verdicts. Behaviour for an empty list is identical to a no-op
+        resume: the Loop still restarts and may re-enter approval_wait
+        if any pendings remain.
+
+        Same error semantics as ``resume_with_approval``: missing
+        checkpoint raises :class:`CheckpointMissing`; an unknown
+        ``call_id`` in any decision raises :class:`CheckpointMissing`
+        ("call_id ... not in pending approvals") and the resume is
+        aborted before the Loop restarts. Expired checkpoints surface
+        as a single ``Errored`` + ``TurnEnded(error)`` stream.
+        """
+        await self.initialize()
+        try:
+            ctx, queue = await self._load_resume_context(turn_id)
+        except ApprovalTimeout as exc:
+            now = datetime.now(UTC)
+            errored = Errored(
+                event_id=new_id(EventId),
+                session_id=self.id,
+                turn_id=turn_id,
+                ts=now,
+                sequence=0,
+                code=ErrorCode.APPROVAL_TIMEOUT,
+                message=str(exc),
+                recoverable=False,
+            )
+            ended = TurnEnded(
+                event_id=new_id(EventId),
+                session_id=self.id,
+                turn_id=turn_id,
+                ts=now,
+                sequence=1,
+                reason=TurnEndReason.ERROR,
+                metrics=TurnMetrics(),
+            )
+
+            async def _timeout_iter() -> AsyncIterator[Event]:
+                yield errored
+                yield ended
+
+            try:
+                yield _timeout_iter()
+            finally:
+                pass
+            return
+
+        verdict_events: list[ApprovalGranted | ApprovalDenied] = []
+        for entry in decisions:
+            call_id = entry["call_id"]
+            decision = entry["decision"]
+            edited_args = entry.get("edited_args")
+            reason = entry.get("reason")
+            self._apply_approval_decision(ctx, call_id, decision, edited_args, reason)
+            if decision == "approve":
+                verdict_events.append(
+                    ApprovalGranted(
+                        event_id=new_id(EventId),
+                        session_id=self.id,
+                        turn_id=turn_id,
+                        ts=datetime.now(UTC),
+                        sequence=ctx.next_sequence(),
+                        call_id=call_id,
+                        edited_args=edited_args,
+                    )
+                )
+            else:
+                verdict_events.append(
+                    ApprovalDenied(
+                        event_id=new_id(EventId),
+                        session_id=self.id,
+                        turn_id=turn_id,
+                        ts=datetime.now(UTC),
+                        sequence=ctx.next_sequence(),
+                        call_id=call_id,
+                        reason=reason,
+                    )
+                )
+        for ev in verdict_events:
+            await queue.put(ev)
+
+        loop = Loop(
+            ctx=ctx,
+            handlers=self._handlers(),
+            deps=self._build_deps(),
+            starting_phase=Phase.TOOL_EXECUTING,
+        )
+
+        async def _iter() -> AsyncIterator[Event]:
+            run_task = asyncio.create_task(self._drain_loop_into_queue(loop, queue))
+            try:
+                while True:
+                    item = await queue.get()
+                    yield item
+                    if isinstance(item, TurnEnded):
+                        break
+            finally:
+                if not run_task.done():
+                    run_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await run_task
+
+        try:
+            yield _iter()
+        finally:
+            pass
+
     async def _drain_loop_into_queue(self, loop: Loop, queue: asyncio.Queue[Any]) -> None:
         async for ev in loop.run():
             await queue.put(ev)
