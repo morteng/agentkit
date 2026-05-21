@@ -76,7 +76,17 @@ async def test_approval_suspend_then_resume_executes_tool():
         FakeProvider.tool_call("ampaera.devices.control", {"id": "heat-pump"}),
         # After resume executes the tool, the loop iterates back to streaming.
         # Have the provider finalize so the resumed turn ends COMPLETED.
-        FakeProvider.tool_call("kit.finalize", {"reason": "done"}),
+        FakeProvider.tool_call(
+            "kit.finalize",
+            {
+                "status": "done",
+                "intent_kind": "action",
+                "summary": "Turned off the heat pump.",
+                "actions_performed": [
+                    {"tool": "devices.control", "description": "turned off the heat pump"}
+                ],
+            },
+        ),
     )
     session = AgentSession(
         owner=OwnerId("u:1"),
@@ -153,7 +163,17 @@ def _make_approval_session() -> tuple[AgentSession, ToolSpec, list[dict]]:
 
     provider = FakeProvider().script(
         FakeProvider.tool_call("ampaera.devices.delete", {"id": "x"}),
-        FakeProvider.tool_call("kit.finalize", {"reason": "done"}),
+        FakeProvider.tool_call(
+            "kit.finalize",
+            {
+                "status": "done",
+                "intent_kind": "action",
+                "summary": "Deleted the device.",
+                "actions_performed": [
+                    {"tool": "devices.delete", "description": "deleted device x"}
+                ],
+            },
+        ),
     )
     session = AgentSession(
         owner=OwnerId("u:1"),
