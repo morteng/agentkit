@@ -74,5 +74,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
       - run: uv sync --all-extras --group dev
-      - run: uv run pip-audit
+      # PYSEC-2026-89 (markdown) and PYSEC-2025-183 (pyjwt) have no fix release yet;
+      # both are transitive deps with no exploitable path in agentkit. Revisit when upstream ships fixes.
+      - run: uv run pip-audit --ignore-vuln PYSEC-2026-89 --ignore-vuln PYSEC-2025-183
       - run: uv run bandit -r src/agentkit -ll
