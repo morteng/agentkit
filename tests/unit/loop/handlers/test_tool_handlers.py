@@ -255,9 +255,7 @@ async def test_tool_phase_unknown_tool_routes_to_executing():
     and no chance to self-correct."""
     reg = ToolRegistry()  # empty registry — no tools registered
     ctx = TurnContext.empty()
-    ctx.metadata["pending_tool_calls"] = [
-        {"id": "c1", "name": "get_kb_fact", "arguments": {}}
-    ]
+    ctx.metadata["pending_tool_calls"] = [{"id": "c1", "name": "get_kb_fact", "arguments": {}}]
     next_ = await handle_tool_phase(ctx, _make_deps(reg))
     assert next_ is Phase.TOOL_EXECUTING
     assert ctx.metadata["unknown_tool_calls"] == [
@@ -275,9 +273,7 @@ async def test_tool_executing_builds_error_result_for_unknown_tool():
     ctx = TurnContext.empty()
     ctx.metadata["approved_tool_calls"] = []
     ctx.metadata["denied_tool_calls"] = []
-    ctx.metadata["unknown_tool_calls"] = [
-        {"id": "c1", "name": "get_kb_fact", "arguments": {}}
-    ]
+    ctx.metadata["unknown_tool_calls"] = [{"id": "c1", "name": "get_kb_fact", "arguments": {}}]
     next_ = await handle_tool_executing(ctx, _make_deps(reg))
     assert next_ is Phase.TOOL_RESULTS
     results = ctx.metadata["tool_results"]
@@ -299,9 +295,7 @@ async def test_tool_results_counts_unknown_tool_errors_for_loop_abort():
     ctx = TurnContext.empty()
     ctx.metadata["approved_tool_calls"] = []
     ctx.metadata["denied_tool_calls"] = []
-    ctx.metadata["unknown_tool_calls"] = [
-        {"id": "c1", "name": "get_kb_fact", "arguments": {}}
-    ]
+    ctx.metadata["unknown_tool_calls"] = [{"id": "c1", "name": "get_kb_fact", "arguments": {}}]
     ctx.metadata["tool_results"] = [
         ToolResult(
             call_id="c1",

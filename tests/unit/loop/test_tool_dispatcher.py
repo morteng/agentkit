@@ -108,9 +108,7 @@ async def test_unknown_tool_returns_error_result_not_raises():
     to the orchestrator and ends the turn with no result for the model."""
     reg = ToolRegistry()  # empty — 'ghost' is unregistered
     disp = ToolDispatcher(registry=reg, policy=DispatchPolicy(max_parallel=8))
-    results = await disp.run(
-        [ToolCall(id="c1", name="ghost", arguments={})], ctx=_FakeCtx()
-    )
+    results = await disp.run([ToolCall(id="c1", name="ghost", arguments={})], ctx=_FakeCtx())
     assert len(results) == 1
     assert results[0].status == "error"
     assert results[0].call_id == "c1"
