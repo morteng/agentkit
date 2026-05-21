@@ -64,10 +64,17 @@ async def test_registry_rejects_duplicate_registration():
 
 
 @pytest.mark.asyncio
-async def test_registry_unknown_tool_raises():
+async def test_registry_unknown_tool_returns_error_result():
+    """An unknown tool name must yield a status='error' ToolResult so the
+    error flows back to the model as feedback. Raising instead kills the turn
+    with no ToolResult — the model never sees the mistake and can't recover."""
     reg = ToolRegistry()
-    with pytest.raises(ToolError):
-        await reg.invoke(ToolCall(id="c", name="missing", arguments={}), ctx=_FakeCtx())  # type: ignore[arg-type]
+    res = await reg.invoke(ToolCall(id="c", name="missing", arguments={}), ctx=_FakeCtx())  # type: ignore[arg-type]
+    assert res.status == "error"
+    assert res.call_id == "c"
+    assert res.error is not None
+    assert "unknown tool" in res.error.message
+    assert "missing" in (res.content[0].text or "")
 
 
 class _FakeCtx:

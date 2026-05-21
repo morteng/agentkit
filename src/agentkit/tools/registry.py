@@ -15,7 +15,13 @@ from typing import TYPE_CHECKING, Any
 
 from agentkit.errors import ToolError as ToolErr
 from agentkit.loop.context import TurnContext
-from agentkit.tools.spec import ToolCall, ToolResult, ToolSpec
+from agentkit.tools.spec import (
+    ContentBlockOut,
+    ToolCall,
+    ToolResult,
+    ToolSpec,
+)
+from agentkit.tools.spec import ToolError as ToolErrorModel
 
 if TYPE_CHECKING:
     from agentkit.mcp_client.base import MCPClient
@@ -137,4 +143,17 @@ class ToolRegistry:
 
             result = await client.call_tool(bare, call.arguments, on_progress=_on_progress)
             return result.model_copy(update={"call_id": call.id})
-        raise ToolErr(f"unknown tool: {call.name}")
+        # Unknown tool name (commonly a model hallucination). Return a
+        # status="error" ToolResult instead of raising — raising bubbles to
+        # the orchestrator and ends the turn with no result, so the model
+        # never sees the mistake. As an error result it flows to the model,
+        # which can self-correct with the right tool name.
+        msg = f"unknown tool: {call.name}"
+        return ToolResult(
+            call_id=call.id,
+            status="error",
+            content=[ContentBlockOut(type="text", text=msg)],
+            error=ToolErrorModel(code="unknown_tool", message=msg, retryable=True),
+            duration_ms=0,
+            cached=False,
+        )

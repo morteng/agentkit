@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
+## [0.7.2] - 2026-05-21
+
+### Fixed
+- Unknown tool names no longer silently kill a turn. When the model calls an
+  unregistered tool, `handle_tool_phase` now files it under a new
+  `unknown_tool_calls` bucket and routes to `TOOL_EXECUTING` (previously it
+  fell straight to `TOOL_RESULTS`, skipping result construction entirely — the
+  model got no ToolResult, no error, just silence, and could never
+  self-correct). `handle_tool_executing` builds a `status="error"` ToolResult
+  naming the bad tool so the model can retry with a registered name.
+- `handle_tool_results` counts unknown-tool errors toward the consecutive
+  error abort (F20), so a model that keeps hallucinating the same tool name
+  trips the abort instead of looping.
+
+### Changed
+- Defense-in-depth: `ToolRegistry.invoke` and `ToolDispatcher` no longer raise
+  on an unknown tool name. `invoke` returns a `status="error"` ToolResult;
+  `ToolDispatcher._safe_for_parallel` treats a spec-less call as
+  not-parallel-safe instead of raising. A raised exception there bubbles to
+  the orchestrator and ends the turn with no result for the model.
+
 ## [0.7.0] - 2026-05-15
 
 ### Added
