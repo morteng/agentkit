@@ -101,5 +101,20 @@ async def test_writes_dispatch_sequentially():
     assert order == ["start-a", "end-a", "start-b", "end-b"]
 
 
+@pytest.mark.asyncio
+async def test_unknown_tool_returns_error_result_not_raises():
+    """Defense-in-depth: if an unknown tool name reaches the dispatcher it
+    must produce an error ToolResult, never raise. A raised exception bubbles
+    to the orchestrator and ends the turn with no result for the model."""
+    reg = ToolRegistry()  # empty — 'ghost' is unregistered
+    disp = ToolDispatcher(registry=reg, policy=DispatchPolicy(max_parallel=8))
+    results = await disp.run(
+        [ToolCall(id="c1", name="ghost", arguments={})], ctx=_FakeCtx()
+    )
+    assert len(results) == 1
+    assert results[0].status == "error"
+    assert results[0].call_id == "c1"
+
+
 class _FakeCtx:
     call_id = "c1"

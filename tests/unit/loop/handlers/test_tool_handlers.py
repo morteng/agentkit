@@ -245,3 +245,74 @@ async def test_tool_results_resets_counter_on_success():
     assert next_ is Phase.CONTEXT_BUILD
     # Counter for the recovered tool was wiped.
     assert "kit.recovered" not in ctx.metadata["consecutive_tool_errors"]
+
+
+@pytest.mark.asyncio
+async def test_tool_phase_unknown_tool_routes_to_executing():
+    """A hallucinated/unregistered tool name must still route through
+    TOOL_EXECUTING so an 'unknown tool' result gets built. Routing straight
+    to TOOL_RESULTS skips result construction, leaving the model with silence
+    and no chance to self-correct."""
+    reg = ToolRegistry()  # empty registry — no tools registered
+    ctx = TurnContext.empty()
+    ctx.metadata["pending_tool_calls"] = [
+        {"id": "c1", "name": "get_kb_fact", "arguments": {}}
+    ]
+    next_ = await handle_tool_phase(ctx, _make_deps(reg))
+    assert next_ is Phase.TOOL_EXECUTING
+    assert ctx.metadata["unknown_tool_calls"] == [
+        {"id": "c1", "name": "get_kb_fact", "arguments": {}}
+    ]
+    # Unknown calls are not approval-denied — keep the categories distinct.
+    assert ctx.metadata["denied_tool_calls"] == []
+
+
+@pytest.mark.asyncio
+async def test_tool_executing_builds_error_result_for_unknown_tool():
+    """handle_tool_executing must synthesise a status='error' ToolResult for
+    each unknown tool call, naming the bad tool so the model can self-correct."""
+    reg = ToolRegistry()
+    ctx = TurnContext.empty()
+    ctx.metadata["approved_tool_calls"] = []
+    ctx.metadata["denied_tool_calls"] = []
+    ctx.metadata["unknown_tool_calls"] = [
+        {"id": "c1", "name": "get_kb_fact", "arguments": {}}
+    ]
+    next_ = await handle_tool_executing(ctx, _make_deps(reg))
+    assert next_ is Phase.TOOL_RESULTS
+    results = ctx.metadata["tool_results"]
+    assert len(results) == 1
+    assert results[0].call_id == "c1"
+    assert results[0].status == "error"
+    assert "unknown tool" in results[0].content[0].text
+    assert "get_kb_fact" in results[0].content[0].text
+    assert results[0].error is not None
+    assert results[0].error.code == "unknown_tool"
+
+
+@pytest.mark.asyncio
+async def test_tool_results_counts_unknown_tool_errors_for_loop_abort():
+    """F20: a model that keeps hallucinating the same unknown tool name must
+    trip the consecutive-error abort instead of looping forever."""
+    from agentkit.tools.spec import ToolError
+
+    ctx = TurnContext.empty()
+    ctx.metadata["approved_tool_calls"] = []
+    ctx.metadata["denied_tool_calls"] = []
+    ctx.metadata["unknown_tool_calls"] = [
+        {"id": "c1", "name": "get_kb_fact", "arguments": {}}
+    ]
+    ctx.metadata["tool_results"] = [
+        ToolResult(
+            call_id="c1",
+            status="error",
+            content=[],
+            error=ToolError(code="unknown_tool", message="unknown tool: get_kb_fact"),
+            duration_ms=0,
+            cached=False,
+        )
+    ]
+    ctx.metadata["consecutive_tool_errors"] = {"get_kb_fact": 2}  # this is the 3rd
+    next_ = await handle_tool_results(ctx, {"max_consecutive_tool_errors": 3})
+    assert next_ is Phase.ERRORED
+    assert ctx.metadata["tool_error_loop"]["tool"] == "get_kb_fact"
