@@ -66,10 +66,13 @@ async def handle_tool_results(ctx: TurnContext, deps: dict[str, Any]) -> Phase:
     threshold = deps.get("max_consecutive_tool_errors", 3)
     if results and threshold > 0:
         counters: dict[str, int] = ctx.metadata.setdefault("consecutive_tool_errors", {})
-        # Map call_id -> tool name from the calls we approved this iteration.
+        # Map call_id -> tool name from every call categorised this iteration
+        # (approved, denied, unknown). Including unknown calls means a model
+        # that keeps hallucinating the same bad tool name trips the abort.
         approved = ctx.metadata.get("approved_tool_calls", [])
         denied = ctx.metadata.get("denied_tool_calls", [])
-        name_by_id = {c["id"]: c["name"] for c in (*approved, *denied)}
+        unknown = ctx.metadata.get("unknown_tool_calls", [])
+        name_by_id = {c["id"]: c["name"] for c in (*approved, *denied, *unknown)}
         for r in results:
             name = name_by_id.get(r.call_id)
             if name is None:

@@ -24,7 +24,15 @@ pytestmark = pytest.mark.e2e
 async def test_finalize_tool_completes_turn():
     """Provider asks to call kit.finalize -> registry executes -> finalize_check accepts."""
     provider = FakeProvider().script(
-        FakeProvider.tool_call("kit.finalize", {"reason": "answered"}),
+        FakeProvider.tool_call(
+            "kit.finalize",
+            {
+                "status": "done",
+                "intent_kind": "answer",
+                "summary": "It is just past noon.",
+                "answer_evidence": "general_knowledge",
+            },
+        ),
     )
 
     queue: asyncio.Queue = asyncio.Queue()

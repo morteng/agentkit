@@ -258,8 +258,10 @@ def test_turn_end_module_re_exports_turn_end_reason() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tool_phase_auto_deny_when_spec_missing() -> None:
-    """Pending call references a tool name not in the registry -> auto_deny."""
+async def test_tool_phase_unknown_when_spec_missing() -> None:
+    """Pending call references a tool name not in the registry -> it lands in
+    unknown_tool_calls and routes to TOOL_EXECUTING so an 'unknown tool'
+    result gets built (not approval-denied, and not skipped to TOOL_RESULTS)."""
     reg = ToolRegistry()  # empty
     deps = {
         "registry": reg,
@@ -272,8 +274,9 @@ async def test_tool_phase_auto_deny_when_spec_missing() -> None:
         {"id": "c1", "name": "kit.does_not_exist", "arguments": {}}
     ]
     next_ = await handle_tool_phase(ctx, deps)
-    assert next_ is Phase.TOOL_RESULTS
-    assert ctx.metadata["denied_tool_calls"] and not ctx.metadata["approved_tool_calls"]
+    assert next_ is Phase.TOOL_EXECUTING
+    assert ctx.metadata["unknown_tool_calls"] and not ctx.metadata["approved_tool_calls"]
+    assert not ctx.metadata["denied_tool_calls"]
 
 
 # ---- Loop handler: tool_executing denied path ------------------------------
