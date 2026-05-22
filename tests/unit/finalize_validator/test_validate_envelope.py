@@ -310,6 +310,53 @@ def test_helper_skips_finalize_response_tool():
     assert [s.name for s in result] == ["search"]
 
 
+def test_helper_skips_injected_correction_user_message():
+    """A loop-injected finalize re-prompt must not count as a new turn
+    boundary — the turn's reads precede it."""
+    from datetime import UTC, datetime
+
+    from agentkit._content import TextBlock, ToolResultBlock, ToolUseBlock
+    from agentkit._ids import MessageId, SessionId, new_id
+    from agentkit._messages import (
+        INJECTED_CORRECTION_ANNOTATION,
+        Message,
+        MessageMetadata,
+        MessageRole,
+    )
+    from agentkit.finalize_validator import _summaries_since_last_user_turn
+
+    injected = Message(
+        id=new_id(MessageId),
+        session_id=new_id(SessionId),
+        role=MessageRole.USER,
+        content=[TextBlock(text="Call finalize_response now.")],
+        metadata=MessageMetadata(annotations={INJECTED_CORRECTION_ANNOTATION: True}),
+        created_at=datetime.now(UTC),
+    )
+    history = [
+        _make_msg(MessageRole.USER, [TextBlock(text="real question")]),
+        _make_msg(
+            MessageRole.ASSISTANT,
+            [ToolUseBlock(id="t1", name="search", arguments={})],
+        ),
+        _make_msg(
+            MessageRole.USER,
+            [ToolResultBlock(tool_use_id="t1", content=[TextBlock(text="ok")], is_error=False)],
+        ),
+        _make_msg(MessageRole.ASSISTANT, [TextBlock(text="answer text, no finalize")]),
+        # ===== loop injects a missing-finalize re-prompt — NOT a new turn =====
+        injected,
+        _make_msg(
+            MessageRole.ASSISTANT,
+            [ToolUseBlock(id="t2", name="finalize_response", arguments={})],
+        ),
+    ]
+    # The search read precedes the injected correction; it must still be
+    # scoped to this turn so Rule 9 sees the evidence.
+    result = _summaries_since_last_user_turn(history)
+    assert [s.name for s in result] == ["search"]
+
+
 # ---------------------------------------------------------------------------
 # Rule 8 — answer_evidence_required
 # ---------------------------------------------------------------------------

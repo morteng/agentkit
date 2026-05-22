@@ -9,7 +9,7 @@ in the Pikkolo repo.
 from __future__ import annotations
 
 from agentkit._content import ToolResultBlock, ToolUseBlock
-from agentkit._messages import Message, MessageRole
+from agentkit._messages import INJECTED_CORRECTION_ANNOTATION, Message, MessageRole
 from agentkit.envelope import Envelope, ToolCallSummary, ValidationResult, Violation
 
 _DEFAULT_READ_PREFIXES: frozenset[str] = frozenset(
@@ -41,7 +41,8 @@ def _summaries_since_last_user_turn(  # pyright: ignore[reportUnusedFunction]
     # human prompt. In Anthropic-style history, a USER message may carry
     # ToolResultBlock entries for tools the prior assistant turn called —
     # those belong to the PRIOR turn. We skip USER messages that consist
-    # entirely of ToolResultBlocks (tool-return carriers) and keep scanning
+    # entirely of ToolResultBlocks (tool-return carriers), and USER messages
+    # the loop injected as corrections (finalize re-prompts), and keep scanning
     # until we find a USER message with non-ToolResultBlock content (or any
     # message after which the agent's tool calls belong to the current turn).
     last_user_idx = -1
@@ -50,6 +51,10 @@ def _summaries_since_last_user_turn(  # pyright: ignore[reportUnusedFunction]
             # If this USER message contains only ToolResultBlocks, it is a
             # tool-return carrier for the current turn — keep scanning.
             if all(isinstance(b, ToolResultBlock) for b in history[i].content):
+                continue
+            # A loop-injected correction (finalize re-prompt) is not a fresh
+            # human prompt — the current turn's reads precede it. Keep scanning.
+            if history[i].metadata.annotations.get(INJECTED_CORRECTION_ANNOTATION):
                 continue
             # Otherwise this is the genuine prompt boundary.
             last_user_idx = i
