@@ -16,11 +16,16 @@ from __future__ import annotations
 from typing import Any
 
 FINALIZE_RESPONSE_DESCRIPTION = (
-    "Call this tool exactly once per turn, when you are finished.\n\n"
+    "Call this tool exactly once at the END of EVERY turn — including turns "
+    "where you stop to ask the user a question. This call records the "
+    "turn's outcome; a turn without it is incomplete.\n\n"
     "intent_kind — what the user's last message asked you to do:\n"
     '  • "action": Do work. Editing, creating, deleting, publishing, anything that writes.\n'
     '  • "answer": Answer a question or analyze. No writes.\n'
-    '  • "clarify": You don\'t have enough info to act safely.\n\n'
+    '  • "clarify": You are asking the user a question, offering a choice, '
+    "or need their decision or input before you can continue. This includes "
+    "turns where you already did some work and are now asking how to "
+    "proceed.\n\n"
     'If intent_kind="action" you MUST have called write tools and listed '
     'them in actions_performed. Promising future action ("I\'ll start", '
     '"Setter i gang") without calling write tools in this same turn is invalid.\n\n'

@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
+## [0.8.0] - 2026-05-22
+
+### Changed
+- A turn that ends **without** a `finalize_response` call is no longer silently accepted as "the conversation naturally ended". When a finalize validator is configured, `handle_finalize_check` now re-prompts the model once (bounded by `LoopConfig.max_missing_finalize_reprompts`, default 1) to emit a real envelope, then lets the turn end if the model still won't finalize. This fixes turns that stop mid-thought — typically by asking the user a question — settling with no envelope: the model now gets an explicit chance to classify them (e.g. `intent_kind="clarify"`). Consumers with no finalize validator are unaffected (pass-through).
+- `FINALIZE_RESPONSE_DESCRIPTION` reworded: "call at the END of EVERY turn, including turns where you stop to ask the user a question", and the `clarify` bullet broadened to cover "asking a question / offering a choice / needing a decision", including turns that already did some work.
+
+### Fixed
+- Finalize-retry corrections now actually reach the model. `finalize_correction` was stashed in `ctx.metadata` but never surfaced — `MessageBuilder` reads `ctx.history`, so the rejected-finalize retry re-ran blind. The correction (and the new missing-finalize re-prompt) is now appended to `ctx.history` as a user-role message before re-streaming.
+
+### Added
+- `LoopConfig.max_missing_finalize_reprompts: int = 1` — how many times a missing `finalize_response` is re-prompted before the turn is allowed to end.
+
 ## [0.7.2] - 2026-05-21
 
 ### Fixed

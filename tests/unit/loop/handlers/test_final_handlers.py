@@ -50,15 +50,54 @@ async def test_finalize_check_rejects_invalid_finalize_with_retry():
     next_ = await handle_finalize_check(ctx, deps)
     assert next_ is Phase.CONTEXT_BUILD
     assert "finalize_correction" in ctx.metadata
+    # The correction must reach the model: a user-role message carrying the
+    # validator feedback is appended to history before re-streaming.
+    last = ctx.history[-1]
+    assert last.role is MessageRole.USER
+    block = last.content[0]
+    assert isinstance(block, TextBlock)
+    assert "rejected" in block.text
+    assert ctx.finalize_called is False
 
 
 @pytest.mark.asyncio
-async def test_finalize_check_passes_through_when_no_finalize_called():
-    """No finalize call yet — accept and let the conversation end naturally."""
+async def test_finalize_check_reprompts_when_finalize_missing():
+    """No finalize call -> re-prompt the model once to finalize properly."""
     ctx = TurnContext.empty()
-    ctx.add_message(_user("hi"))
+    ctx.add_message(_user("does the article have a hero image?"))
     deps = {"finalize_validator": StructuralFinalizeValidator()}
     next_ = await handle_finalize_check(ctx, deps)
+    assert next_ is Phase.CONTEXT_BUILD
+    assert ctx.metadata["missing_finalize_reprompts"] == 1
+    last = ctx.history[-1]
+    assert last.role is MessageRole.USER
+    block = last.content[0]
+    assert isinstance(block, TextBlock)
+    assert "finalize_response" in block.text
+    assert "clarify" in block.text
+
+
+@pytest.mark.asyncio
+async def test_finalize_check_ends_turn_after_reprompt_budget_spent():
+    """Re-prompt budget exhausted -> let the turn end so the consumer synthesizes."""
+    ctx = TurnContext.empty()
+    ctx.add_message(_user("hi"))
+    ctx.metadata["missing_finalize_reprompts"] = 1
+    deps = {
+        "finalize_validator": StructuralFinalizeValidator(),
+        "max_missing_finalize_reprompts": 1,
+    }
+    next_ = await handle_finalize_check(ctx, deps)
+    assert next_ is Phase.MEMORY_EXTRACT
+    assert ctx.metadata["finalize_missing"] is True
+
+
+@pytest.mark.asyncio
+async def test_finalize_check_passes_through_when_no_validator():
+    """No finalize validator configured -> consumer opted out; accept and end."""
+    ctx = TurnContext.empty()
+    ctx.add_message(_user("hi"))
+    next_ = await handle_finalize_check(ctx, {})
     assert next_ is Phase.MEMORY_EXTRACT
 
 
