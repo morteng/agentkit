@@ -12,6 +12,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class LoopConfig(BaseModel):
     max_iterations: int = 10  # cap turns per top-level run() call
     max_finalize_retries: int = 2
+    # How many times a turn that ends WITHOUT a finalize_response call is
+    # re-prompted to finalize before the loop lets the turn end. Only
+    # applies when a finalize validator is configured. One nudge is
+    # enough in practice.
+    max_missing_finalize_reprompts: int = 1
     max_claim_corrections: int = 1
     streaming_chunk_timeout_seconds: float = 60.0
     builtin_tool_note_enabled: bool = False  # the kit.note opt-in

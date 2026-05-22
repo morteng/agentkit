@@ -400,6 +400,7 @@ class AgentSession:
             "success_claim": gc.success_claim if gc.success_claim_enabled else None,
             "approval_timeout_seconds": gc.approval_timeout_seconds,
             "max_finalize_retries": self.config.loop.max_finalize_retries,
+            "max_missing_finalize_reprompts": self.config.loop.max_missing_finalize_reprompts,
             "max_iterations": self.config.loop.max_iterations,
             "max_consecutive_tool_errors": self.config.loop.max_consecutive_tool_errors,
             "checkpoint_store": self.config.stores.checkpoint,

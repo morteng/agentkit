@@ -62,7 +62,15 @@ def _all_handlers():
 
 @pytest.mark.asyncio
 async def test_text_only_turn_completes():
-    provider = FakeProvider().script(FakeProvider.text("hello world"))
+    """A turn that streams text without finalizing is re-prompted once; if the
+    model still won't finalize, the loop still ends cleanly (COMPLETED) so the
+    consumer can synthesize a terminal envelope."""
+    # Two scripted texts: the original answer, then the model ignoring the
+    # re-prompt and streaming text again. Budget (1) is then spent.
+    provider = FakeProvider().script(
+        FakeProvider.text("hello world"),
+        FakeProvider.text("still just text"),
+    )
     queue: asyncio.Queue = asyncio.Queue()
     registry = ToolRegistry()
     ctx = TurnContext.empty()
@@ -79,6 +87,7 @@ async def test_text_only_turn_completes():
         "dispatcher": ToolDispatcher(registry=registry, policy=DispatchPolicy()),
         "finalize_validator": StructuralFinalizeValidator(),
         "max_finalize_retries": 2,
+        "max_missing_finalize_reprompts": 1,
         "max_iterations": 10,
     }
     loop = Loop(ctx=ctx, handlers=_all_handlers(), deps=deps)
@@ -89,9 +98,14 @@ async def test_text_only_turn_completes():
     assert types[0] == "TurnStarted"
     assert isinstance(events[-1], TurnEnded)
     assert events[-1].reason is TurnEndReason.COMPLETED
-    # Phase log should include INTENT_GATE -> CONTEXT_BUILD -> STREAMING ->
-    # FINALIZE_CHECK -> MEMORY_EXTRACT.
-    assert any(isinstance(e, PhaseChanged) and e.from_ is Phase.STREAMING for e in events)
+    # The turn streamed twice: once for the answer, once after the missing-
+    # finalize re-prompt routed FINALIZE_CHECK -> CONTEXT_BUILD.
+    streaming_exits = [
+        e for e in events if isinstance(e, PhaseChanged) and e.from_ is Phase.STREAMING
+    ]
+    assert len(streaming_exits) == 2
+    assert ctx.metadata["missing_finalize_reprompts"] == 1
+    assert ctx.metadata["finalize_missing"] is True
 
     # Streaming events from the queue.
     streamed = []
