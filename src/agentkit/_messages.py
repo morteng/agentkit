@@ -18,6 +18,13 @@ class MessageRole(StrEnum):
     SYSTEM = "system"
 
 
+#: ``Message.metadata.annotations`` key marking a USER message the agent loop
+#: injected as a correction (finalize re-prompt or rejected-finalize feedback)
+#: rather than a genuine human prompt. Code that infers the turn boundary from
+#: the most recent USER message must skip messages carrying this annotation.
+INJECTED_CORRECTION_ANNOTATION = "injected_correction"
+
+
 class Usage(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0

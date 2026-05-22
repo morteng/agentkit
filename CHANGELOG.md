@@ -14,9 +14,11 @@ from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
 ### Fixed
 - Finalize-retry corrections now actually reach the model. `finalize_correction` was stashed in `ctx.metadata` but never surfaced — `MessageBuilder` reads `ctx.history`, so the rejected-finalize retry re-ran blind. The correction (and the new missing-finalize re-prompt) is now appended to `ctx.history` as a user-role message before re-streaming.
+- Injected correction messages are tagged `metadata.annotations[INJECTED_CORRECTION_ANNOTATION]` so `_summaries_since_last_user_turn` (Rule 9 scoping) does not mistake a finalize re-prompt for a fresh human prompt — which would otherwise drop the turn's reads and false-fail `answer_evidence="tool_results"`.
 
 ### Added
 - `LoopConfig.max_missing_finalize_reprompts: int = 1` — how many times a missing `finalize_response` is re-prompted before the turn is allowed to end.
+- `INJECTED_CORRECTION_ANNOTATION` constant (`agentkit._messages`) — the `Message.metadata.annotations` key marking a loop-injected correction. Consumer code that infers turn boundaries from the most recent USER message should skip messages carrying it.
 
 ## [0.7.2] - 2026-05-21
 

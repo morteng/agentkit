@@ -21,14 +21,22 @@ finalize is accepted as the conversation naturally ending.
 Corrections reach the model as an appended user-role message — see
 :func:`_inject_correction`. The MessageBuilder reads ``ctx.history``
 verbatim, so a correction only stashed in ``ctx.metadata`` never reaches the
-provider; appending a real message is the delivery path.
+provider; appending a real message is the delivery path. Each injected
+message is tagged ``metadata.annotations[INJECTED_CORRECTION_ANNOTATION]`` so
+turn-boundary walkers (e.g. ``_summaries_since_last_user_turn``) can tell it
+apart from a genuine human prompt and not mistake it for a new turn.
 """
 
 from typing import TYPE_CHECKING, Any
 
 from agentkit._content import TextBlock
 from agentkit._ids import MessageId, new_id
-from agentkit._messages import Message, MessageRole
+from agentkit._messages import (
+    INJECTED_CORRECTION_ANNOTATION,
+    Message,
+    MessageMetadata,
+    MessageRole,
+)
 from agentkit.loop.context import TurnContext
 from agentkit.loop.phase import Phase
 from agentkit.tools.spec import ToolCall
@@ -55,13 +63,19 @@ _MISSING_FINALIZE_REPROMPT = (
 
 
 def _inject_correction(ctx: TurnContext, text: str) -> None:
-    """Append a user-role correction message so the model sees it on retry."""
+    """Append a user-role correction message so the model sees it on retry.
+
+    Tagged with ``annotations[INJECTED_CORRECTION_ANNOTATION]`` so it is not
+    mistaken for a fresh human prompt by code that infers the turn boundary
+    from the most recent USER message.
+    """
     ctx.add_message(
         Message(
             id=new_id(MessageId),
             session_id=ctx.session_id,
             role=MessageRole.USER,
             content=[TextBlock(text=text)],
+            metadata=MessageMetadata(annotations={INJECTED_CORRECTION_ANNOTATION: True}),
             created_at=ctx.clock.now(),
         )
     )
