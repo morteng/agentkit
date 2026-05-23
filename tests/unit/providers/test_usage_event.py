@@ -31,7 +31,14 @@ def test_usage_event_carries_model_and_provider_name():
     assert ev.type == "usage"
 
 
-def test_usage_event_serializes_round_trip():
+def test_usage_event_round_trips_through_provider_event_union():
+    """Dumping then re-validating through the ProviderEvent discriminated
+    union must preserve all fields. This is the contract consumers depend
+    on when they serialize and re-load events from a queue/store."""
+    from pydantic import TypeAdapter
+
+    from agentkit.providers.base import ProviderEvent
+
     ev = UsageEvent(
         **_mk_kwargs(),
         usage=Usage(input_tokens=10, output_tokens=20),
@@ -39,5 +46,23 @@ def test_usage_event_serializes_round_trip():
         provider_name="anthropic",
     )
     dumped = ev.model_dump(mode="json")
+    assert dumped["type"] == "usage"
     assert dumped["model"] == "anthropic/claude-opus-4"
     assert dumped["provider_name"] == "anthropic"
+
+    adapter = TypeAdapter(ProviderEvent)
+    parsed = adapter.validate_python(dumped)
+    assert parsed.model == "anthropic/claude-opus-4"
+    assert parsed.provider_name == "anthropic"
+    assert parsed.usage.input_tokens == 10
+
+
+def test_usage_event_defaults_model_and_provider_name_to_none():
+    """The optional-default state is transitional — existing call sites
+    (OpenRouter, Anthropic, fakes, stream_mux, etc) still construct
+    UsageEvent without the new fields. This test guards against an
+    accidental tightening to required before those call sites are
+    updated in tasks 1.2/1.3/1.4."""
+    ev = UsageEvent(**_mk_kwargs(), usage=Usage(input_tokens=1, output_tokens=1))
+    assert ev.model is None
+    assert ev.provider_name is None
