@@ -91,7 +91,7 @@ async def test_malformed_tool_args_are_repaired_through_stream():
         ),
         _Chunk([_Choice(_Delta(), finish_reason="tool_calls")]),
     ]
-    events = [ev async for ev in parse_openrouter_stream(_aiter(chunks))]
+    events = [ev async for ev in parse_openrouter_stream(_aiter(chunks), model="test/model")]
     tcc = [ev for ev in events if ev.type == "tool_call_complete"]
     assert len(tcc) == 1
     assert tcc[0].tool_name == "store_fact"

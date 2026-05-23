@@ -127,6 +127,8 @@ class _MessageComplete(_ProviderEventBase):
 class _UsageEvent(_ProviderEventBase):
     type: Literal["usage"] = "usage"  # type: ignore[reportIncompatibleVariableOverride]
     usage: Usage
+    model: str
+    provider_name: str
 
 
 class _ErrorEvent(_ProviderEventBase):

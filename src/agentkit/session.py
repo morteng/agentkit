@@ -61,12 +61,21 @@ class AgentSession:
         *,
         owner: OwnerId,
         config: AgentConfig,
-        provider: Provider,
         registry: ToolRegistry,
         model: str,
+        provider: Provider | None = None,
         system_blocks: list[SystemBlock] | None = None,
         session_id: SessionId | None = None,
     ) -> None:
+        selector = config.provider_selector
+        if provider is None and selector is None:
+            raise ValueError(
+                "AgentSession needs either a provider or a config.provider_selector — got neither."
+            )
+        if provider is not None and selector is not None:
+            raise ValueError(
+                "AgentSession got both a provider and a config.provider_selector — set exactly one."
+            )
         self.owner = owner
         self.id: SessionId = session_id or new_id(SessionId)
         self.config = config
@@ -384,6 +393,7 @@ class AgentSession:
         gc = self.config.guards
         deps: dict[str, Any] = {
             "provider": self.provider,
+            "provider_selector": self.config.provider_selector,
             "message_builder": MessageBuilder(
                 model=self.model,
                 max_tokens=4096,

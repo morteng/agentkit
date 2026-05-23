@@ -35,11 +35,19 @@ def parse_tool_call_arguments(args_str: str) -> dict[str, Any] | None:
     return parsed
 
 
-async def parse_openrouter_stream(chunks: AsyncIterator[Any]) -> AsyncIterator[ProviderEvent]:
+async def parse_openrouter_stream(
+    chunks: AsyncIterator[Any], *, model: str
+) -> AsyncIterator[ProviderEvent]:
     """Map OpenAI ChatCompletionChunk events to ProviderEvents.
 
     OpenAI streams ``ChatCompletionChunk`` objects with ``choices[0].delta``
     containing one of: text content, tool_calls (partial), or finish_reason.
+
+    Args:
+        chunks: Async iterator of ChatCompletionChunk objects from the OpenAI SDK.
+        model: The model identifier used for this request (e.g. ``"openai/gpt-5"``).
+            Stamped onto the emitted :class:`UsageEvent` so cost-ledger consumers
+            can attribute usage without inspecting the originating request.
     """
     started = False
     finish_reason_raw: str | None = None
@@ -90,7 +98,7 @@ async def parse_openrouter_stream(chunks: AsyncIterator[Any]) -> AsyncIterator[P
             yield ev
 
     if final_usage is not None:
-        yield UsageEvent(usage=final_usage)
+        yield UsageEvent(usage=final_usage, model=model, provider_name="openrouter")
     yield MessageComplete(finish_reason=parse_finish_reason(finish_reason_raw))
 
 
