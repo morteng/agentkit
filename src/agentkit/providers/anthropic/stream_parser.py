@@ -61,7 +61,9 @@ def _parse_message_delta_usage(ev: Any, prior: Usage | None) -> Usage:
     )
 
 
-async def parse_anthropic_stream(events: AsyncIterator[Any]) -> AsyncIterator[ProviderEvent]:
+async def parse_anthropic_stream(
+    events: AsyncIterator[Any], *, model: str
+) -> AsyncIterator[ProviderEvent]:
     """Map Anthropic SDK events to ProviderEvents.
 
     The Anthropic Python SDK yields:
@@ -71,6 +73,12 @@ async def parse_anthropic_stream(events: AsyncIterator[Any]) -> AsyncIterator[Pr
       - ContentBlockStopEvent
       - MessageDeltaEvent (carries stop_reason + final usage)
       - MessageStopEvent
+
+    Args:
+        events: Async iterator of Anthropic SDK stream events.
+        model: The model identifier used for this request (e.g. ``"anthropic/claude-opus-4-7"``).
+            Stamped onto the emitted :class:`UsageEvent` so cost-ledger consumers
+            can attribute usage without inspecting the originating request.
     """
     pending_tool_args: dict[int, str] = {}
     pending_tool_meta: dict[int, dict[str, Any]] = {}
@@ -108,7 +116,7 @@ async def parse_anthropic_stream(events: AsyncIterator[Any]) -> AsyncIterator[Pr
 
         elif ev_type == "message_stop":
             if final_usage is not None:
-                yield UsageEvent(usage=final_usage)
+                yield UsageEvent(usage=final_usage, model=model, provider_name="anthropic")
             yield MessageComplete(finish_reason=finish_reason)  # type: ignore[arg-type]
 
 

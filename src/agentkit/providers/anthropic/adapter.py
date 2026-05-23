@@ -64,7 +64,7 @@ class AnthropicProvider(Provider):
         payload = build_anthropic_request(request)
         try:
             async with self._client.messages.stream(**payload) as stream:
-                async for ev in parse_anthropic_stream(stream):
+                async for ev in parse_anthropic_stream(stream, model=request.model):
                     yield ev
         except Exception as exc:
             yield _map_anthropic_error(exc)
