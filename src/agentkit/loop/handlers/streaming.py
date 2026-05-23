@@ -29,7 +29,8 @@ if TYPE_CHECKING:
 
 
 async def handle_streaming(ctx: TurnContext, deps: dict[str, Any]) -> Phase:  # noqa: PLR0912 — turn-level dispatch necessarily branches per event type
-    provider: Provider = deps["provider"]
+    selector = deps.get("provider_selector")
+    provider: Provider = selector(ctx) if selector is not None else deps["provider"]
     builder: MessageBuilder = deps["message_builder"]
     registry: ToolRegistry = deps["registry"]
     queue: asyncio.Queue[Any] = ctx.event_queue if ctx.event_queue is not None else asyncio.Queue()
