@@ -65,6 +65,12 @@ class AgentConfig(BaseSettings):
     events: EventsConfig = Field(default_factory=EventsConfig)
     guards: GuardConfig = Field(default_factory=GuardConfig)
     stores: StoreBundle = Field(default_factory=StoreBundle)
+    # Optional per-call provider override. When set, AgentSession ignores
+    # the constructor's `provider` arg and calls selector(ctx) per iteration.
+    # Used for tier routing, model A/B testing, or any per-iteration provider choice.
+    # Typed Any (not Callable) to avoid circular imports with Provider — same
+    # rationale as GuardConfig.intent / approval / finalize / success_claim.
+    provider_selector: Any = None
 
     model_config = SettingsConfigDict(
         env_prefix="AGENTKIT_",
