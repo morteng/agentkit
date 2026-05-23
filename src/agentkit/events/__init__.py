@@ -6,6 +6,7 @@ from pydantic import Field, TypeAdapter
 
 from agentkit.events.approval import ApprovalDenied, ApprovalGranted, ApprovalNeeded
 from agentkit.events.base import BaseEvent
+from agentkit.events.goal import GoalAbandoned, GoalAchieved, GoalEvaluated, GoalSet
 from agentkit.events.lifecycle import (
     ErrorCode,
     Errored,
@@ -43,7 +44,11 @@ Event = Annotated[
     | Errored
     | SubagentStarted
     | SubagentEvent
-    | SubagentEnded,
+    | SubagentEnded
+    | GoalSet
+    | GoalEvaluated
+    | GoalAchieved
+    | GoalAbandoned,
     Field(discriminator="type"),
 ]
 
@@ -60,6 +65,10 @@ __all__ = [
     "ErrorCode",
     "Errored",
     "Event",
+    "GoalAbandoned",
+    "GoalAchieved",
+    "GoalEvaluated",
+    "GoalSet",
     "MessageCompleted",
     "MessageStarted",
     "PhaseChanged",

@@ -1,0 +1,11 @@
+{
+  "condition": "alle åpne tilbakemeldinger er triagert",
+  "event_id": "ev_canonical",
+  "sequence": 1,
+  "session_id": "sess_canonical",
+  "set_at": "2026-05-23T12:00:00Z",
+  "state_id": "00000000-0000-0000-0000-000000000001",
+  "ts": "2026-01-01T00:00:00Z",
+  "turn_id": "turn_canonical",
+  "type": "goal_set"
+}

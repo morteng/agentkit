@@ -16,6 +16,11 @@ from typing import TYPE_CHECKING, Any
 from agentkit._content import TextBlock
 from agentkit._ids import CheckpointId, EventId, MessageId, OwnerId, SessionId, TurnId, new_id
 from agentkit._messages import Message, MessageRole
+from agentkit.continuation import (
+    ContinuationDecision,
+    ContinuationRequest,
+    GoalState,
+)
 from agentkit.errors import ApprovalTimeout, CheckpointMissing
 from agentkit.events import (
     ApprovalDenied,
@@ -23,6 +28,10 @@ from agentkit.events import (
     ErrorCode,
     Errored,
     Event,
+    GoalAbandoned,
+    GoalAchieved,
+    GoalEvaluated,
+    GoalSet,
     TurnEnded,
     TurnEndReason,
     TurnMetrics,
@@ -47,10 +56,23 @@ from agentkit.subagents.dispatcher import SubagentDispatcher
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, AsyncIterator
+    from uuid import UUID
 
     from agentkit.config import AgentConfig
     from agentkit.providers.base import Provider, SystemBlock
     from agentkit.tools.registry import ToolRegistry
+
+
+# Evaluator reason strings that map to a :class:`GoalAbandoned` cause rather
+# than :class:`GoalAchieved`. Mirrors the literal in ``GoalAbandoned.cause``:
+# consumers (e.g. Pikkolo's evaluator) short-circuit with these reasons to
+# end the goal on a budget or turn-count cap. Any other ``met=True`` outcome
+# emits :class:`GoalAchieved`.
+_ABANDON_REASONS: dict[str, str] = {
+    "budget_exceeded": "budget_exceeded",
+    "max_turns": "max_turns",
+    "max_iterations": "max_iterations",
+}
 
 
 class AgentSession:
@@ -84,6 +106,19 @@ class AgentSession:
         self.model = model
         self.system_blocks = system_blocks or []
         self._initialized = False
+        # Goal state — None when no goal is active. See ``set_goal`` / ``clear_goal``
+        # and the run-loop continuation in :meth:`run`. agentkit owns the in-memory
+        # lifetime only; external persistence (e.g. a Pikkolo Task row) is the
+        # consumer's responsibility via the opaque ``state_id`` correlation key.
+        self.goal: GoalState | None = None
+        # Set by ``set_goal`` and cleared by the next ``run`` after it emits the
+        # ``GoalSet`` event. Ensures GoalSet fires exactly once per goal, even
+        # when ``set_goal`` is called from a mid-turn tool (Phase 3d).
+        self._goal_set_pending: bool = False
+        # Set by ``clear_goal`` so the next turn-boundary check in ``run`` can
+        # emit ``GoalAbandoned(cause="cleared")`` and end the stream. Honored
+        # only at turn boundaries — agentkit does not interrupt an in-flight turn.
+        self._goal_clear_pending: bool = False
 
     async def initialize(self) -> None:
         if self._initialized:
@@ -117,20 +152,80 @@ class AgentSession:
     async def shutdown(self) -> None:
         await self.registry.shutdown()
 
+    def set_goal(
+        self,
+        condition: str,
+        *,
+        state_id: UUID | None = None,
+        resume_from: GoalState | None = None,
+    ) -> None:
+        """Activate a completion goal on this session.
+
+        After every terminal envelope the configured ``continuation_evaluator``
+        is consulted. While the evaluator returns ``met=False``, the runtime
+        synthesises a system message ``[goal continuation: <reason>]`` and
+        starts another turn. The goal ends when the evaluator returns
+        ``met=True`` (→ :class:`GoalAchieved`) or when :meth:`clear_goal` is
+        called (→ :class:`GoalAbandoned(cause="cleared")`).
+
+        ``state_id`` is opaque to agentkit; consumers persisting goal state
+        externally use it to correlate (e.g. a Pikkolo Task row id).
+
+        ``resume_from`` lets a consumer rehydrate counters and last_reason
+        from external persistence (used by background Card-bound goals). When
+        ``None``, counters start at zero — matching Claude Code's resume
+        semantics where the condition carries over but progress does not.
+
+        Raises :exc:`ValueError` when ``condition`` is empty or whitespace.
+        Replaces any prior goal silently — one goal per session by design.
+        """
+        if not condition or not condition.strip():
+            raise ValueError("goal condition must be a non-empty string")
+        if resume_from is not None:
+            self.goal = resume_from
+        else:
+            self.goal = GoalState(
+                condition=condition,
+                set_at=datetime.now(UTC),
+                state_id=state_id,
+            )
+        self._goal_set_pending = True
+        self._goal_clear_pending = False
+
+    def clear_goal(self) -> None:
+        """Mark the active goal for abandonment at the next turn boundary.
+
+        No-op when no goal is active. The actual ``GoalAbandoned`` event
+        emits from the active stream at the next turn-boundary check;
+        agentkit does not interrupt an in-flight turn.
+        """
+        if self.goal is None:
+            return
+        self._goal_clear_pending = True
+
     @asynccontextmanager
     async def run(self, user_text: str) -> AsyncGenerator[AsyncIterator[Event], None]:
         """Async-context that streams events for one turn.
 
-        Usage:
+        Usage::
 
             async with session.run("hello") as stream:
                 async for ev in stream:
                     ...
+
+        When no goal is active, the stream yields exactly one turn's events
+        and ends on :class:`TurnEnded`. When a goal is active (see
+        :meth:`set_goal`) and a ``continuation_evaluator`` is configured, the
+        stream may emit multiple turn cycles, separated by a
+        :class:`GoalEvaluated` event, and terminate on
+        :class:`GoalAchieved` or :class:`GoalAbandoned` instead of stopping
+        on the first :class:`TurnEnded`.
         """
         await self.initialize()
         queue: asyncio.Queue[Any] = asyncio.Queue(self.config.events.queue_size)
 
-        # Build the turn context with full message history loaded.
+        # Build the shared history. Subsequent continuation turns mutate the
+        # same list so per-turn TurnContexts see the full conversation.
         history: list[Message] = []
         store = self.config.stores.session
         if store is not None:
@@ -147,38 +242,52 @@ class AgentSession:
         if store is not None:
             await store.append_message(self.id, user_msg)
 
-        ctx = TurnContext(
-            session_id=self.id,
-            turn_id=new_id(TurnId),
-            call_id="",
-            history=history,
-            clock=SystemClock(),
-            memory_store=self.config.stores.memory,
-            event_queue=queue,
-        )
-        ctx.metadata["owner"] = self.owner
-
         deps = self._build_deps()
-        loop = Loop(ctx=ctx, handlers=self._handlers(), deps=deps)
         history_len_before_turn = len(history)
 
+        def _build_turn_ctx() -> TurnContext:
+            ctx = TurnContext(
+                session_id=self.id,
+                turn_id=new_id(TurnId),
+                call_id="",
+                history=history,
+                clock=SystemClock(),
+                memory_store=self.config.stores.memory,
+                event_queue=queue,
+            )
+            ctx.metadata["owner"] = self.owner
+            return ctx
+
         async def _iter() -> AsyncIterator[Event]:
-            run_task = asyncio.create_task(self._drain_loop_into_queue(loop, queue))
+            # Announce a freshly-set goal before the first turn so the
+            # consumer panel renders the condition immediately.
+            if self.goal is not None and self._goal_set_pending:
+                yield self._mk_goal_set(self.goal)
+                self._goal_set_pending = False
+
             try:
                 while True:
-                    item = await queue.get()
-                    yield item
-                    if isinstance(item, TurnEnded):
-                        break
+                    ctx = _build_turn_ctx()
+                    async for ev in self._drive_one_turn(ctx, queue, deps):
+                        yield ev
+
+                    # Single-turn mode (no goal) — stream ends after one turn.
+                    if self.goal is None:
+                        return
+
+                    boundary_events, keep_going = await self._handle_goal_boundary(ctx, history)
+                    for ev in boundary_events:
+                        yield ev
+                    if not keep_going:
+                        return
             finally:
-                if not run_task.done():
-                    run_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError, Exception):
-                        await run_task
-                # Persist any new assistant messages produced during the turn.
+                # Persist any new messages produced across all turns in this
+                # run (assistant outputs + synthesised continuation system
+                # messages). Matches the original single-turn cleanup.
                 if store is not None:
-                    for msg in ctx.history[history_len_before_turn:]:
-                        await store.append_message(self.id, msg)
+                    for msg in history[history_len_before_turn:]:
+                        with contextlib.suppress(Exception):
+                            await store.append_message(self.id, msg)
 
         try:
             yield _iter()
@@ -375,6 +484,194 @@ class AgentSession:
     async def _drain_loop_into_queue(self, loop: Loop, queue: asyncio.Queue[Any]) -> None:
         async for ev in loop.run():
             await queue.put(ev)
+
+    async def _drive_one_turn(
+        self,
+        ctx: TurnContext,
+        queue: asyncio.Queue[Any],
+        deps: dict[str, Any],
+    ) -> AsyncIterator[Event]:
+        """Run a single turn end-to-end, yielding each Loop event in order.
+
+        Stops yielding once :class:`TurnEnded` has been emitted. Ensures the
+        background drain task is awaited or cancelled before returning.
+        """
+        loop = Loop(ctx=ctx, handlers=self._handlers(), deps=deps)
+        run_task = asyncio.create_task(self._drain_loop_into_queue(loop, queue))
+        try:
+            while True:
+                item = await queue.get()
+                yield item
+                if isinstance(item, TurnEnded):
+                    break
+        finally:
+            if not run_task.done():
+                run_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await run_task
+
+    async def _handle_goal_boundary(
+        self,
+        ctx: TurnContext,
+        history: list[Message],
+    ) -> tuple[list[Event], bool]:
+        """Decide what happens after a goal-active turn ends.
+
+        Returns the events to yield and whether the outer ``_iter`` loop
+        should keep running. Mutates ``self.goal`` and history as needed:
+        a met goal clears state; a not-met decision appends a system
+        continuation message so the next turn picks it up.
+        """
+        assert self.goal is not None  # narrowed by caller
+
+        if self._goal_clear_pending:
+            abandoned = self._mk_goal_abandoned(self.goal, cause="cleared", ctx=ctx)
+            self.goal = None
+            self._goal_clear_pending = False
+            self._goal_set_pending = False
+            return [abandoned], False
+
+        evaluator = self.config.continuation_evaluator
+        if evaluator is None:
+            # Goal set but no evaluator wired — single-turn behaviour, goal
+            # stays active for a future run() call to evaluate.
+            return [], False
+
+        trigger = getattr(evaluator, "trigger", "every_turn")
+        if trigger == "self_declared":
+            raise RuntimeError(
+                "self_declared trigger mode is reserved for agentkit v0.11.0; "
+                "use trigger='every_turn' in v0.10.0"
+            )
+        if trigger != "every_turn":
+            raise RuntimeError(f"unknown continuation_evaluator trigger: {trigger!r}")
+
+        set_at = self.goal.set_at
+        transcript = tuple(m for m in history if m.created_at >= set_at)
+        request = ContinuationRequest(
+            condition=self.goal.condition,
+            transcript=transcript,
+            turn_count=self.goal.turn_count,
+            iteration_count=self.goal.iteration_count,
+            token_spend=self.goal.token_spend,
+            set_at=self.goal.set_at,
+            state_id=self.goal.state_id,
+        )
+        decision: ContinuationDecision = await evaluator(request)
+
+        # Every dispatched turn under the goal counts, evaluated or not.
+        self.goal.turn_count += 1
+        events: list[Event] = [self._mk_goal_evaluated(self.goal, decision, ctx=ctx)]
+
+        if decision.met:
+            # Reserved reasons map to GoalAbandoned; others to GoalAchieved.
+            # Consumer evaluators return these strings to short-circuit on
+            # budget or turn caps without inventing a parallel signal channel.
+            cause = _ABANDON_REASONS.get(decision.reason)
+            if cause is not None:
+                events.append(self._mk_goal_abandoned(self.goal, cause=cause, ctx=ctx))
+            else:
+                events.append(self._mk_goal_achieved(self.goal, decision, ctx=ctx))
+            self.goal = None
+            self._goal_set_pending = False
+            return events, False
+
+        # Not met: synthesise a system continuation that the next turn's
+        # provider call will read. Annotated so consumer event translators
+        # can filter it out of the editor-facing transcript.
+        self.goal.last_reason = decision.reason
+        cont = Message(
+            id=new_id(MessageId),
+            session_id=self.id,
+            role=MessageRole.SYSTEM,
+            content=[TextBlock(text=f"[goal continuation: {decision.reason}]")],
+            created_at=datetime.now(UTC),
+        )
+        cont.metadata.annotations["goal_continuation"] = True
+        history.append(cont)
+        return events, True
+
+    # ------------------------------------------------------------------
+    # Goal event builders. These live on the session because GoalSet may
+    # need to fire outside of an active TurnContext (e.g. when ``set_goal``
+    # is called from a mid-turn tool and the GoalSet event flushes at the
+    # next run() start). turn_id is synthesized when no live ctx is around.
+    # ------------------------------------------------------------------
+
+    def _mk_goal_set(self, goal: GoalState) -> GoalSet:
+        return GoalSet(
+            event_id=new_id(EventId),
+            session_id=self.id,
+            turn_id=new_id(TurnId),
+            ts=datetime.now(UTC),
+            sequence=0,
+            condition=goal.condition,
+            set_at=goal.set_at,
+            state_id=goal.state_id,
+        )
+
+    def _mk_goal_evaluated(
+        self,
+        goal: GoalState,
+        decision: ContinuationDecision,
+        *,
+        ctx: TurnContext,
+    ) -> GoalEvaluated:
+        return GoalEvaluated(
+            event_id=new_id(EventId),
+            session_id=self.id,
+            turn_id=ctx.turn_id,
+            ts=datetime.now(UTC),
+            sequence=ctx.next_sequence(),
+            condition=goal.condition,
+            state_id=goal.state_id,
+            met=decision.met,
+            reason=decision.reason,
+            turn_count=goal.turn_count,
+            iteration_count=goal.iteration_count,
+        )
+
+    def _mk_goal_achieved(
+        self,
+        goal: GoalState,
+        decision: ContinuationDecision,
+        *,
+        ctx: TurnContext,
+    ) -> GoalAchieved:
+        return GoalAchieved(
+            event_id=new_id(EventId),
+            session_id=self.id,
+            turn_id=ctx.turn_id,
+            ts=datetime.now(UTC),
+            sequence=ctx.next_sequence(),
+            condition=goal.condition,
+            state_id=goal.state_id,
+            reason=decision.reason,
+            turn_count=goal.turn_count,
+            iteration_count=goal.iteration_count,
+            total_tokens=goal.token_spend,
+            duration_s=(datetime.now(UTC) - goal.set_at).total_seconds(),
+        )
+
+    def _mk_goal_abandoned(
+        self,
+        goal: GoalState,
+        *,
+        cause: str,
+        ctx: TurnContext | None = None,
+    ) -> GoalAbandoned:
+        return GoalAbandoned(
+            event_id=new_id(EventId),
+            session_id=self.id,
+            turn_id=ctx.turn_id if ctx is not None else new_id(TurnId),
+            ts=datetime.now(UTC),
+            sequence=ctx.next_sequence() if ctx is not None else 0,
+            condition=goal.condition,
+            state_id=goal.state_id,
+            cause=cause,  # type: ignore[arg-type]
+            turn_count=goal.turn_count,
+            iteration_count=goal.iteration_count,
+        )
 
     def _handlers(self) -> dict[Phase, Any]:
         return {

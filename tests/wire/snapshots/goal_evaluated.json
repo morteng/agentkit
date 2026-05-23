@@ -1,0 +1,14 @@
+{
+  "condition": "alle åpne tilbakemeldinger er triagert",
+  "event_id": "ev_canonical",
+  "iteration_count": 0,
+  "met": false,
+  "reason": "2 of 3 reports still open",
+  "sequence": 1,
+  "session_id": "sess_canonical",
+  "state_id": "00000000-0000-0000-0000-000000000001",
+  "ts": "2026-01-01T00:00:00Z",
+  "turn_count": 1,
+  "turn_id": "turn_canonical",
+  "type": "goal_evaluated"
+}

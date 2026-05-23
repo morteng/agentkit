@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
+## [0.10.0] - 2026-05-23
+
+### Added
+- `AgentConfig.continuation_evaluator` hook — a consumer-supplied async callable
+  that, after every terminal envelope, decides whether the session's goal is
+  met. Mirrors the `provider_selector` shape (typed `Any` to keep
+  `AgentConfig` import-light). v0.10.0 ships `trigger="every_turn"` dispatch;
+  the `self_declared` trigger is reserved in the literal for v0.11.0 and the
+  loop raises if a v0.10.0 caller wires it up.
+- `AgentSession.goal: GoalState | None` plus `set_goal(condition, *, state_id=None, resume_from=None)`
+  and `clear_goal()` methods. `state_id` is opaque to agentkit — consumers
+  persisting goal state externally (e.g. a Pikkolo Task row) use it to
+  correlate. `resume_from` lets a consumer rehydrate counters and
+  `last_reason` from external persistence; without it, counters start at
+  zero, matching Claude Code's resume semantics.
+- Four new public events: `GoalSet`, `GoalEvaluated`, `GoalAchieved`,
+  `GoalAbandoned`. Each carries the goal condition and the consumer's opaque
+  `state_id`. Wire-contract snapshots pinned under `tests/wire/snapshots/`.
+- `agentkit.continuation` module: `ContinuationEvaluator` (runtime-checkable
+  Protocol), `ContinuationRequest`, `ContinuationDecision`, `GoalState`,
+  `TriggerMode` literal.
+
+### Changed
+- `AgentSession.run()` no longer ends unconditionally on the first
+  `TurnEnded`. When a goal is active and a `continuation_evaluator` is
+  configured, the same `run()` invocation streams multiple turn cycles —
+  each separated by a `GoalEvaluated` event — until the evaluator returns
+  `met=True` (→ `GoalAchieved`) or `clear_goal()` is called (→
+  `GoalAbandoned(cause="cleared")`). Sessions without a goal behave
+  identically to v0.9.0.
+- Evaluator reasons matching the `GoalAbandoned.cause` literal
+  (`"budget_exceeded"`, `"max_turns"`, `"max_iterations"`) short-circuit to
+  `GoalAbandoned` instead of `GoalAchieved`, so consumer evaluators can end
+  the loop on budget or turn caps without inventing a parallel signal.
+- Rejected (`met=False`) decisions append a system-role
+  `[goal continuation: <reason>]` message to history, annotated with
+  `metadata.annotations["goal_continuation"] = True` so consumer event
+  translators can filter it from the editor-facing transcript.
+
 ## [0.8.0] - 2026-05-22
 
 ### Changed
