@@ -31,6 +31,8 @@ if TYPE_CHECKING:
 async def handle_streaming(ctx: TurnContext, deps: dict[str, Any]) -> Phase:  # noqa: PLR0912 — turn-level dispatch necessarily branches per event type
     selector = deps.get("provider_selector")
     provider: Provider = selector(ctx) if selector is not None else deps["provider"]
+    model_selector = deps.get("model_selector")
+    model_override: str | None = model_selector(ctx) if model_selector is not None else None
     builder: MessageBuilder = deps["message_builder"]
     registry: ToolRegistry = deps["registry"]
     queue: asyncio.Queue[Any] = ctx.event_queue if ctx.event_queue is not None else asyncio.Queue()
@@ -42,6 +44,7 @@ async def handle_streaming(ctx: TurnContext, deps: dict[str, Any]) -> Phase:  # 
         system_blocks=deps.get("system_blocks", []),
         history=ctx.history,
         tool_specs=registry.list_specs(),
+        model_override=model_override,
     )
     mux = StreamMux(ctx, registry=registry)
 
