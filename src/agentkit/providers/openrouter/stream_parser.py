@@ -59,11 +59,23 @@ async def parse_openrouter_stream(
             yield MessageStart()
             started = True
 
+        # Capture usage from any chunk that carries it. The OpenAI canonical
+        # ``include_usage`` shape is "empty choices + populated usage on a final
+        # chunk", but real OpenRouter responses (verified live against
+        # deepseek-chat-v3.1, deepseek-v3.1-terminus, gemini-2.5-flash,
+        # gemini-2.5-flash-lite-preview, with and without reasoning) deliver
+        # ``usage`` on the SAME chunk as the last delta + ``finish_reason``.
+        # Capturing only inside ``if choice is None`` silently dropped every
+        # usage chunk on OpenRouter — see the Pikkolo v0.128.0 ledger gap
+        # incident (zero ``chat_session`` rows in usage_ledger after deploy).
+        # Last-wins semantics are correct here: any chunk that re-publishes a
+        # usage object is meant to supersede the prior value.
+        usage = getattr(chunk, "usage", None)
+        if usage is not None:
+            final_usage = _usage_from_openai(usage)
+
         choice = chunk.choices[0] if chunk.choices else None
         if choice is None:
-            usage = getattr(chunk, "usage", None)
-            if usage is not None:
-                final_usage = _usage_from_openai(usage)
             continue
 
         delta = choice.delta
