@@ -42,3 +42,19 @@ async def test_fake_provider_consumes_responses_in_order():
 def test_fake_provider_estimate_cost_is_zero():
     p = FakeProvider()
     assert p.estimate_cost(Usage(input_tokens=100, output_tokens=50)) == Decimal("0")
+
+
+@pytest.mark.asyncio
+async def test_fake_provider_stamps_model_and_provider_name():
+    """FakeProvider must stamp request.model + provider_name='fake' onto
+    every UsageEvent it yields, so tests built on top of FakeProvider can
+    exercise the same ledger code paths as real providers."""
+    from agentkit.providers.base import UsageEvent
+
+    fake = FakeProvider().script(FakeProvider.text("hi"))
+    req = ProviderRequest(model="fake/test-model-123")
+    events = [ev async for ev in fake.stream(req)]
+    usage_events = [e for e in events if isinstance(e, UsageEvent)]
+    assert len(usage_events) >= 1
+    assert usage_events[0].model == "fake/test-model-123"
+    assert usage_events[0].provider_name == "fake"
