@@ -20,6 +20,7 @@ from agentkit.events import (
     TextDelta,
     ThinkingDelta,
     ToolCallStarted,
+    UsageRecorded,
 )
 from agentkit.events.base import BaseEvent
 from agentkit.loop.context import TurnContext
@@ -100,8 +101,17 @@ class StreamMux:
                     )
 
                 case "usage":
-                    # Usage is captured into TurnMetrics later; not surfaced standalone.
+                    # Capture into ctx.metadata for backward compatibility — any consumer
+                    # reading the legacy capture directly continues to work.
                     self._ctx.metadata.setdefault("usages", []).append(ev.usage)
+                    # Public per-call event for ledger consumers.
+                    yield self._mk(
+                        UsageRecorded,
+                        message_id=self._message_id,
+                        model=ev.model,
+                        usage=ev.usage,
+                        provider_name=ev.provider_name,
+                    )
 
                 case "error":
                     code = (
