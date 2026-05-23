@@ -34,7 +34,9 @@ async def test_stream_mux_translates_text_delta():
         yield MessageStart()
         yield TextDelta(delta="he")
         yield TextDelta(delta="llo")
-        yield UsageEvent(usage=Usage(input_tokens=5, output_tokens=2))
+        yield UsageEvent(
+            usage=Usage(input_tokens=5, output_tokens=2), model="fake/test", provider_name="fake"
+        )
         yield MessageComplete(finish_reason="end_turn")
 
     out = []

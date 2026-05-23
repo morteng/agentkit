@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from agentkit.providers.base import UsageEvent
 from agentkit.providers.openrouter.stream_parser import parse_openrouter_stream
 
 
@@ -29,8 +30,16 @@ class _Choice:
 
 
 class _Chunk:
-    def __init__(self, choices: list[_Choice]) -> None:
+    def __init__(self, choices: list[_Choice], usage: Any = None) -> None:
         self.choices = choices
+        self.usage = usage
+
+
+class _Usage:
+    def __init__(self, prompt_tokens: int, completion_tokens: int, cached_tokens: int = 0) -> None:
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+        self.prompt_tokens_details = None
 
 
 class _ToolCallStreamChunk:
@@ -63,7 +72,7 @@ async def test_pending_tool_calls_are_dropped_when_stream_ends_abnormally():
         # Stream ends with finish_reason="length" (truncation), NOT "tool_calls".
         _Chunk([_Choice(_Delta(), finish_reason="length")]),
     ]
-    events = [ev async for ev in parse_openrouter_stream(_aiter(chunks))]
+    events = [ev async for ev in parse_openrouter_stream(_aiter(chunks), model="test/model")]
     types = [ev.type for ev in events]
     # We may see ToolCallStart and ToolCallDelta (legitimate), but NO ToolCallComplete.
     assert "tool_call_complete" not in types
@@ -84,7 +93,7 @@ async def test_pending_tool_calls_flush_when_finish_reason_is_tool_calls():
         ),
         _Chunk([_Choice(_Delta(), finish_reason="tool_calls")]),
     ]
-    events = [ev async for ev in parse_openrouter_stream(_aiter(chunks))]
+    events = [ev async for ev in parse_openrouter_stream(_aiter(chunks), model="test/model")]
     tcc = [ev for ev in events if ev.type == "tool_call_complete"]
     assert len(tcc) == 1
     assert tcc[0].tool_name == "add"
@@ -100,7 +109,7 @@ async def test_reasoning_content_emitted_as_thinking_delta():
         _Chunk([_Choice(_Delta(content="Hi!"))]),
         _Chunk([_Choice(_Delta(), finish_reason="stop")]),
     ]
-    events = [ev async for ev in parse_openrouter_stream(_aiter(chunks))]
+    events = [ev async for ev in parse_openrouter_stream(_aiter(chunks), model="test/model")]
     thinking = [ev for ev in events if ev.type == "thinking_delta"]
     text = [ev for ev in events if ev.type == "text_delta"]
     assert [t.delta for t in thinking] == ["thinking about it...", " still thinking"]
@@ -115,7 +124,26 @@ async def test_reasoning_field_alias_also_emits_thinking_delta():
         _Chunk([_Choice(_Delta(content="ok"))]),
         _Chunk([_Choice(_Delta(), finish_reason="stop")]),
     ]
-    events = [ev async for ev in parse_openrouter_stream(_aiter(chunks))]
+    events = [ev async for ev in parse_openrouter_stream(_aiter(chunks), model="openai/gpt-5")]
     thinking = [ev for ev in events if ev.type == "thinking_delta"]
     assert len(thinking) == 1
     assert thinking[0].delta == "hmm"
+
+
+@pytest.mark.asyncio
+async def test_parser_stamps_model_and_provider_name_on_usage_event():
+    """The parser must thread its ``model`` kwarg + a fixed
+    ``provider_name='openrouter'`` onto every UsageEvent it yields."""
+    chunks: list[Any] = [
+        _Chunk([_Choice(_Delta(content="hi"))]),
+        _Chunk([_Choice(_Delta(), finish_reason="stop")]),
+        # Usage arrives in a no-choices chunk (OpenAI stream_options pattern).
+        _Chunk([], usage=_Usage(prompt_tokens=10, completion_tokens=5)),
+    ]
+    events = [ev async for ev in parse_openrouter_stream(_aiter(chunks), model="openai/gpt-5")]
+    usage_events = [e for e in events if isinstance(e, UsageEvent)]
+    assert len(usage_events) == 1
+    assert usage_events[0].model == "openai/gpt-5"
+    assert usage_events[0].provider_name == "openrouter"
+    assert usage_events[0].usage.input_tokens == 10
+    assert usage_events[0].usage.output_tokens == 5

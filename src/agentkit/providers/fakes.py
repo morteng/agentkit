@@ -104,7 +104,11 @@ class FakeProvider(Provider):
             # Stream chunks of ~3 chars to mimic a real provider.
             for i in range(0, len(response.text), 3):
                 yield TextDelta(delta=response.text[i : i + 3], block_index=0)
-            yield UsageEvent(usage=response.usage or Usage(input_tokens=10, output_tokens=10))
+            yield UsageEvent(
+                usage=response.usage or Usage(input_tokens=10, output_tokens=10),
+                model=request.model,
+                provider_name="fake",
+            )
             yield MessageComplete(finish_reason="end_turn")
 
         elif response.kind == "tool_call":
@@ -116,7 +120,11 @@ class FakeProvider(Provider):
                 tool_name=response.tool_name,
                 arguments=response.tool_args,
             )
-            yield UsageEvent(usage=response.usage or Usage(input_tokens=10, output_tokens=5))
+            yield UsageEvent(
+                usage=response.usage or Usage(input_tokens=10, output_tokens=5),
+                model=request.model,
+                provider_name="fake",
+            )
             yield MessageComplete(finish_reason="tool_use")
 
     def estimate_tokens(self, messages: list[Message]) -> int:

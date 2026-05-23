@@ -20,6 +20,7 @@ from agentkit.events.streaming import (
     MessageStarted,
     TextDelta,
     ThinkingDelta,
+    UsageRecorded,
 )
 from agentkit.events.subagent import SubagentEnded, SubagentEvent, SubagentStarted
 from agentkit.events.tool import ToolCallProgress, ToolCallResult, ToolCallStarted
@@ -30,6 +31,7 @@ Event = Annotated[
     | TextDelta
     | ThinkingDelta
     | MessageCompleted
+    | UsageRecorded
     | ToolCallStarted
     | ToolCallProgress
     | ToolCallResult
@@ -73,4 +75,5 @@ __all__ = [
     "TurnEnded",
     "TurnMetrics",
     "TurnStarted",
+    "UsageRecorded",
 ]

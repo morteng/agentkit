@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import Field
 
 from agentkit._ids import MessageId
+from agentkit._messages import Usage
 from agentkit.events.base import BaseEvent
 
 
@@ -31,3 +32,18 @@ class MessageCompleted(BaseEvent):
     type: Literal["message_completed"] = Field(default="message_completed")  # type: ignore[reportIncompatibleVariableOverride]
     message_id: MessageId
     finish_reason: Literal["end_turn", "tool_use", "max_tokens", "stop_sequence"]
+
+
+class UsageRecorded(BaseEvent):
+    """Per-LLM-call usage event yielded after MessageCompleted.
+
+    Consumers can persist per-call cost rows by listening for this event.
+    The internal ctx.metadata['usages'] capture stays for any consumer
+    still inspecting it directly.
+    """
+
+    type: Literal["usage_recorded"] = Field(default="usage_recorded")  # type: ignore[reportIncompatibleVariableOverride]
+    message_id: MessageId
+    model: str
+    usage: Usage
+    provider_name: str
