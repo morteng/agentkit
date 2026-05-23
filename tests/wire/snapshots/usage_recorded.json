@@ -1,0 +1,19 @@
+{
+  "event_id": "ev_canonical",
+  "message_id": "msg_canonical",
+  "model": "openai/gpt-5",
+  "provider_name": "openrouter",
+  "sequence": 1,
+  "session_id": "sess_canonical",
+  "ts": "2026-01-01T00:00:00Z",
+  "turn_id": "turn_canonical",
+  "type": "usage_recorded",
+  "usage": {
+    "cache_creation_tokens": 0,
+    "cached_input_tokens": 20,
+    "cost_usd": "0",
+    "input_tokens": 100,
+    "output_tokens": 50,
+    "thinking_tokens": 0
+  }
+}

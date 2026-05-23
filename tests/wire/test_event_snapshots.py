@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 import agentkit.events  # noqa: F401 — ensures all submodules are imported so subclasses register
+from agentkit._messages import Usage
 from agentkit.events.approval import ApprovalDenied, ApprovalGranted, ApprovalNeeded
 from agentkit.events.base import BaseEvent
 from agentkit.events.lifecycle import (
@@ -32,6 +33,7 @@ from agentkit.events.streaming import (
     MessageStarted,
     TextDelta,
     ThinkingDelta,
+    UsageRecorded,
 )
 from agentkit.events.subagent import SubagentEnded, SubagentEvent, SubagentStarted
 from agentkit.events.tool import ToolCallProgress, ToolCallResult, ToolCallStarted
@@ -57,7 +59,7 @@ SUBAGENT_ID = "subagent_canonical"
 
 # ---------------------------------------------------------------------------
 # EVENT_FIXTURES: (EventClass, snapshot_name, event_kwargs)
-# 17 entries — one per concrete event class in the Event union.
+# 18 entries — one per concrete event class in the Event union.
 # ---------------------------------------------------------------------------
 
 EVENT_FIXTURES: list[tuple[type[BaseEvent], str, dict[str, Any]]] = [
@@ -124,6 +126,16 @@ EVENT_FIXTURES: list[tuple[type[BaseEvent], str, dict[str, Any]]] = [
         {
             "message_id": MSG_ID,
             "finish_reason": "end_turn",
+        },
+    ),
+    (
+        UsageRecorded,
+        "usage_recorded",
+        {
+            "message_id": MSG_ID,
+            "model": "openai/gpt-5",
+            "usage": Usage(input_tokens=100, output_tokens=50, cached_input_tokens=20),
+            "provider_name": "openrouter",
         },
     ),
     # --- Tool ---
