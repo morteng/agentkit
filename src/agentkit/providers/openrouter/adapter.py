@@ -154,7 +154,7 @@ class OpenRouterProvider(Provider):
                 extra_body=extra_body or None,
                 **payload,
             )
-            async for ev in parse_openrouter_stream(chunks):  # type: ignore[reportUnknownArgumentType]
+            async for ev in parse_openrouter_stream(chunks, model=request.model):  # type: ignore[reportUnknownArgumentType]
                 yield ev
         except Exception as exc:
             yield _map_openai_error(exc)
