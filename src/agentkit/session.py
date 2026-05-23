@@ -394,6 +394,7 @@ class AgentSession:
         deps: dict[str, Any] = {
             "provider": self.provider,
             "provider_selector": self.config.provider_selector,
+            "model_selector": self.config.model_selector,
             "message_builder": MessageBuilder(
                 model=self.model,
                 max_tokens=4096,

@@ -71,6 +71,16 @@ class AgentConfig(BaseSettings):
     # Typed Any (not Callable) to avoid circular imports with Provider — same
     # rationale as GuardConfig.intent / approval / finalize / success_claim.
     provider_selector: Any = None
+    # Optional per-iteration model override. When set, the streaming handler
+    # resolves ``model = selector(ctx)`` and threads it into MessageBuilder as
+    # a per-build override, so ``ProviderRequest.model`` reflects the
+    # current-iteration model rather than the session's constructor-time
+    # ``model``. Orthogonal to ``provider_selector``: a consumer can swap
+    # provider (for per-tier reasoning_effort) AND swap model (for the
+    # actual model_id at the wire) using a shared tracker. Typed Any to
+    # avoid circular imports with TurnContext — same rationale as
+    # ``provider_selector``.
+    model_selector: Any = None
 
     model_config = SettingsConfigDict(
         env_prefix="AGENTKIT_",

@@ -37,9 +37,17 @@ class MessageBuilder:
         system_blocks: Sequence[SystemBlock],
         history: Sequence[Message],
         tool_specs: Sequence[ToolSpec],
+        model_override: str | None = None,
     ) -> ProviderRequest:
+        """Build a ProviderRequest.
+
+        ``model_override`` lets a per-iteration model selector swap the model_id
+        without rebuilding the MessageBuilder. When ``None`` (the default) the
+        constructor-time ``model`` is used — same shape as before this hook
+        existed.
+        """
         return ProviderRequest(
-            model=self._model,
+            model=model_override if model_override is not None else self._model,
             system=list(system_blocks),
             messages=list(history),
             tools=[self._spec_to_def(s) for s in tool_specs],
