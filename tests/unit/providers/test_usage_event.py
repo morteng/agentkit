@@ -3,6 +3,8 @@ per-call ledger rows without guessing which provider produced the call."""
 
 from datetime import UTC, datetime
 
+import pytest
+
 from agentkit._ids import EventId, SessionId, TurnId, new_id
 from agentkit._messages import Usage
 from agentkit.providers.base import UsageEvent
@@ -57,12 +59,10 @@ def test_usage_event_round_trips_through_provider_event_union():
     assert parsed.usage.input_tokens == 10
 
 
-def test_usage_event_defaults_model_and_provider_name_to_none():
-    """The optional-default state is transitional — existing call sites
-    (OpenRouter, Anthropic, fakes, stream_mux, etc) still construct
-    UsageEvent without the new fields. This test guards against an
-    accidental tightening to required before those call sites are
-    updated in tasks 1.2/1.3/1.4."""
-    ev = UsageEvent(**_mk_kwargs(), usage=Usage(input_tokens=1, output_tokens=1))
-    assert ev.model is None
-    assert ev.provider_name is None
+def test_usage_event_requires_model_and_provider_name():
+    """Both fields are required — the optional defaults from the
+    transitional period (Tasks 1.1-1.4) have been tightened."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="model"):
+        UsageEvent(**_mk_kwargs(), usage=Usage(input_tokens=1, output_tokens=1))

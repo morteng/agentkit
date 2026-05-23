@@ -127,9 +127,8 @@ class _MessageComplete(_ProviderEventBase):
 class _UsageEvent(_ProviderEventBase):
     type: Literal["usage"] = "usage"  # type: ignore[reportIncompatibleVariableOverride]
     usage: Usage
-    # TODO(task-1.2/1.3/1.4): make required once all call sites pass model + provider_name
-    model: str | None = None
-    provider_name: str | None = None
+    model: str
+    provider_name: str
 
 
 class _ErrorEvent(_ProviderEventBase):
