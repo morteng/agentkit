@@ -429,7 +429,9 @@ async def test_stream_mux_thinking_and_error_branches() -> None:
         yield ThinkingDelta(delta="hmm")
         # tool_call_delta is a no-op pass branch (not surfaced)
         yield ToolCallDelta(call_id="c1", arguments_delta='{"a"')
-        yield UsageEvent(usage=Usage(input_tokens=1, output_tokens=1))
+        yield UsageEvent(
+            usage=Usage(input_tokens=1, output_tokens=1), model="fake/test", provider_name="fake"
+        )
         yield ErrorEvent(code="provider_fault", message="oops", recoverable=True)
 
     out = [e async for e in mux.translate(src())]

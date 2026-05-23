@@ -42,7 +42,9 @@ class _SlowProvider:
         for i in range(self._delta_count):
             await asyncio.sleep(self._delay)
             yield TextDelta(delta=f"chunk-{i} ", block_index=0)
-        yield UsageEvent(usage=Usage(input_tokens=1, output_tokens=1))
+        yield UsageEvent(
+            usage=Usage(input_tokens=1, output_tokens=1), model="fake/test", provider_name="fake"
+        )
         yield MessageComplete(finish_reason="end_turn")
 
     def estimate_tokens(self, _messages):
