@@ -3,6 +3,13 @@
 __version__ = "0.1.0"
 
 from agentkit.config import AgentConfig
+from agentkit.continuation import (
+    ContinuationDecision,
+    ContinuationEvaluator,
+    ContinuationRequest,
+    GoalState,
+    TriggerMode,
+)
 from agentkit.envelope import (
     Action,
     Envelope,
@@ -18,9 +25,14 @@ __all__ = [
     "Action",
     "AgentConfig",
     "AgentSession",
+    "ContinuationDecision",
+    "ContinuationEvaluator",
+    "ContinuationRequest",
     "Envelope",
+    "GoalState",
     "PendingConfirmation",
     "ToolCallSummary",
+    "TriggerMode",
     "ValidationResult",
     "Violation",
     "__version__",

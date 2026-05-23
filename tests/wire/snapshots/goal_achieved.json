@@ -1,0 +1,15 @@
+{
+  "condition": "alle åpne tilbakemeldinger er triagert",
+  "duration_s": 184.5,
+  "event_id": "ev_canonical",
+  "iteration_count": 0,
+  "reason": "all 3 reports triaged",
+  "sequence": 1,
+  "session_id": "sess_canonical",
+  "state_id": "00000000-0000-0000-0000-000000000001",
+  "total_tokens": 12345,
+  "ts": "2026-01-01T00:00:00Z",
+  "turn_count": 3,
+  "turn_id": "turn_canonical",
+  "type": "goal_achieved"
+}

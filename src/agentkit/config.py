@@ -71,6 +71,12 @@ class AgentConfig(BaseSettings):
     # Typed Any (not Callable) to avoid circular imports with Provider — same
     # rationale as GuardConfig.intent / approval / finalize / success_claim.
     provider_selector: Any = None
+    # Optional continuation evaluator. When the session has an active goal
+    # (set via :meth:`AgentSession.set_goal`), this hook fires after each
+    # terminal envelope to decide whether the goal is met. When unset, goals
+    # are inert (the loop runs single-turn as if no goal existed). See
+    # :mod:`agentkit.continuation` for the protocol.
+    continuation_evaluator: Any = None
 
     model_config = SettingsConfigDict(
         env_prefix="AGENTKIT_",

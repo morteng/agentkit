@@ -19,6 +19,7 @@ import agentkit.events  # noqa: F401 — ensures all submodules are imported so 
 from agentkit._messages import Usage
 from agentkit.events.approval import ApprovalDenied, ApprovalGranted, ApprovalNeeded
 from agentkit.events.base import BaseEvent
+from agentkit.events.goal import GoalAbandoned, GoalAchieved, GoalEvaluated, GoalSet
 from agentkit.events.lifecycle import (
     ErrorCode,
     Errored,
@@ -56,6 +57,8 @@ BASE_KWARGS: dict[str, Any] = {
 MSG_ID = "msg_canonical"
 CALL_ID = "call_canonical"
 SUBAGENT_ID = "subagent_canonical"
+GOAL_STATE_ID = "00000000-0000-0000-0000-000000000001"
+GOAL_SET_AT = datetime(2026, 5, 23, 12, 0, 0, tzinfo=UTC)
 
 # ---------------------------------------------------------------------------
 # EVENT_FIXTURES: (EventClass, snapshot_name, event_kwargs)
@@ -226,6 +229,52 @@ EVENT_FIXTURES: list[tuple[type[BaseEvent], str, dict[str, Any]]] = [
             "subagent_id": SUBAGENT_ID,
             "reason": TurnEndReason.COMPLETED,
             "summary": "Translation complete",
+        },
+    ),
+    # --- Goal lifecycle ---
+    (
+        GoalSet,
+        "goal_set",
+        {
+            "condition": "alle åpne tilbakemeldinger er triagert",
+            "set_at": GOAL_SET_AT,
+            "state_id": GOAL_STATE_ID,
+        },
+    ),
+    (
+        GoalEvaluated,
+        "goal_evaluated",
+        {
+            "condition": "alle åpne tilbakemeldinger er triagert",
+            "state_id": GOAL_STATE_ID,
+            "met": False,
+            "reason": "2 of 3 reports still open",
+            "turn_count": 1,
+            "iteration_count": 0,
+        },
+    ),
+    (
+        GoalAchieved,
+        "goal_achieved",
+        {
+            "condition": "alle åpne tilbakemeldinger er triagert",
+            "state_id": GOAL_STATE_ID,
+            "reason": "all 3 reports triaged",
+            "turn_count": 3,
+            "iteration_count": 0,
+            "total_tokens": 12345,
+            "duration_s": 184.5,
+        },
+    ),
+    (
+        GoalAbandoned,
+        "goal_abandoned",
+        {
+            "condition": "alle åpne tilbakemeldinger er triagert",
+            "state_id": GOAL_STATE_ID,
+            "cause": "budget_exceeded",
+            "turn_count": 2,
+            "iteration_count": 0,
         },
     ),
 ]
