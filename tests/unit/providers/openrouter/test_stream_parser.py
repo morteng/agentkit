@@ -147,3 +147,32 @@ async def test_parser_stamps_model_and_provider_name_on_usage_event():
     assert usage_events[0].provider_name == "openrouter"
     assert usage_events[0].usage.input_tokens == 10
     assert usage_events[0].usage.output_tokens == 5
+
+
+@pytest.mark.asyncio
+async def test_usage_captured_when_arrives_with_non_empty_choices():
+    """OpenRouter delivers ``usage`` on the SAME chunk as the last delta +
+    ``finish_reason`` (not on a follow-up no-choices chunk like the OpenAI
+    canonical pattern). Live probes against deepseek-chat-v3.1,
+    deepseek-v3.1-terminus, gemini-2.5-flash, and gemini-2.5-flash-lite-preview
+    all emit this shape; the parser must capture usage on every chunk, not only
+    when ``choices`` is empty. Pikkolo v0.128.0 deploy left ``usage_ledger``
+    empty for 4+ hours because the original guard discarded these chunks.
+    """
+    chunks: list[Any] = [
+        _Chunk([_Choice(_Delta(content="hi"))]),
+        # Real OpenRouter final chunk: choices=non-empty + finish_reason + usage.
+        _Chunk(
+            [_Choice(_Delta(), finish_reason="stop")],
+            usage=_Usage(prompt_tokens=12, completion_tokens=2),
+        ),
+    ]
+    events = [ev async for ev in parse_openrouter_stream(_aiter(chunks), model="deepseek/deepseek-chat-v3.1")]
+    usage_events = [e for e in events if isinstance(e, UsageEvent)]
+    assert len(usage_events) == 1, (
+        f"Expected one UsageEvent for OpenRouter's final-chunk shape, got {len(usage_events)}. "
+        "Usage on a chunk with non-empty choices was previously dropped."
+    )
+    assert usage_events[0].usage.input_tokens == 12
+    assert usage_events[0].usage.output_tokens == 2
+    assert usage_events[0].model == "deepseek/deepseek-chat-v3.1"
