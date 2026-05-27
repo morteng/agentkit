@@ -398,6 +398,11 @@ class AgentSession:
             "message_builder": MessageBuilder(
                 model=self.model,
                 max_tokens=4096,
+                # Stamp session_id so providers can route it to per-session
+                # tracing (see agentkit._stream_trace, opt-in via env). No
+                # effect on the request wire — adapters strip ``metadata``
+                # before sending.
+                metadata={"session_id": str(self.id)},
             ),
             "registry": self.registry,
             "system_blocks": self.system_blocks,

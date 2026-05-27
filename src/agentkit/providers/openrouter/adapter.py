@@ -154,7 +154,16 @@ class OpenRouterProvider(Provider):
                 extra_body=extra_body or None,
                 **payload,
             )
-            async for ev in parse_openrouter_stream(chunks, model=request.model):  # type: ignore[reportUnknownArgumentType]
+            # AgentSession stamps ``metadata["session_id"]`` so the stream
+            # parser can route per-session tracing without a new constructor
+            # arg or a global context-var. ``None`` keeps the no-op fast path.
+            session_id = request.metadata.get("session_id") or None
+            stream = parse_openrouter_stream(
+                chunks,  # type: ignore[reportUnknownArgumentType]
+                model=request.model,
+                session_id=session_id,
+            )
+            async for ev in stream:
                 yield ev
         except Exception as exc:
             yield _map_openai_error(exc)
