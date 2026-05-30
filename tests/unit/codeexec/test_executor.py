@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 from agentkit.codeexec.executor import execute
 from agentkit.codeexec.limits import ExecLimits
 
@@ -44,3 +46,28 @@ async def test_timeout():
 
     res = await execute({"slow": slow}, "await slow()", ExecLimits(wall_clock_s=0.1))
     assert res.error_type == "CodeTimeoutError"
+
+
+async def test_injected_systemexit_is_captured_not_propagated():
+    async def boom():
+        raise SystemExit(42)
+
+    res = await execute({"boom": boom}, "await boom()")
+    assert res.error_type == "SystemExit"
+    assert res.return_value is None
+
+
+async def test_injected_keyboardinterrupt_is_captured():
+    async def boom():
+        raise KeyboardInterrupt()
+
+    res = await execute({"boom": boom}, "await boom()")
+    assert res.error_type == "KeyboardInterrupt"
+
+
+async def test_cancellederror_propagates_and_is_not_captured():
+    async def boom():
+        raise asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        await execute({"boom": boom}, "await boom()")
