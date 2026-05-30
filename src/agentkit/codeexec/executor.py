@@ -3,6 +3,21 @@
 The body is reparented under an `async def` via AST so the script may use
 `await` and `return`. Runs under a wall-clock timeout with a restricted
 __builtins__ and only the caller-supplied namespace.
+
+Known limitations (accepted — this is a language-level, in-process sandbox,
+not OS-level isolation):
+  * A synchronous CPU loop (e.g. ``while True: pass`` with no ``await``)
+    cannot be preempted by the wall-clock timeout and will block the event
+    loop. Mitigation belongs at deployment (worker watchdog), not here.
+  * An injected (host-provided) coroutine that swallows ``asyncio.CancelledError``
+    defeats the wall-clock timeout. Injected functions MUST propagate
+    ``CancelledError``.
+  * Injected mutable objects are shared by reference (the namespace is shallow
+    copied); a script can mutate them and the change persists for the caller.
+    Callers must reconstruct or defensively isolate stateful injected objects
+    per execution.
+  * ``return_value`` is not size-bounded here; callers serializing it must
+    enforce their own size limit at the transport boundary.
 """
 
 from __future__ import annotations
@@ -77,7 +92,7 @@ async def execute(
         return _result(buffer, None, CodeTimeoutError(f"exceeded {limits.wall_clock_s}s"), started)
     except CodeExecutionError as exc:
         return _result(buffer, None, exc, started)
-    except Exception as exc:
+    except (Exception, SystemExit, KeyboardInterrupt) as exc:
         return _result(buffer, None, exc, started)
 
     return ExecutionResult(
@@ -89,7 +104,7 @@ async def execute(
     )
 
 
-def _result(buffer: StdoutBuffer, rv: Any, exc: Exception, started: float) -> ExecutionResult:
+def _result(buffer: StdoutBuffer, rv: Any, exc: BaseException, started: float) -> ExecutionResult:
     return ExecutionResult(
         stdout=buffer.getvalue(),
         return_value=rv,
