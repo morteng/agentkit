@@ -34,3 +34,19 @@ def test_rejects_dunder_attribute_escape():
 def test_rejects_syntax_error_as_validation_error():
     with pytest.raises(CodeValidationError, match="syntax"):
         validate_source("def (:")
+
+
+def test_rejects_bare_builtins_name():
+    with pytest.raises(CodeValidationError, match="dunder name"):
+        validate_source("__builtins__['__import__']('os').system('id')")
+
+
+def test_rejects_bare_dunder_names():
+    for name in ("__builtins__", "__loader__", "__spec__"):
+        with pytest.raises(CodeValidationError, match="dunder name"):
+            validate_source(f"x = {name}")
+
+
+def test_allows_dunder_free_script():
+    # A benign script with no dunders should validate cleanly.
+    validate_source("x = pikkolo.list_content()\nprint(x)")

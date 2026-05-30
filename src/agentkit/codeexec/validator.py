@@ -50,6 +50,10 @@ def validate_source(source: str) -> ast.Module:
             attr = node.attr
             if attr.startswith("__") and attr.endswith("__"):
                 raise CodeValidationError(f"dunder attribute access not allowed: {attr}")
-        if isinstance(node, ast.Name) and node.id in FORBIDDEN_NAMES:
-            raise CodeValidationError(f"name not allowed: {node.id}")
+        if isinstance(node, ast.Name):
+            nid = node.id
+            if nid.startswith("__") and nid.endswith("__"):
+                raise CodeValidationError(f"dunder name not allowed: {nid}")
+            if nid in FORBIDDEN_NAMES:
+                raise CodeValidationError(f"name not allowed: {nid}")
     return tree
