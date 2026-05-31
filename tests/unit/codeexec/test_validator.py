@@ -18,6 +18,14 @@ def test_rejects_from_import():
         validate_source("from os import system")
 
 
+def test_import_error_message_guides_toward_prebound_modules():
+    # The message must steer a model away from retrying `import` and toward
+    # using host-provided modules directly, so a failed first attempt
+    # self-corrects instead of falling back to manual computation.
+    with pytest.raises(CodeValidationError, match="without import"):
+        validate_source("import math")
+
+
 @pytest.mark.parametrize(
     "name", ["eval", "exec", "compile", "__import__", "open", "getattr", "globals"]
 )

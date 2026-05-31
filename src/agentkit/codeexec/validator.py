@@ -45,7 +45,11 @@ def validate_source(source: str) -> ast.Module:
 
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
-            raise CodeValidationError("import statements are not allowed")
+            raise CodeValidationError(
+                "import statements are not allowed; any modules the host "
+                "provides (e.g. math, datetime, json) are already available "
+                "by name — use them directly without import"
+            )
         if isinstance(node, ast.Attribute):
             attr = node.attr
             if attr.startswith("__") and attr.endswith("__"):

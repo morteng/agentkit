@@ -4,6 +4,25 @@ import pytest
 
 from agentkit.codeexec.executor import execute
 from agentkit.codeexec.limits import ExecLimits
+from agentkit.codeexec.namespace import SAFE_MODULES
+
+
+async def test_safe_modules_usable_without_import_when_merged():
+    res = await execute(
+        {**SAFE_MODULES},
+        "print(math.sqrt(16))\nreturn datetime.date(2026, 1, 1).isoformat()",
+    )
+    assert res.error is None
+    assert res.stdout == "4.0\n"
+    assert res.return_value == "2026-01-01"
+
+
+async def test_injected_module_dunder_access_still_blocked():
+    # Handing the real module object to the script must not reopen the escape:
+    # the validator rejects dunder attribute access at parse time.
+    res = await execute({**SAFE_MODULES}, "return math.__loader__")
+    assert res.error_type == "CodeValidationError"
+    assert res.return_value is None
 
 
 async def test_runs_plain_script_and_captures_print():
