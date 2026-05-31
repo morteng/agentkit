@@ -91,6 +91,12 @@ class AgentConfig(BaseSettings):
     # avoid circular imports with TurnContext — same rationale as
     # ``provider_selector``.
     model_selector: Any = None
+    # Optional per-iteration tool-catalog filter. When set, the streaming
+    # handler calls ``tool_selector(ctx, registry.list_specs())`` and sends
+    # the returned subset to the provider, instead of the full catalog. Used
+    # for progressive disclosure and Tool Plane routing. Typed Any to avoid
+    # circular imports, same rationale as provider_selector and model_selector.
+    tool_selector: Any = None
 
     model_config = SettingsConfigDict(
         env_prefix="AGENTKIT_",

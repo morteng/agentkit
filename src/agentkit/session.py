@@ -396,6 +396,7 @@ class AgentSession:
             "provider": self.provider,
             "provider_selector": self.config.provider_selector,
             "model_selector": self.config.model_selector,
+            "tool_selector": self.config.tool_selector,
             "message_builder": MessageBuilder(
                 model=self.model,
                 max_tokens=4096,
