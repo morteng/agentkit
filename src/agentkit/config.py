@@ -17,6 +17,16 @@ class LoopConfig(BaseModel):
     # applies when a finalize validator is configured. One nudge is
     # enough in practice.
     max_missing_finalize_reprompts: int = 1
+    # When a missing-finalize re-prompt fires (see above), constrain that
+    # re-prompt turn to the finalize tool via tool_choice. Without this, a
+    # model that already answered inline can burn a whole free-form turn
+    # (thinking, re-narrating) before — or instead of — finalizing, holding
+    # the consumer in a streaming state for minutes. Opt-in: the provider
+    # must support named tool_choice, and the consumer must register a
+    # finalize tool (bare name "finalize"/"finalize_response"). Default off
+    # preserves the unconstrained re-prompt for consumers that have not
+    # verified provider support.
+    force_finalize_on_missing_reprompt: bool = False
     max_claim_corrections: int = 1
     streaming_chunk_timeout_seconds: float = 60.0
     builtin_tool_note_enabled: bool = False  # the kit.note opt-in

@@ -391,6 +391,7 @@ class AgentSession:
 
     def _build_deps(self) -> dict[str, Any]:
         gc = self.config.guards
+        lc = self.config.loop
         deps: dict[str, Any] = {
             "provider": self.provider,
             "provider_selector": self.config.provider_selector,
@@ -415,10 +416,11 @@ class AgentSession:
             "finalize_validator": gc.finalize or StructuralFinalizeValidator(),
             "success_claim": gc.success_claim if gc.success_claim_enabled else None,
             "approval_timeout_seconds": gc.approval_timeout_seconds,
-            "max_finalize_retries": self.config.loop.max_finalize_retries,
-            "max_missing_finalize_reprompts": self.config.loop.max_missing_finalize_reprompts,
-            "max_iterations": self.config.loop.max_iterations,
-            "max_consecutive_tool_errors": self.config.loop.max_consecutive_tool_errors,
+            "max_finalize_retries": lc.max_finalize_retries,
+            "max_missing_finalize_reprompts": lc.max_missing_finalize_reprompts,
+            "force_finalize_on_missing_reprompt": lc.force_finalize_on_missing_reprompt,
+            "max_iterations": lc.max_iterations,
+            "max_consecutive_tool_errors": lc.max_consecutive_tool_errors,
             "checkpoint_store": self.config.stores.checkpoint,
         }
         # SubagentDispatcher needs deps to construct its child loops; building

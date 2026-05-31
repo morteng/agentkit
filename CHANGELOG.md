@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
+## [0.11.0] - 2026-05-31
+
+### Added
+- `LoopConfig.force_finalize_on_missing_reprompt` (default `False`) — when a turn ends without calling the finalize tool and `handle_finalize_check` re-prompts the model to finalize, this constrains that re-prompt turn to the finalize tool via `tool_choice`. Without it, a model that already answered inline can spend a whole additional free-form turn (thinking, re-narrating) before — or instead of — finalizing, holding the consumer in a streaming state for minutes even though the answer is already on screen. The re-prompt now resolves to a fast, guaranteed finalize call that yields a real envelope. Opt-in because it requires provider support for named `tool_choice`; the finalize tool is resolved from the registry by the same bare-name convention the validator uses (`finalize_response` / `finalize`), and the handler falls back to an unconstrained re-prompt when no finalize tool is registered. The flag is one-shot per re-prompt (consumed in `handle_streaming`), so only the recovery turn is constrained.
+
 ## [0.10.0] - 2026-05-31
 
 ### Added
