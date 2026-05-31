@@ -20,12 +20,31 @@ from agentkit.events import Errored, TextDelta, ToolCallStarted
 from agentkit.loop.context import TurnContext
 from agentkit.loop.phase import Phase
 from agentkit.loop.stream_mux import StreamMux
+from agentkit.providers.base import NamedToolChoice
 
 if TYPE_CHECKING:
     from agentkit.guards.success_claim import SuccessClaimGuard
     from agentkit.loop.message_builder import MessageBuilder
     from agentkit.providers.base import Provider
     from agentkit.tools.registry import ToolRegistry
+
+
+# Bare tool-name suffixes recognized as the finalize tool — the same
+# convention the finalize validator uses (see finalize_validator.py).
+_FINALIZE_BARE_NAMES = ("finalize_response", "finalize")
+
+
+def _finalize_tool_name(registry: "ToolRegistry") -> str | None:
+    """Resolve the finalize tool's fully-qualified name from the registry.
+
+    Returns None when no finalize tool is registered (consumer opted out), so
+    the caller falls back to an unconstrained re-prompt rather than forcing a
+    tool that does not exist.
+    """
+    for spec in registry.list_specs():
+        if spec.name.split(".", 1)[-1] in _FINALIZE_BARE_NAMES:
+            return spec.name
+    return None
 
 
 async def handle_streaming(ctx: TurnContext, deps: dict[str, Any]) -> Phase:  # noqa: PLR0912 — turn-level dispatch necessarily branches per event type
@@ -46,6 +65,18 @@ async def handle_streaming(ctx: TurnContext, deps: dict[str, Any]) -> Phase:  # 
         tool_specs=registry.list_specs(),
         model_override=model_override,
     )
+
+    # A missing-finalize re-prompt can be constrained to the finalize tool so
+    # the model emits the envelope immediately instead of spending another
+    # free-form turn (thinking / re-narrating) that holds the consumer in a
+    # streaming state. The flag is one-shot: pop it here so only the re-prompt
+    # turn is forced. Falls back to an unconstrained turn if no finalize tool
+    # is registered.
+    if ctx.metadata.pop("force_finalize_tool_choice", False):
+        finalize_name = _finalize_tool_name(registry)
+        if finalize_name is not None:
+            request.tool_choice = NamedToolChoice(name=finalize_name)
+
     mux = StreamMux(ctx, registry=registry)
 
     text_so_far: list[str] = []

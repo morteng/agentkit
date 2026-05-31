@@ -100,6 +100,11 @@ async def handle_finalize_check(ctx: TurnContext, deps: dict[str, Any]) -> Phase
             ctx.metadata["finalize_missing"] = True
             return Phase.MEMORY_EXTRACT
         ctx.metadata["missing_finalize_reprompts"] = reprompts + 1
+        if deps.get("force_finalize_on_missing_reprompt"):
+            # Constrain the re-prompt turn to the finalize tool so the model
+            # emits the envelope immediately instead of spending another
+            # free-form turn. The streaming handler consumes this flag.
+            ctx.metadata["force_finalize_tool_choice"] = True
         _inject_correction(ctx, _MISSING_FINALIZE_REPROMPT)
         return Phase.CONTEXT_BUILD
 
