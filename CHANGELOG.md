@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
+## [0.10.0] - 2026-05-31
+
+### Added
+- `agentkit.codeexec.SAFE_MODULES` — a curated mapping of pure-compute stdlib modules (`math`, `statistics`, `datetime`, `json`, `decimal`, `itertools`, `collections`, `re`) a host MAY merge into a script's namespace so model-authored scripts can do real math/date/parsing work **without** an `import` statement. Imports stay banned by the validator; the modules are handed in as objects exactly like any other injected name, and dunder attribute access on them is still rejected at parse time, so this does not reopen the sandbox escape. Modules with IO / process / import reach (`os`, `sys`, `subprocess`, `importlib`, `pathlib`, `socket`, `builtins`) are deliberately excluded, as is `random` (mutable global state). Opt-in per call: `execute({**SAFE_MODULES, "client": client}, source)`.
+
+### Changed
+- The validator's import-rejection message now guides the model toward pre-bound modules ("…are already available by name — use them directly without import") instead of the bare "import statements are not allowed", so a failed first attempt self-corrects rather than falling back to manual computation.
+
 ## [0.8.0] - 2026-05-22
 
 ### Changed

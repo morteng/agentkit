@@ -3,7 +3,39 @@
 from __future__ import annotations
 
 import builtins as _builtins
-from typing import Any
+import collections as _collections
+import datetime as _datetime
+import decimal as _decimal
+import itertools as _itertools
+import json as _json
+import math as _math
+import re as _re
+import statistics as _statistics
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from types import ModuleType
+
+# Pure-compute stdlib modules a host MAY merge into the script namespace so
+# scripts can do real math/date/parsing work WITHOUT an `import` statement
+# (imports stay banned by the validator). These are stateless and expose no
+# filesystem, network, process, or introspection surface. Dunder attribute
+# access on them is still rejected at parse time by the validator, so handing
+# the real module objects to a script does not reopen the sandbox escape.
+#
+# Deliberately excluded: os, sys, subprocess, importlib, pathlib, socket,
+# builtins, and anything else with IO / process / import reach. `random` is
+# left out too (carries mutable global state).
+SAFE_MODULES: dict[str, ModuleType] = {
+    "math": _math,
+    "statistics": _statistics,
+    "datetime": _datetime,
+    "json": _json,
+    "decimal": _decimal,
+    "itertools": _itertools,
+    "collections": _collections,
+    "re": _re,
+}
 
 SAFE_BUILTIN_NAMES = (
     "len",
