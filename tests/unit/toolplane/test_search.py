@@ -73,3 +73,36 @@ async def test_search_tools_builtin_matches_discoverable_and_records():
     assert text is not None
     assert "csg_subtract" in text
     assert "csg_subtract" in recorded
+
+
+@pytest.mark.asyncio
+async def test_search_tools_negative_limit_does_not_drop_results():
+    specs = [
+        _spec("pikkolo.csg_subtract", "subtract one 3d shape from another csg"),
+        _spec("kit.search_tools", "search for tools"),
+    ]
+    plane = ToolPlane(
+        visibility_of=lambda s: (
+            ToolVisibility(baseline="discoverable") if s.name == "pikkolo.csg_subtract" else None
+        ),
+        context_of=_as_ctx,
+        role_ranks=ROLE_RANKS,
+    )
+    plane.resolve(ToolContext(role="editor", role_rank=1), specs)
+
+    recorded: list[str] = []
+
+    async def record(turn_ctx, names):
+        recorded.extend(names)
+
+    _, handler = make_search_tools_builtin(plane, record)
+
+    class _Ctx:
+        pass
+
+    # A negative limit must not silently drop matched results via ranked[:-1] slicing.
+    result = await handler({"query": "3d csg", "limit": -1}, _Ctx())
+    assert result.status == "ok"
+    text = result.content[0].text
+    assert text is not None
+    assert "csg_subtract" in text

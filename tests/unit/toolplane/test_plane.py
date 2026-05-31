@@ -129,3 +129,37 @@ def test_search_tool_always_kept():
     plane = _plane({"kit.search_tools": ToolVisibility(baseline="discoverable")})
     out = plane.resolve(ToolContext(role="editor", role_rank=1), specs)
     assert "kit.search_tools" in [s.name for s in out]
+
+
+def test_hot_baseline_not_demoted_by_page_match():
+    specs = [_spec("pikkolo.always")]
+    plane = _plane({"pikkolo.always": ToolVisibility(baseline="hot", pages=["/dashboard/x/*"])})
+    ctx = ToolContext(role="editor", role_rank=1, page_path="/dashboard/x/1")
+    out = plane.resolve(ctx, specs)
+    assert [s.name for s in out] == ["pikkolo.always"]
+    assert plane.rationale["pikkolo.always"].tier == "hot"  # stayed hot, not demoted to active
+
+
+def test_discovered_does_not_demote_hot_tool():
+    specs = [_spec("pikkolo.core")]
+    plane = _plane({"pikkolo.core": ToolVisibility(baseline="hot")})
+    ctx = ToolContext(role="editor", role_rank=1, discovered_tools=frozenset({"core"}))
+    plane.resolve(ctx, specs)
+    assert plane.rationale["pikkolo.core"].tier == "hot"
+
+
+def test_mcp_client_hard_gate_hides_and_allows():
+    specs = [_spec("pikkolo.platform_health")]
+    plane = _plane(
+        {"pikkolo.platform_health": ToolVisibility(baseline="hot", mcp_clients=["cursor"])}
+    )
+    # client not in allowlist -> hidden
+    out = plane.resolve(ToolContext(role="editor", role_rank=1, mcp_client="vscode"), specs)
+    assert out == []
+    assert plane.rationale["pikkolo.platform_health"].tier == "hidden"
+    # no client at all -> hidden
+    out_none = plane.resolve(ToolContext(role="editor", role_rank=1, mcp_client=None), specs)
+    assert out_none == []
+    # client in allowlist -> visible
+    out_ok = plane.resolve(ToolContext(role="editor", role_rank=1, mcp_client="cursor"), specs)
+    assert [s.name for s in out_ok] == ["pikkolo.platform_health"]
