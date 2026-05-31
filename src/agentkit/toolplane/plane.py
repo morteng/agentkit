@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _DEFAULT_VISIBILITY = ToolVisibility()  # baseline hot, no constraints
+_TIER_RANK = {"hot": 0, "active": 1, "discoverable": 2, "hidden": 3}
 
 
 def _bare(name: str) -> str:
@@ -136,15 +137,20 @@ class ToolPlane:
         ):
             return ToolDecision("hidden", f"mcp_clients={vis.mcp_clients}, client={ctx.mcp_client}")
 
-        # 2. Declarative promotion (first match wins).
+        # 2. Declarative promotion (first match wins), applied only when it
+        # raises visibility — a promotion must never demote a more-visible
+        # baseline (e.g. a hot tool with a pages= list stays hot off-cap).
+        tier, reason = vis.baseline, f"baseline={vis.baseline}"
         promotion = _promoted_tier(vis, ctx)
         if promotion is not None:
-            tier, reason = promotion
-        else:
-            tier, reason = vis.baseline, f"baseline={vis.baseline}"
+            p_tier, p_reason = promotion
+            if _TIER_RANK[p_tier] < _TIER_RANK[tier]:
+                tier, reason = p_tier, p_reason
 
-        # 3. Session-discovered tools promote to active.
-        if bare in ctx.discovered_tools or name in ctx.discovered_tools:
+        # 3. Session-discovered tools promote to active (only if that raises visibility).
+        if (bare in ctx.discovered_tools or name in ctx.discovered_tools) and _TIER_RANK[
+            "active"
+        ] < _TIER_RANK[tier]:
             tier, reason = "active", "discovered via search_tools"
 
         # 4. Pluggable rule can override.

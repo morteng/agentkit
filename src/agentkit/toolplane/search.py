@@ -101,7 +101,7 @@ def make_search_tools_builtin(
     async def handler(arguments: dict[str, object], ctx: object) -> ToolResult:
         query = str(arguments.get("query", "")).strip()
         raw_limit = arguments.get("limit", 8)
-        limit = int(raw_limit) if isinstance(raw_limit, int) else 8
+        limit = max(1, int(raw_limit)) if isinstance(raw_limit, (int, float)) else 8
         discoverable: list[ToolSpec] = list(getattr(plane, "last_discoverable", []))
         docs: dict[str, str] = {
             s.name: f"{s.name.split('.', 1)[-1]} {s.description}" for s in discoverable
