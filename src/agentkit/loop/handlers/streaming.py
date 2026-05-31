@@ -59,10 +59,15 @@ async def handle_streaming(ctx: TurnContext, deps: dict[str, Any]) -> Phase:  # 
         ctx.event_queue = queue
     success_claim: SuccessClaimGuard | None = deps.get("success_claim")
 
+    tool_selector = deps.get("tool_selector")
+    available_specs = registry.list_specs()
+    if tool_selector is not None:
+        available_specs = tool_selector(ctx, available_specs)
+
     request = builder.build(
         system_blocks=deps.get("system_blocks", []),
         history=ctx.history,
-        tool_specs=registry.list_specs(),
+        tool_specs=available_specs,
         model_override=model_override,
     )
 
