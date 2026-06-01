@@ -2,6 +2,7 @@
 approval scanner. Domain-free; the consuming app supplies OpSpecs."""
 
 from agentkit.resources.registry import OpRegistry
+from agentkit.resources.scanner import ApprovalScanner
 from agentkit.resources.types import (
     OpSpec,
     Reversibility,
@@ -10,6 +11,7 @@ from agentkit.resources.types import (
 )
 
 __all__ = [
+    "ApprovalScanner",
     "OpRegistry",
     "OpSpec",
     "Reversibility",
