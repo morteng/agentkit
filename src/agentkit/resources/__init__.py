@@ -1,6 +1,7 @@
 """Scriptable resource framework — uniform CRUD verbs, reversibility registry,
 approval scanner. Domain-free; the consuming app supplies OpSpecs."""
 
+from agentkit.resources.namespace import ResourceNamespace
 from agentkit.resources.registry import OpRegistry
 from agentkit.resources.scanner import ApprovalScanner
 from agentkit.resources.types import (
@@ -14,6 +15,7 @@ __all__ = [
     "ApprovalScanner",
     "OpRegistry",
     "OpSpec",
+    "ResourceNamespace",
     "Reversibility",
     "ScanFinding",
     "ScriptClassification",
