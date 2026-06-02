@@ -120,3 +120,63 @@ async def test_search_view_override_projects_list_rows():
     search = {s.name: s for s in build_crud_specs(spec)}["loc.search"]
     found = await search.apply(_Ctx(), query="")
     assert found == [{"id": "1", "lean": True}]
+
+
+# --- create (opt-in) ------------------------------------------------------- #
+def _spec_with_create(rows=None):
+    rows = rows if rows is not None else {}
+
+    async def create_adapter(ctx, *, name, city="Z"):
+        new_id = str(len(rows) + 1)
+        rows[new_id] = _View(id=new_id, name=name, city=city)
+        return rows[new_id]
+
+    spec = _spec(rows)
+    spec.create_adapter = create_adapter
+    spec.creatable = frozenset({"name", "city"})
+    return spec, rows
+
+
+def test_create_not_emitted_without_adapter():
+    names = {s.name for s in build_crud_specs(_spec())}
+    assert "loc.create" not in names
+
+
+def test_create_emitted_with_adapter():
+    spec, _ = _spec_with_create()
+    create = {s.name: s for s in build_crud_specs(spec)}["loc.create"]
+    assert not create.is_read
+    assert create.patchable == frozenset({"name", "city"})
+    assert create.classify and create.classify({}, frozenset()) is Reversibility.REVERSIBLE
+
+
+async def test_create_applies_and_projects_view():
+    spec, rows = _spec_with_create()
+    create = {s.name: s for s in build_crud_specs(spec)}["loc.create"]
+    out = await create.apply(_Ctx(), name="New", city="B")
+    assert out == {"id": "1", "name": "New", "city": "B"}
+    assert "1" in rows
+
+
+async def test_create_inverse_deletes_created_id():
+    spec, _ = _spec_with_create()
+    create = {s.name: s for s in build_crud_specs(spec)}["loc.create"]
+    assert create.inverse
+    out = await create.apply(_Ctx(), name="New")
+    inv = create.inverse({"name": "New"}, None, out)
+    assert inv == {"op": "loc.delete", "id": "1"}
+
+
+def test_create_inverse_none_without_id():
+    spec, _ = _spec_with_create()
+    create = {s.name: s for s in build_crud_specs(spec)}["loc.create"]
+    assert create.inverse
+    assert create.inverse({"name": "New"}, None, None) is None
+
+
+def test_create_inverse_override_used():
+    spec, _ = _spec_with_create()
+    spec.inverse_create = lambda kwargs, before, after: {"op": "custom"}
+    create = {s.name: s for s in build_crud_specs(spec)}["loc.create"]
+    assert create.inverse
+    assert create.inverse({}, None, {"id": "1"}) == {"op": "custom"}
