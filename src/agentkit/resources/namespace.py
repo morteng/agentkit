@@ -77,6 +77,12 @@ class ResourceNamespace:
     async def patch(self, id: Any, **fields: Any) -> Any:
         return await self._write("patch", {"id": id}, fields)
 
+    async def replace(self, id: Any, **fields: Any) -> Any:
+        # In-place edit verb (e.g. find-and-replace) — same write plumbing as
+        # patch but a distinct OpSpec, so the consumer can give it its own
+        # apply/classify (a body text edit is reversible, not a field set).
+        return await self._write("replace", {"id": id}, fields)
+
     async def create(self, **fields: Any) -> Any:
         return await self._write("create", {}, fields)
 

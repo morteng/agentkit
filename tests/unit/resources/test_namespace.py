@@ -20,6 +20,9 @@ def _build(records, charges):
     def _inverse(kwargs, before, after):
         return {"op": "patch", "id": kwargs["id"], "restore": before}
 
+    async def _replace_apply(ctx, *, id, **fields):
+        return {"id": id, "applied": fields.get("replace", [])}
+
     reg = OpRegistry()
     reg.register(OpSpec(name="content.get", apply=_get_apply, is_read=True))
     reg.register(
@@ -28,6 +31,17 @@ def _build(records, charges):
             apply=_patch_apply,
             subject_type="content",
             patchable=frozenset({"title", "tags"}),
+            snapshot=_snapshot,
+            inverse=_inverse,
+            classify=_classify,
+        )
+    )
+    reg.register(
+        OpSpec(
+            name="content.replace",
+            apply=_replace_apply,
+            subject_type="content",
+            patchable=frozenset({"replace", "also_title"}),
             snapshot=_snapshot,
             inverse=_inverse,
             classify=_classify,
@@ -64,6 +78,28 @@ async def test_patch_records_with_inverse_and_charges():
     assert before == {"id": "c1", "old": True}
     assert after == {"id": "c1", "title": "New"}
     assert inverse == {"op": "patch", "id": "c1", "restore": {"id": "c1", "old": True}}
+
+
+async def test_replace_records_with_inverse_and_charges():
+    records, charges = [], []
+    ns = _build(records, charges)
+    pairs = [{"find": "a", "replace": "b"}]
+    out = await ns.replace("c1", replace=pairs)
+    assert out == {"id": "c1", "applied": pairs}
+    assert charges == [1]
+    assert len(records) == 1
+    name, _kwargs, before, _after, inverse = records[0]
+    assert name == "content.replace"
+    assert before == {"id": "c1", "old": True}
+    assert inverse == {"op": "patch", "id": "c1", "restore": {"id": "c1", "old": True}}
+
+
+async def test_replace_rejects_unknown_field():
+    records, charges = [], []
+    ns = _build(records, charges)
+    with pytest.raises(ValueError, match="not patchable"):
+        await ns.replace("c1", bogus=1)
+    assert records == []
 
 
 async def test_patch_rejects_unknown_field():
