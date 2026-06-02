@@ -62,6 +62,13 @@ class EntitySpec:
     creatable: frozenset[str] = field(default_factory=frozenset)  # type: ignore[reportUnknownVariableType]
     create_classify: ClassifyFn = _default_reversible  # create reversibility (delete undoes it)
     inverse_create: InverseFn | None = None  # defaults to {resource}.delete on the created id
+    # Optional restore surface: set ``restore_adapter`` to emit a {resource}.restore op.
+    # This is what makes the default delete inverse ({resource}.restore) executable —
+    # without it, a soft-delete records an inverse op that resolves to nothing.
+    restore_adapter: Callable[..., Awaitable[Any]] | None = None  # async (ctx, id) -> row
+    restore_classify: ClassifyFn = _default_reversible  # restore reversibility (delete undoes it)
+    inverse_restore: InverseFn | None = None  # defaults to {resource}.delete on the id
+    restore_action_kind: str = "restore"
     # Optional overrides — default to the generic implementations below.
     search_view: Callable[[Any], Any] | None = None  # list-row -> view (defaults to ``view``)
     snapshot: SnapshotFn | None = None  # before_state capture (defaults to view-of-snapshot_fields)
@@ -118,6 +125,16 @@ def _make_inverse_create(spec: EntitySpec) -> InverseFn:
         return {"op": f"{spec.resource}.delete", "id": str(after["id"])}
 
     return inverse_create
+
+
+def _make_inverse_restore(spec: EntitySpec) -> InverseFn:
+    def inverse_restore(
+        kwargs: dict[str, Any], before: dict[str, Any] | None, after: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        # Reverse a restore by soft-deleting the row again.
+        return {"op": f"{spec.resource}.delete", "id": str(kwargs["id"])}
+
+    return inverse_restore
 
 
 def build_crud_specs(spec: EntitySpec) -> list[OpSpec]:
@@ -191,6 +208,29 @@ def build_crud_specs(spec: EntitySpec) -> list[OpSpec]:
                 patchable=spec.creatable,
                 inverse=inverse_create,
                 classify=spec.create_classify,
+            )
+        )
+
+    # Restore is opt-in: only entities that declare a ``restore_adapter`` get a
+    # {resource}.restore op. The adapter loads the soft-deleted row and clears
+    # its tombstone; the generic wrapper projects the restored view and records
+    # the inverse (delete again). This is the executable counterpart to the
+    # default delete inverse, which already names {resource}.restore.
+    if spec.restore_adapter is not None:
+        restore_adapter = spec.restore_adapter
+        inverse_restore = spec.inverse_restore or _make_inverse_restore(spec)
+
+        async def _restore(ctx: Any, *, id: Any) -> dict[str, Any]:
+            return _to_dict(spec.view(await restore_adapter(ctx, id)))
+
+        specs.append(
+            OpSpec(
+                name=f"{spec.resource}.restore",
+                apply=_restore,
+                action_kind=spec.restore_action_kind,
+                subject_type=spec.subject_type,
+                inverse=inverse_restore,
+                classify=spec.restore_classify,
             )
         )
 
