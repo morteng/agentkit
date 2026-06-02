@@ -26,6 +26,17 @@ _DEFAULT_VISIBILITY = ToolVisibility()  # baseline hot, no constraints
 _TIER_RANK = {"hot": 0, "active": 1, "discoverable": 2, "hidden": 3}
 
 
+def tool_capability_satisfied(vis: ToolVisibility, capabilities: frozenset[str]) -> bool:
+    """True when a tool is reachable under the given tenant capability set.
+
+    An untagged tool (``vis.capability is None``) is always satisfied. A
+    tagged tool requires its capability to be present. This is the single
+    predicate both the visibility resolver (``_decide``) and the consumer's
+    execution gate use, so the two layers cannot drift.
+    """
+    return vis.capability is None or vis.capability in capabilities
+
+
 def _bare(name: str) -> str:
     return name.split(".", 1)[-1]
 
@@ -145,6 +156,8 @@ class ToolPlane:
             ctx.mcp_client is None or ctx.mcp_client not in vis.mcp_clients
         ):
             return ToolDecision("hidden", f"mcp_clients={vis.mcp_clients}, client={ctx.mcp_client}")
+        if not tool_capability_satisfied(vis, ctx.capabilities):
+            return ToolDecision("hidden", f"capability={vis.capability} not in tenant set")
 
         # 2. Declarative promotion (first match wins), applied only when it
         # raises visibility — a promotion must never demote a more-visible
