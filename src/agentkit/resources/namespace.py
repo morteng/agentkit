@@ -47,6 +47,39 @@ class ResourceNamespace:
     def _spec(self, verb: str) -> OpSpec:
         return self._reg.get(f"{self._resource}.{verb}")
 
+    def __getattr__(self, verb: str) -> Callable[..., Awaitable[Any]]:
+        """Resolve a declared, non-CRUD verb (``kb.cite``, ``graph.link``).
+
+        Only fires when normal attribute lookup misses, so it never shadows the
+        fixed CRUD methods below. Underscore names and verbs without a
+        registered ``<resource>.<verb>`` OpSpec raise AttributeError, exactly as
+        a missing attribute would. Declared writes go through the recorder but
+        skip the patch/create field whitelist — they carry structured payloads
+        and define their own apply signature.
+        """
+        if verb.startswith("_"):
+            raise AttributeError(verb)
+        name = f"{self._resource}.{verb}"
+        if not self._reg.has(name):
+            raise AttributeError(verb)
+        spec = self._reg.get(name)
+
+        async def call(**kwargs: Any) -> Any:
+            if spec.is_read:
+                return await spec.apply(self._ctx, **kwargs)
+            return await self._invoke_declared(spec, kwargs)
+
+        return call
+
+    async def _invoke_declared(self, spec: OpSpec, kwargs: dict[str, Any]) -> Any:
+        self._charge()
+        before = await spec.snapshot(self._ctx, **kwargs) if spec.snapshot else None
+        result: Any = await spec.apply(self._ctx, **kwargs)
+        after: dict[str, Any] | None = result if isinstance(result, dict) else None  # type: ignore[reportUnknownVariableType]
+        inverse = spec.inverse(kwargs, before, after) if spec.inverse else None
+        await self._recorder(spec, kwargs, before, after, inverse)
+        return result  # type: ignore[reportUnknownVariableType]
+
     async def _read(self, verb: str, **kwargs: Any) -> Any:
         spec = self._spec(verb)
         return await spec.apply(self._ctx, **kwargs)
