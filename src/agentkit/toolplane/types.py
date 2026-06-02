@@ -26,6 +26,7 @@ class ToolVisibility:
     goals: list[str] = field(default_factory=list)  # type: ignore[reportUnknownVariableType]
     min_role: str | None = None
     mcp_clients: list[str] | None = None
+    capability: str | None = None  # inert seam: per-tenant capability gating (consumer-defined)
 
 
 @dataclass

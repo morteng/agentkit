@@ -7,6 +7,12 @@ def test_visibility_defaults_to_hot_with_no_constraints():
     assert v.pages == [] and v.features == [] and v.entities == []
     assert v.intent_keywords == [] and v.goals == []
     assert v.min_role is None and v.mcp_clients is None
+    assert v.capability is None
+
+
+def test_visibility_carries_capability():
+    v = ToolVisibility(baseline="discoverable", capability="restaurant_menu")
+    assert v.capability == "restaurant_menu"
 
 
 def test_context_minimal_construction():
