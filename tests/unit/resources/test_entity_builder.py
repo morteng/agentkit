@@ -180,3 +180,66 @@ def test_create_inverse_override_used():
     create = {s.name: s for s in build_crud_specs(spec)}["loc.create"]
     assert create.inverse
     assert create.inverse({}, None, {"id": "1"}) == {"op": "custom"}
+
+
+# --- restore (opt-in) ------------------------------------------------------ #
+def _spec_with_restore(rows=None):
+    rows = rows or {"1": _View(id="1", name="Old", city="A")}
+    restored: list[str] = []  # captures ids the adapter cleared the tombstone for
+
+    async def restore_adapter(ctx, id):
+        restored.append(str(id))
+        return rows[str(id)]
+
+    spec = _spec(rows)
+    spec.restore_adapter = restore_adapter
+    return spec, rows, restored
+
+
+def test_restore_not_emitted_without_adapter():
+    names = {s.name for s in build_crud_specs(_spec())}
+    assert "loc.restore" not in names
+
+
+def test_restore_emitted_with_adapter():
+    spec, _, _ = _spec_with_restore()
+    restore = {s.name: s for s in build_crud_specs(spec)}["loc.restore"]
+    assert not restore.is_read
+    assert restore.action_kind == "restore"
+    assert restore.subject_type == "location"
+    assert restore.classify and restore.classify({}, frozenset()) is Reversibility.REVERSIBLE
+
+
+async def test_restore_applies_and_projects_view():
+    spec, _, restored = _spec_with_restore()
+    restore = {s.name: s for s in build_crud_specs(spec)}["loc.restore"]
+    out = await restore.apply(_Ctx(), id="1")
+    assert out == {"id": "1", "name": "Old", "city": "A"}
+    assert restored == ["1"]  # the adapter ran for the requested id
+
+
+async def test_restore_inverse_deletes_id():
+    spec, _, _ = _spec_with_restore()
+    restore = {s.name: s for s in build_crud_specs(spec)}["loc.restore"]
+    assert restore.inverse
+    out = await restore.apply(_Ctx(), id="1")
+    inv = restore.inverse({"id": "1"}, None, out)
+    assert inv == {"op": "loc.delete", "id": "1"}
+
+
+def test_restore_inverse_override_used():
+    spec, _, _ = _spec_with_restore()
+    spec.inverse_restore = lambda kwargs, before, after: {"op": "custom"}
+    restore = {s.name: s for s in build_crud_specs(spec)}["loc.restore"]
+    assert restore.inverse
+    assert restore.inverse({"id": "1"}, None, None) == {"op": "custom"}
+
+
+def test_delete_and_restore_are_mutual_inverses():
+    """The delete inverse names loc.restore; the restore op now exists to run it."""
+    spec, _, _ = _spec_with_restore()
+    specs = {s.name: s for s in build_crud_specs(spec)}
+    assert specs["loc.delete"].inverse
+    delete_inv = specs["loc.delete"].inverse({"id": "1"}, {"name": "Old"}, {"deleted": True})
+    assert delete_inv == {"op": "loc.restore", "id": "1"}
+    assert "loc.restore" in specs  # the op the delete inverse points at is emitted
