@@ -124,6 +124,15 @@ class ToolPlane:
                 result.append(search)
         return result
 
+    def hot_set(self, specs: list[ToolSpec], ctx: ToolContext) -> set[str]:
+        """Names that resolve to the ``hot`` tier under ``ctx``.
+
+        Pure: reuses ``_decide`` so it tracks the live resolution rules. The
+        consumer passes a neutral context (no page/entity/discovery, top role)
+        to derive its always-available core.
+        """
+        return {spec.name for spec in specs if self._decide(spec, ctx).tier == "hot"}
+
     def _decide(self, spec: ToolSpec, ctx: ToolContext) -> ToolDecision:
         vis = self._visibility_of(spec) or _DEFAULT_VISIBILITY
         name = spec.name
