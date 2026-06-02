@@ -76,3 +76,44 @@ def test_ignores_non_client_calls():
     src = "x = len([1, 2, 3])\nawait other.thing.patch(1, status='published')"
     c = _scan(src)
     assert c.findings == []
+
+
+# --- constant propagation: a provably single-literal binding resolves to its
+# value, so a free transition passed via a variable is not over-gated, while a
+# consequential one passed the same way still gates. --------------------------
+
+
+def test_const_var_review_is_reversible():
+    """`s = "review"; patch(status=s)` must NOT gate — review is a free transition."""
+    src = "s = 'review'\nawait pikkolo.content.patch(cid, status=s)"
+    c = _scan(src)
+    assert c.worst is Reversibility.REVERSIBLE
+    assert c.requires_approval is False
+
+
+def test_const_var_published_still_gates():
+    """A variable that provably holds a gated literal still gates."""
+    src = "s = 'published'\nawait pikkolo.content.patch(cid, status=s)"
+    c = _scan(src)
+    assert c.requires_approval is True
+
+
+def test_reassigned_var_stays_conservative():
+    """Ambiguous (reassigned) binding is not a constant — stays gated."""
+    src = "s = 'review'\ns = compute()\nawait pikkolo.content.patch(cid, status=s)"
+    c = _scan(src)
+    assert c.requires_approval is True
+
+
+def test_loop_target_var_is_not_constant():
+    """A for-loop target is not a constant binding — stays gated."""
+    src = "for s in statuses:\n    await pikkolo.content.patch(cid, status=s)"
+    c = _scan(src)
+    assert c.requires_approval is True
+
+
+def test_free_var_stays_gated():
+    """An unbound/free variable cannot be resolved — stays gated (regression guard)."""
+    src = "await pikkolo.content.patch(cid, status=target)"
+    c = _scan(src)
+    assert c.requires_approval is True
