@@ -42,6 +42,7 @@ class ToolContext:
     recent_user_message: str | None = None
     active_goal_slug: str | None = None
     discovered_tools: frozenset[str] = field(default_factory=frozenset)  # type: ignore[reportUnknownVariableType]
+    capabilities: frozenset[str] = field(default_factory=frozenset)  # type: ignore[reportUnknownVariableType]
     tier_overrides: dict[str, str] = field(default_factory=dict)  # type: ignore[reportUnknownVariableType]
 
 
