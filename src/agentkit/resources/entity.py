@@ -12,7 +12,7 @@ translation row the view omits) overrides ``snapshot``/``inverse_patch``/
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from agentkit.resources.types import ClassifyFn, InverseFn, OpSpec, Reversibility, SnapshotFn
@@ -24,6 +24,13 @@ if TYPE_CHECKING:
 def _default_gated(static_kwargs: dict[str, Any], dynamic_args: frozenset[str]) -> Reversibility:
     """Conservative default: an unclassified mutation forces approval."""
     return Reversibility.GATED
+
+
+def _default_reversible(
+    static_kwargs: dict[str, Any], dynamic_args: frozenset[str]
+) -> Reversibility:
+    """Creating a soft-deletable entity is undone by deleting it: reversible."""
+    return Reversibility.REVERSIBLE
 
 
 def _to_dict(view: Any) -> dict[str, Any]:
@@ -50,6 +57,11 @@ class EntitySpec:
     snapshot_fields: frozenset[str]  # subset of view keys for the generic snapshot
     classify: ClassifyFn = _default_gated  # patch reversibility
     delete_classify: ClassifyFn = _default_gated  # delete reversibility
+    # Optional create surface: set ``create_adapter`` to emit a {resource}.create op.
+    create_adapter: Callable[..., Awaitable[Any]] | None = None  # async (ctx, **fields) -> row
+    creatable: frozenset[str] = field(default_factory=frozenset)  # type: ignore[reportUnknownVariableType]
+    create_classify: ClassifyFn = _default_reversible  # create reversibility (delete undoes it)
+    inverse_create: InverseFn | None = None  # defaults to {resource}.delete on the created id
     # Optional overrides — default to the generic implementations below.
     search_view: Callable[[Any], Any] | None = None  # list-row -> view (defaults to ``view``)
     snapshot: SnapshotFn | None = None  # before_state capture (defaults to view-of-snapshot_fields)
@@ -94,6 +106,20 @@ def _make_inverse_delete(spec: EntitySpec) -> InverseFn:
     return inverse_delete
 
 
+def _make_inverse_create(spec: EntitySpec) -> InverseFn:
+    def inverse_create(
+        kwargs: dict[str, Any], before: dict[str, Any] | None, after: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        # Reverse a create by deleting the created row. Skip when the adapter
+        # returned no id (e.g. a dedup hit that reused an existing row, which
+        # must not be deleted) — such adapters should supply ``inverse_create``.
+        if not after or "id" not in after:
+            return None
+        return {"op": f"{spec.resource}.delete", "id": str(after["id"])}
+
+    return inverse_create
+
+
 def build_crud_specs(spec: EntitySpec) -> list[OpSpec]:
     """Emit the four uniform CRUD OpSpecs for one declared entity.
 
@@ -104,6 +130,7 @@ def build_crud_specs(spec: EntitySpec) -> list[OpSpec]:
     snapshot = spec.snapshot or _make_snapshot(spec)
     inverse_patch = spec.inverse_patch or _make_inverse_patch(spec)
     inverse_delete = spec.inverse_delete or _make_inverse_delete(spec)
+    inverse_create = spec.inverse_create or _make_inverse_create(spec)
 
     async def _get(ctx: Any, *, id: Any) -> dict[str, Any]:
         return _to_dict(spec.view(await spec.load(ctx, id)))
@@ -124,7 +151,7 @@ def build_crud_specs(spec: EntitySpec) -> list[OpSpec]:
         await spec.soft_delete(ctx, await spec.load(ctx, id))
         return {"id": str(id), "deleted": True}
 
-    return [
+    specs = [
         OpSpec(name=f"{spec.resource}.get", apply=_get, is_read=True),
         OpSpec(name=f"{spec.resource}.search", apply=_search, is_read=True),
         OpSpec(
@@ -146,3 +173,25 @@ def build_crud_specs(spec: EntitySpec) -> list[OpSpec]:
             classify=spec.delete_classify,
         ),
     ]
+
+    # Create is opt-in: only entities that declare a ``create_adapter`` get a
+    # {resource}.create op. The adapter owns the create (flush so the view sees
+    # the id); the generic wrapper projects the view and records the inverse.
+    if spec.create_adapter is not None:
+        create_adapter = spec.create_adapter
+
+        async def _create(ctx: Any, **fields: Any) -> dict[str, Any]:
+            return _to_dict(spec.view(await create_adapter(ctx, **fields)))
+
+        specs.append(
+            OpSpec(
+                name=f"{spec.resource}.create",
+                apply=_create,
+                subject_type=spec.subject_type,
+                patchable=spec.creatable,
+                inverse=inverse_create,
+                classify=spec.create_classify,
+            )
+        )
+
+    return specs
