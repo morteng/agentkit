@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
+## [0.10.0] - 2026-06-08
+
+### Added
+- `agentkit.codeexec` — an in-process, curated-namespace Python executor for
+  agent-authored scripts. `execute(namespace, source, limits)` reparents the
+  source under an `async def` (so scripts may `await` and `return`), runs it
+  under a wall-clock timeout with a restricted `__builtins__` and a bounded
+  stdout buffer, and returns an `ExecutionResult` (`stdout`, `return_value`,
+  `error`, `error_type`, `duration_ms`). Exports: `execute`, `ExecutionResult`,
+  `ExecLimits`, `CodeExecutionError`, `CodeValidationError`, `CodeTimeoutError`.
+- AST allowlist validator (the security boundary): rejects `import` statements,
+  the eval/introspection builtins by name (`eval`, `exec`, `compile`, `open`,
+  `getattr`, …), and all dunder name/attribute access (the standard
+  sandbox-escape vector).
+
+### Notes
+- This is a **language-level, in-process** sandbox, not OS-level isolation. A
+  synchronous CPU loop cannot be preempted by the wall-clock timeout and will
+  block the event loop; mitigation belongs at deployment (worker watchdog).
+  Injected coroutines must propagate `CancelledError`, and injected mutable
+  objects are shared by reference (the namespace is shallow-copied). The module
+  is additive and not wired into the tool registry — consumers register it as a
+  builtin tool.
+
 ## [0.8.0] - 2026-05-22
 
 ### Changed
