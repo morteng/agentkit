@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
+## [0.14.0] - 2026-06-09
+
+### Added
+- `AgentSession.resume_with_approval_batch(turn_id, decisions)` — resume a suspended turn after applying a batch of approval verdicts in one call. Each entry is `{"call_id", "decision", "edited_args"?, "reason"?}`; verdicts are applied (and their `ApprovalGranted`/`ApprovalDenied` events emitted) in list order before the Loop restarts once at `TOOL_EXECUTING`. This is required for correctness when a turn suspends on multiple pending tool calls: `handle_tool_executing` runs only the approved/denied/unknown buckets, so any call left in `pending_user_approvals` after a single-call `resume_with_approval` is silently dropped. A UI that presents one approval card for N calls must use the batch method to resume them all on a single verdict.
+- `FakeProvider.tool_calls([(name, args), ...])` — script several tool calls in a single assistant message (parallel calls), so tests can exercise multi-pending-approval turns.
+
+### Changed
+- Refactored `resume_with_approval` internals into shared `_approval_timeout_stream`, `_build_verdict_event`, and `_resumed_loop_stream` helpers (behavior-preserving) now reused by the batch variant.
+
 ## [0.11.0] - 2026-05-31
 
 ### Added
