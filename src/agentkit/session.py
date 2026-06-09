@@ -261,69 +261,50 @@ class AgentSession:
         ctx.metadata["approved_tool_calls"] = approved
         ctx.metadata["denied_tool_calls"] = denied
 
-    @asynccontextmanager
-    async def resume_with_approval(
+    def _approval_timeout_stream(
+        self, turn_id: TurnId, exc: ApprovalTimeout
+    ) -> AsyncIterator[Event]:
+        """Surface a stale approval as a single Errored + TurnEnded(error) stream
+        so consumers don't have to add a second exception path."""
+        now = datetime.now(UTC)
+        errored = Errored(
+            event_id=new_id(EventId),
+            session_id=self.id,
+            turn_id=turn_id,
+            ts=now,
+            sequence=0,
+            code=ErrorCode.APPROVAL_TIMEOUT,
+            message=str(exc),
+            recoverable=False,
+        )
+        ended = TurnEnded(
+            event_id=new_id(EventId),
+            session_id=self.id,
+            turn_id=turn_id,
+            ts=now,
+            sequence=1,
+            reason=TurnEndReason.ERROR,
+            metrics=TurnMetrics(),
+        )
+
+        async def _timeout_iter() -> AsyncIterator[Event]:
+            yield errored
+            yield ended
+
+        return _timeout_iter()
+
+    def _build_verdict_event(
         self,
+        ctx: TurnContext,
         turn_id: TurnId,
         call_id: str,
-        *,
-        decision: str,  # "approve" | "deny"
-        edited_args: dict[str, Any] | None = None,
-        reason: str | None = None,
-    ) -> AsyncGenerator[AsyncIterator[Event], None]:
-        """Resume a suspended turn with the user's approval verdict.
-
-        Looks up the checkpoint persisted by approval_wait, enforces the
-        ``approval_timeout_seconds`` deadline (raising :class:`ApprovalTimeout`
-        when stale), applies the decision, and restarts the Loop at
-        TOOL_EXECUTING. Emits :class:`ApprovalGranted` or :class:`ApprovalDenied`
-        as the first event in the resumed stream so consumers can render
-        the verdict (including any ``edited_args``) in their UI.
-        """
-        await self.initialize()
-        try:
-            ctx, queue = await self._load_resume_context(turn_id)
-        except ApprovalTimeout as exc:
-            # Surface the timeout as a single Errored + TurnEnded(error) stream
-            # so consumers don't have to add a second exception path.
-            now = datetime.now(UTC)
-            errored = Errored(
-                event_id=new_id(EventId),
-                session_id=self.id,
-                turn_id=turn_id,
-                ts=now,
-                sequence=0,
-                code=ErrorCode.APPROVAL_TIMEOUT,
-                message=str(exc),
-                recoverable=False,
-            )
-            ended = TurnEnded(
-                event_id=new_id(EventId),
-                session_id=self.id,
-                turn_id=turn_id,
-                ts=now,
-                sequence=1,
-                reason=TurnEndReason.ERROR,
-                metrics=TurnMetrics(),
-            )
-
-            async def _timeout_iter() -> AsyncIterator[Event]:
-                yield errored
-                yield ended
-
-            try:
-                yield _timeout_iter()
-            finally:
-                pass
-            return
-
-        self._apply_approval_decision(ctx, call_id, decision, edited_args, reason)
-
-        # Emit the verdict event before any further work so consumers see it
-        # at the top of the resumed stream.
-        verdict_event: ApprovalGranted | ApprovalDenied
+        decision: str,
+        edited_args: dict[str, Any] | None,
+        reason: str | None,
+    ) -> ApprovalGranted | ApprovalDenied:
+        """Build the ApprovalGranted/ApprovalDenied event for a single verdict."""
         if decision == "approve":
-            verdict_event = ApprovalGranted(
+            return ApprovalGranted(
                 event_id=new_id(EventId),
                 session_id=self.id,
                 turn_id=turn_id,
@@ -332,20 +313,24 @@ class AgentSession:
                 call_id=call_id,
                 edited_args=edited_args,
             )
-        else:
-            verdict_event = ApprovalDenied(
-                event_id=new_id(EventId),
-                session_id=self.id,
-                turn_id=turn_id,
-                ts=datetime.now(UTC),
-                sequence=ctx.next_sequence(),
-                call_id=call_id,
-                reason=reason,
-            )
-        await queue.put(verdict_event)
+        return ApprovalDenied(
+            event_id=new_id(EventId),
+            session_id=self.id,
+            turn_id=turn_id,
+            ts=datetime.now(UTC),
+            sequence=ctx.next_sequence(),
+            call_id=call_id,
+            reason=reason,
+        )
 
-        # Restart the Loop at TOOL_EXECUTING. Any further pending approvals
-        # will round-trip through approval_wait again as TOOL_EXECUTING -> TOOL_RESULTS.
+    def _resumed_loop_stream(
+        self, ctx: TurnContext, queue: asyncio.Queue[Any]
+    ) -> AsyncIterator[Event]:
+        """Restart the Loop at TOOL_EXECUTING and drain it into the verdict queue.
+
+        Any further pending approvals will round-trip through approval_wait
+        again as TOOL_EXECUTING -> TOOL_RESULTS.
+        """
         loop = Loop(
             ctx=ctx,
             handlers=self._handlers(),
@@ -367,10 +352,101 @@ class AgentSession:
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         await run_task
 
+        return _iter()
+
+    @asynccontextmanager
+    async def resume_with_approval(
+        self,
+        turn_id: TurnId,
+        call_id: str,
+        *,
+        decision: str,  # "approve" | "deny"
+        edited_args: dict[str, Any] | None = None,
+        reason: str | None = None,
+    ) -> AsyncGenerator[AsyncIterator[Event], None]:
+        """Resume a suspended turn with the user's approval verdict.
+
+        Looks up the checkpoint persisted by approval_wait, enforces the
+        ``approval_timeout_seconds`` deadline (raising :class:`ApprovalTimeout`
+        when stale), applies the decision, and restarts the Loop at
+        TOOL_EXECUTING. Emits :class:`ApprovalGranted` or :class:`ApprovalDenied`
+        as the first event in the resumed stream so consumers can render
+        the verdict (including any ``edited_args``) in their UI.
+
+        For a turn that suspended on multiple pending tool calls, use
+        :meth:`resume_with_approval_batch` instead — a single-call resume only
+        resolves one call and leaves the rest in ``pending_user_approvals``,
+        which TOOL_EXECUTING silently drops.
+        """
+        await self.initialize()
         try:
-            yield _iter()
-        finally:
-            pass
+            ctx, queue = await self._load_resume_context(turn_id)
+        except ApprovalTimeout as exc:
+            yield self._approval_timeout_stream(turn_id, exc)
+            return
+
+        self._apply_approval_decision(ctx, call_id, decision, edited_args, reason)
+        # Emit the verdict event before any further work so consumers see it
+        # at the top of the resumed stream.
+        await queue.put(
+            self._build_verdict_event(ctx, turn_id, call_id, decision, edited_args, reason)
+        )
+        yield self._resumed_loop_stream(ctx, queue)
+
+    @asynccontextmanager
+    async def resume_with_approval_batch(
+        self,
+        turn_id: TurnId,
+        decisions: list[dict[str, Any]],
+    ) -> AsyncGenerator[AsyncIterator[Event], None]:
+        """Resume a suspended turn after applying a batch of approval verdicts.
+
+        Like :meth:`resume_with_approval`, but applies every verdict in
+        ``decisions`` to the checkpoint before restarting the Loop once. A UI
+        can present a single approval card covering N pending tool calls and
+        resume them all on one verdict, instead of forcing a
+        resume -> suspend -> resume round-trip per call.
+
+        Each entry is ``{"call_id": str, "decision": "approve" | "deny",
+        "edited_args"?: dict | None, "reason"?: str | None}``. Decisions are
+        applied — and their ApprovalGranted/ApprovalDenied verdict events
+        emitted — in list order, at the head of the resumed stream.
+
+        Batching is required for correctness, not just ergonomics: TOOL_EXECUTING
+        runs only the approved/denied/unknown buckets, so any call left in
+        ``pending_user_approvals`` after a single-call resume is silently
+        dropped. Applying every verdict up front guarantees all pending calls
+        are resolved before the loop advances.
+        """
+        await self.initialize()
+        try:
+            ctx, queue = await self._load_resume_context(turn_id)
+        except ApprovalTimeout as exc:
+            yield self._approval_timeout_stream(turn_id, exc)
+            return
+
+        # Apply every verdict first so a bad call_id fails fast before any tool
+        # runs, then emit the verdict events at the head of the resumed stream.
+        for d in decisions:
+            self._apply_approval_decision(
+                ctx,
+                d["call_id"],
+                d["decision"],
+                d.get("edited_args"),
+                d.get("reason"),
+            )
+        for d in decisions:
+            await queue.put(
+                self._build_verdict_event(
+                    ctx,
+                    turn_id,
+                    d["call_id"],
+                    d["decision"],
+                    d.get("edited_args"),
+                    d.get("reason"),
+                )
+            )
+        yield self._resumed_loop_stream(ctx, queue)
 
     async def _drain_loop_into_queue(self, loop: Loop, queue: asyncio.Queue[Any]) -> None:
         async for ev in loop.run():

@@ -31,12 +31,15 @@ from agentkit.providers.base import (
 
 @dataclass
 class ScriptedResponse:
-    """One full response from the fake. Either text or a single tool call."""
+    """One full response from the fake: text, a single tool call, parallel tool
+    calls, or an error."""
 
-    kind: str  # "text" | "tool_call" | "error"
+    kind: str  # "text" | "tool_call" | "tool_calls" | "error"
     text: str | None = None
     tool_name: str | None = None
     tool_args: dict[str, Any] | None = None
+    # Parallel tool calls emitted in one assistant message (kind == "tool_calls").
+    tool_calls_list: list[tuple[str, dict[str, Any]]] | None = None
     error_code: str | None = None
     error_message: str | None = None
     usage: Usage | None = None
@@ -75,6 +78,14 @@ class FakeProvider(Provider):
         usage: Usage | None = None,
     ) -> ScriptedResponse:
         return ScriptedResponse(kind="tool_call", tool_name=name, tool_args=args, usage=usage)
+
+    @staticmethod
+    def tool_calls(
+        calls: list[tuple[str, dict[str, Any]]],
+        usage: Usage | None = None,
+    ) -> ScriptedResponse:
+        """Emit several tool calls in a single assistant message (parallel calls)."""
+        return ScriptedResponse(kind="tool_calls", tool_calls_list=calls, usage=usage)
 
     @staticmethod
     def error(code: str, message: str) -> ScriptedResponse:
@@ -120,6 +131,19 @@ class FakeProvider(Provider):
                 tool_name=response.tool_name,
                 arguments=response.tool_args,
             )
+            yield UsageEvent(
+                usage=response.usage or Usage(input_tokens=10, output_tokens=5),
+                model=request.model,
+                provider_name="fake",
+            )
+            yield MessageComplete(finish_reason="tool_use")
+
+        elif response.kind == "tool_calls":
+            assert response.tool_calls_list is not None
+            for name, args in response.tool_calls_list:
+                call_id = f"call_{ULID()}"
+                yield ToolCallStart(call_id=call_id, tool_name=name)
+                yield ToolCallComplete(call_id=call_id, tool_name=name, arguments=args)
             yield UsageEvent(
                 usage=response.usage or Usage(input_tokens=10, output_tokens=5),
                 model=request.model,
