@@ -42,6 +42,7 @@ class ScriptedResponse:
     tool_calls_list: list[tuple[str, dict[str, Any]]] | None = None
     error_code: str | None = None
     error_message: str | None = None
+    error_recoverable: bool = False
     usage: Usage | None = None
 
 
@@ -88,8 +89,13 @@ class FakeProvider(Provider):
         return ScriptedResponse(kind="tool_calls", tool_calls_list=calls, usage=usage)
 
     @staticmethod
-    def error(code: str, message: str) -> ScriptedResponse:
-        return ScriptedResponse(kind="error", error_code=code, error_message=message)
+    def error(code: str, message: str, *, recoverable: bool = False) -> ScriptedResponse:
+        return ScriptedResponse(
+            kind="error",
+            error_code=code,
+            error_message=message,
+            error_recoverable=recoverable,
+        )
 
     # ---- Provider protocol --------------------------------------------------
 
@@ -104,7 +110,7 @@ class FakeProvider(Provider):
             yield ErrorEvent(
                 code=response.error_code or "unknown",
                 message=response.error_message or "",
-                recoverable=False,
+                recoverable=response.error_recoverable,
             )
             return
 

@@ -33,6 +33,20 @@ class LoopConfig(BaseModel):
     max_subagent_depth: int = 3  # how deep nested kit.subagent.spawn can recurse
     # Force-end the turn after N back-to-back errors from the same tool name.
     max_consecutive_tool_errors: int = 3
+    # Retry a stream that failed with a RECOVERABLE provider error (rate limit,
+    # timeout, transient connection drop) up to this many times before
+    # surfacing the error and ending the turn. The retry only fires when the
+    # failed attempt had emitted no text or tool call yet (a clean early
+    # failure), so it can never duplicate output the consumer already saw. This
+    # is what keeps a long bulk turn alive across a brief provider blip instead
+    # of aborting the whole worklist mid-flight. The budget is per stream
+    # attempt: a successful stream resets it, so each iteration of a multi-step
+    # turn gets a fresh allowance. Set 0 to disable (surface every error).
+    max_stream_retries: int = 2
+    # Base delay (seconds) for exponential backoff between stream retries:
+    # ``delay = base * 2 ** (attempt - 1)``. Kept short — recoverable blips
+    # (429s, momentary disconnects) typically clear within a second or two.
+    stream_retry_base_delay_seconds: float = 0.5
 
 
 class ToolDispatchConfig(BaseModel):

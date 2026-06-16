@@ -7,13 +7,13 @@ Domain-blind agent runtime. Provider abstraction (Anthropic + OpenRouter with ca
 ## Installation
 
 ```bash
-uv add git+https://github.com/morteng/agentkit@v0.14.3
+uv add git+https://github.com/morteng/agentkit@v0.15.0
 ```
 
 With optional extras:
 
 ```bash
-uv add 'agentkit[fastapi] @ git+https://github.com/morteng/agentkit@v0.14.3'
+uv add 'agentkit[fastapi] @ git+https://github.com/morteng/agentkit@v0.15.0'
 ```
 
 ## Quickstart
