@@ -25,6 +25,30 @@ async def test_injected_module_dunder_access_still_blocked():
     assert res.return_value is None
 
 
+async def test_iterator_and_type_builtins_usable():
+    # next(...) is the idiomatic "first match"; type() for inspection; divmod is
+    # a representative pure numeric helper — all newly whitelisted.
+    res = await execute(
+        {},
+        "rows = [1, 2, 3]\n"
+        "first = next(x for x in rows if x > 1)\n"
+        "is_int = type(first) is int\n"
+        "print(is_int)\n"
+        "return divmod(first, 2)",
+    )
+    assert res.error is None, res.error
+    assert res.stdout == "True\n"
+    assert res.return_value == (1, 0)
+
+
+async def test_type_cannot_reach_subclasses_escape():
+    # type() is exposed, but the validator blocks dunder access, so the classic
+    # type(x).__bases__[0].__subclasses__() escape never parses.
+    res = await execute({}, "return type(1).__bases__")
+    assert res.error_type == "CodeValidationError"
+    assert res.return_value is None
+
+
 async def test_runs_plain_script_and_captures_print():
     res = await execute({}, "print('hi')\nx = 2 + 3\nprint(x)")
     assert res.stdout == "hi\n5\n"

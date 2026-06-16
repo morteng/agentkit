@@ -9,9 +9,45 @@ def test_safe_builtins_has_common_safe_names():
         assert name in b
 
 
+def test_safe_builtins_has_iterator_type_and_numeric_helpers():
+    b = build_safe_builtins(StdoutBuffer(max_bytes=1024))
+    for name in [
+        "iter",
+        "next",
+        "type",
+        "bytes",
+        "divmod",
+        "pow",
+        "chr",
+        "ord",
+        "hex",
+        "oct",
+        "bin",
+        "format",
+        "hash",
+    ]:
+        assert name in b, f"{name} should be a safe builtin"
+
+
 def test_safe_builtins_excludes_dangerous_names():
     b = build_safe_builtins(StdoutBuffer(max_bytes=1024))
-    for name in ["eval", "exec", "open", "__import__", "getattr", "globals"]:
+    # getattr/setattr/hasattr are escape vectors (attribute traversal with a
+    # string literal sidesteps the AST dunder-name check), so they stay out even
+    # though type/next were added.
+    for name in [
+        "eval",
+        "exec",
+        "open",
+        "__import__",
+        "getattr",
+        "setattr",
+        "hasattr",
+        "globals",
+        "locals",
+        "vars",
+        "compile",
+        "input",
+    ]:
         assert name not in b
 
 
