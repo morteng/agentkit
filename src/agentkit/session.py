@@ -498,6 +498,8 @@ class AgentSession:
             "force_finalize_on_missing_reprompt": lc.force_finalize_on_missing_reprompt,
             "max_iterations": lc.max_iterations,
             "max_consecutive_tool_errors": lc.max_consecutive_tool_errors,
+            "max_stream_retries": lc.max_stream_retries,
+            "stream_retry_base_delay_seconds": lc.stream_retry_base_delay_seconds,
             "checkpoint_store": self.config.stores.checkpoint,
         }
         # SubagentDispatcher needs deps to construct its child loops; building

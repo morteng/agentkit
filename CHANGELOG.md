@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
+## [0.15.0] - 2026-06-16
+
+### Added
+- Recoverable-stream retry. A streaming attempt that fails with a *recoverable* provider error (rate limit, timeout, transient connection drop) **before any output has reached the consumer** is now retried — the loop re-enters `CONTEXT_BUILD` after an exponential backoff instead of ending the turn in `ERRORED`. This keeps a long multi-step / bulk turn alive across a brief provider blip rather than aborting the whole worklist mid-flight. Governed by `LoopConfig.max_stream_retries` (default `2`) and `LoopConfig.stream_retry_base_delay_seconds` (default `0.5`); set retries to `0` to restore surface-every-error behavior. The retry fires only on a clean early failure (nothing streamed yet), so it can never duplicate output the consumer already saw, and the held error is forwarded normally once the budget is spent. The budget is per stream attempt — a clean stream resets it — so each iteration of a multi-step turn gets a fresh allowance.
+- `FakeProvider.error(code, message, *, recoverable=False)` gained the `recoverable` flag so tests can script recoverable vs terminal provider failures.
+
+### Fixed
+- `STREAMING -> CONTEXT_BUILD` is now a declared-legal phase transition. The success-claim correction path already returned `CONTEXT_BUILD` from streaming, but the transition table omitted it — so that retry (and the new recoverable-stream retry) would have been rejected as an illegal transition and forced the turn to `ERRORED`.
+
 ## [0.14.3] - 2026-06-16
 
 ### Changed
