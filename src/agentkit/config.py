@@ -17,12 +17,36 @@ class LoopConfig(BaseModel):
     # applies when a finalize validator is configured. One nudge is
     # enough in practice.
     max_missing_finalize_reprompts: int = 1
+    # When a missing-finalize re-prompt fires (see above), constrain that
+    # re-prompt turn to the finalize tool via tool_choice. Without this, a
+    # model that already answered inline can burn a whole free-form turn
+    # (thinking, re-narrating) before — or instead of — finalizing, holding
+    # the consumer in a streaming state for minutes. Opt-in: the provider
+    # must support named tool_choice, and the consumer must register a
+    # finalize tool (bare name "finalize"/"finalize_response"). Default off
+    # preserves the unconstrained re-prompt for consumers that have not
+    # verified provider support.
+    force_finalize_on_missing_reprompt: bool = False
     max_claim_corrections: int = 1
     streaming_chunk_timeout_seconds: float = 60.0
     builtin_tool_note_enabled: bool = False  # the kit.note opt-in
     max_subagent_depth: int = 3  # how deep nested kit.subagent.spawn can recurse
     # Force-end the turn after N back-to-back errors from the same tool name.
     max_consecutive_tool_errors: int = 3
+    # Retry a stream that failed with a RECOVERABLE provider error (rate limit,
+    # timeout, transient connection drop) up to this many times before
+    # surfacing the error and ending the turn. The retry only fires when the
+    # failed attempt had emitted no text or tool call yet (a clean early
+    # failure), so it can never duplicate output the consumer already saw. This
+    # is what keeps a long bulk turn alive across a brief provider blip instead
+    # of aborting the whole worklist mid-flight. The budget is per stream
+    # attempt: a successful stream resets it, so each iteration of a multi-step
+    # turn gets a fresh allowance. Set 0 to disable (surface every error).
+    max_stream_retries: int = 2
+    # Base delay (seconds) for exponential backoff between stream retries:
+    # ``delay = base * 2 ** (attempt - 1)``. Kept short — recoverable blips
+    # (429s, momentary disconnects) typically clear within a second or two.
+    stream_retry_base_delay_seconds: float = 0.5
 
 
 class ToolDispatchConfig(BaseModel):
@@ -71,6 +95,22 @@ class AgentConfig(BaseSettings):
     # Typed Any (not Callable) to avoid circular imports with Provider — same
     # rationale as GuardConfig.intent / approval / finalize / success_claim.
     provider_selector: Any = None
+    # Optional per-iteration model override. When set, the streaming handler
+    # resolves ``model = selector(ctx)`` and threads it into MessageBuilder as
+    # a per-build override, so ``ProviderRequest.model`` reflects the
+    # current-iteration model rather than the session's constructor-time
+    # ``model``. Orthogonal to ``provider_selector``: a consumer can swap
+    # provider (for per-tier reasoning_effort) AND swap model (for the
+    # actual model_id at the wire) using a shared tracker. Typed Any to
+    # avoid circular imports with TurnContext — same rationale as
+    # ``provider_selector``.
+    model_selector: Any = None
+    # Optional per-iteration tool-catalog filter. When set, the streaming
+    # handler calls ``tool_selector(ctx, registry.list_specs())`` and sends
+    # the returned subset to the provider, instead of the full catalog. Used
+    # for progressive disclosure and Tool Plane routing. Typed Any to avoid
+    # circular imports, same rationale as provider_selector and model_selector.
+    tool_selector: Any = None
 
     model_config = SettingsConfigDict(
         env_prefix="AGENTKIT_",

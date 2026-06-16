@@ -56,3 +56,25 @@ def test_translates_tool_specs_to_tool_definitions():
     req = builder.build(system_blocks=[], history=[], tool_specs=[_spec("a")])
     assert isinstance(req.tools[0], ToolDefinition)
     assert req.tools[0].name == "a"
+
+
+def test_model_override_replaces_constructor_model():
+    """When build() receives a model_override, ProviderRequest.model uses it
+    instead of the constructor-time model. Lets a per-iteration model selector
+    swap the model_id without rebuilding the MessageBuilder."""
+    builder = MessageBuilder(model="standard/m", max_tokens=128)
+    req = builder.build(
+        system_blocks=[],
+        history=[],
+        tool_specs=[],
+        model_override="quality/m",
+    )
+    assert req.model == "quality/m"
+
+
+def test_model_override_none_preserves_constructor_model():
+    """When model_override is None (the default), ProviderRequest.model uses
+    the constructor-time model — backward-compatible with existing callers."""
+    builder = MessageBuilder(model="standard/m", max_tokens=128)
+    req = builder.build(system_blocks=[], history=[], tool_specs=[], model_override=None)
+    assert req.model == "standard/m"

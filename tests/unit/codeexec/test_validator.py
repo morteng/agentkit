@@ -1,7 +1,22 @@
 import pytest
 
 from agentkit.codeexec.errors import CodeValidationError
-from agentkit.codeexec.validator import validate_source
+from agentkit.codeexec.namespace import SAFE_BUILTIN_NAMES
+from agentkit.codeexec.validator import FORBIDDEN_NAMES, validate_source
+
+
+def test_denylist_and_namespace_allowlist_are_disjoint():
+    """The two gates must agree: a name the runtime namespace exposes must not
+    be one the parse-time validator forbids (that mismatch silently breaks every
+    script that uses it, e.g. `type` was denied while being a normal builtin)."""
+    overlap = set(SAFE_BUILTIN_NAMES) & FORBIDDEN_NAMES
+    assert not overlap, f"names exposed by namespace but forbidden by validator: {sorted(overlap)}"
+
+
+def test_type_now_allowed_but_dunder_traversal_still_blocked():
+    validate_source("t = type(1)\nreturn t is int")
+    with pytest.raises(CodeValidationError, match="dunder"):
+        validate_source("return type(1).__bases__")
 
 
 def test_allows_plain_code():
@@ -16,6 +31,14 @@ def test_rejects_import():
 def test_rejects_from_import():
     with pytest.raises(CodeValidationError, match="import"):
         validate_source("from os import system")
+
+
+def test_import_error_message_guides_toward_prebound_modules():
+    # The message must steer a model away from retrying `import` and toward
+    # using host-provided modules directly, so a failed first attempt
+    # self-corrects instead of falling back to manual computation.
+    with pytest.raises(CodeValidationError, match="without import"):
+        validate_source("import math")
 
 
 @pytest.mark.parametrize(
