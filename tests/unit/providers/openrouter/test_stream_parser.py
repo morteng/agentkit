@@ -1,5 +1,7 @@
 """Targeted tests for stream parser edge cases not covered by request_builder tests."""
 
+import importlib
+import json
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -147,3 +149,104 @@ async def test_parser_stamps_model_and_provider_name_on_usage_event():
     assert usage_events[0].provider_name == "openrouter"
     assert usage_events[0].usage.input_tokens == 10
     assert usage_events[0].usage.output_tokens == 5
+
+
+@pytest.mark.asyncio
+async def test_usage_captured_when_arrives_with_non_empty_choices():
+    """OpenRouter delivers ``usage`` on the SAME chunk as the last delta +
+    ``finish_reason`` (not on a follow-up no-choices chunk like the OpenAI
+    canonical pattern). Live probes against deepseek-chat-v3.1,
+    deepseek-v3.1-terminus, gemini-2.5-flash, and gemini-2.5-flash-lite-preview
+    all emit this shape; the parser must capture usage on every chunk, not only
+    when ``choices`` is empty. Pikkolo v0.128.0 deploy left ``usage_ledger``
+    empty for 4+ hours because the original guard discarded these chunks.
+    """
+    chunks: list[Any] = [
+        _Chunk([_Choice(_Delta(content="hi"))]),
+        # Real OpenRouter final chunk: choices=non-empty + finish_reason + usage.
+        _Chunk(
+            [_Choice(_Delta(), finish_reason="stop")],
+            usage=_Usage(prompt_tokens=12, completion_tokens=2),
+        ),
+    ]
+    events = [
+        ev
+        async for ev in parse_openrouter_stream(_aiter(chunks), model="deepseek/deepseek-chat-v3.1")
+    ]
+    usage_events = [e for e in events if isinstance(e, UsageEvent)]
+    assert len(usage_events) == 1, (
+        f"Expected one UsageEvent for OpenRouter's final-chunk shape, got {len(usage_events)}. "
+        "Usage on a chunk with non-empty choices was previously dropped."
+    )
+    assert usage_events[0].usage.input_tokens == 12
+    assert usage_events[0].usage.output_tokens == 2
+    assert usage_events[0].model == "deepseek/deepseek-chat-v3.1"
+
+
+@pytest.mark.asyncio
+async def test_translator_in_traced_when_session_allowlisted(monkeypatch, tmp_path):
+    """Each TextDelta yielded by the parser must emit a ``translator_in`` JSONL
+    line when ``session_id`` is allowlisted via STREAM_TRACE_SESSIONS. This is the
+    upstream checkpoint that lets us localize Pikkolo F2 chat truncation."""
+    sid = "drammen-trace-session"
+    monkeypatch.setenv("STREAM_TRACE_SESSIONS", sid)
+    monkeypatch.setenv("STREAM_TRACE_DIR", str(tmp_path))
+    # Module-scoped imports reloaded so the env we just set takes effect.
+    import agentkit._stream_trace as _trace_mod
+    import agentkit.providers.openrouter.stream_parser as _parser_mod
+
+    importlib.reload(_trace_mod)
+    importlib.reload(_parser_mod)
+
+    chunks: list[Any] = [
+        _Chunk([_Choice(_Delta(content="Hei "))]),
+        _Chunk([_Choice(_Delta(content="verden"))]),
+        _Chunk([_Choice(_Delta(), finish_reason="stop")]),
+    ]
+    events = [
+        ev
+        async for ev in _parser_mod.parse_openrouter_stream(
+            _aiter(chunks), model="test/m", session_id=sid
+        )
+    ]
+    text = [ev for ev in events if ev.type == "text_delta"]
+    assert [t.delta for t in text] == ["Hei ", "verden"]
+
+    path = tmp_path / f"{sid}.jsonl"
+    assert path.exists()
+    lines = path.read_text(encoding="utf-8").strip().splitlines()
+    records = [json.loads(line) for line in lines]
+    assert [r["checkpoint"] for r in records] == ["translator_in", "translator_in"]
+    assert [r["content_repr"] for r in records] == [repr("Hei "), repr("verden")]
+    assert all(r["extra"]["model"] == "test/m" for r in records)
+
+
+@pytest.mark.asyncio
+async def test_no_trace_when_session_unset(monkeypatch, tmp_path):
+    """Parser must be a no-op (no file written) when session_id is None or unlisted."""
+    monkeypatch.setenv("STREAM_TRACE_SESSIONS", "only-other-session")
+    monkeypatch.setenv("STREAM_TRACE_DIR", str(tmp_path))
+    # Module-scoped imports reloaded so the env we just set takes effect.
+    import agentkit._stream_trace as _trace_mod
+    import agentkit.providers.openrouter.stream_parser as _parser_mod
+
+    importlib.reload(_trace_mod)
+    importlib.reload(_parser_mod)
+
+    chunks: list[Any] = [
+        _Chunk([_Choice(_Delta(content="hi"))]),
+        _Chunk([_Choice(_Delta(), finish_reason="stop")]),
+    ]
+    _ = [
+        ev
+        async for ev in _parser_mod.parse_openrouter_stream(
+            _aiter(chunks), model="m", session_id=None
+        )
+    ]
+    _ = [
+        ev
+        async for ev in _parser_mod.parse_openrouter_stream(
+            _aiter(chunks), model="m", session_id="not-listed"
+        )
+    ]
+    assert list(tmp_path.iterdir()) == []

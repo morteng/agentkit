@@ -47,6 +47,32 @@ def test_rule1_passes_when_tool_in_log():
     assert result.ok
 
 
+def test_rule1_normalizes_server_qualified_action_tool():
+    """The model echoes the qualified name (``pikkolo.save_memory``) it was
+    presented, while the call log is keyed bare (``save_memory``). Rule 1 must
+    match the two namespace-agnostically — otherwise a faithfully-reported
+    write is misread as fabricated."""
+    env = Envelope(
+        status="done",
+        intent_kind="action",
+        actions_performed=[Action(tool="pikkolo.save_memory", target=None, description="ok")],
+    )
+    result = validate_envelope(env, [_summary("save_memory")])
+    assert result.ok
+
+
+def test_rule1_normalizes_qualified_call_log_name():
+    """Symmetric case: a qualified name in the call log matches a bare
+    action.tool the model reported."""
+    env = Envelope(
+        status="done",
+        intent_kind="action",
+        actions_performed=[Action(tool="save_memory", target=None, description="ok")],
+    )
+    result = validate_envelope(env, [_summary("pikkolo.save_memory")])
+    assert result.ok
+
+
 # Rule 2 — blocked needs pending_confirmation
 
 

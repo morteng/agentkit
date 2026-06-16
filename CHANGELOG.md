@@ -6,29 +6,77 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
-## [0.10.0] - 2026-06-08
+## [0.15.0] - 2026-06-16
 
 ### Added
-- `agentkit.codeexec` — an in-process, curated-namespace Python executor for
-  agent-authored scripts. `execute(namespace, source, limits)` reparents the
-  source under an `async def` (so scripts may `await` and `return`), runs it
-  under a wall-clock timeout with a restricted `__builtins__` and a bounded
-  stdout buffer, and returns an `ExecutionResult` (`stdout`, `return_value`,
-  `error`, `error_type`, `duration_ms`). Exports: `execute`, `ExecutionResult`,
-  `ExecLimits`, `CodeExecutionError`, `CodeValidationError`, `CodeTimeoutError`.
-- AST allowlist validator (the security boundary): rejects `import` statements,
-  the eval/introspection builtins by name (`eval`, `exec`, `compile`, `open`,
-  `getattr`, …), and all dunder name/attribute access (the standard
-  sandbox-escape vector).
+- Recoverable-stream retry. A streaming attempt that fails with a *recoverable* provider error (rate limit, timeout, transient connection drop) **before any output has reached the consumer** is now retried — the loop re-enters `CONTEXT_BUILD` after an exponential backoff instead of ending the turn in `ERRORED`. This keeps a long multi-step / bulk turn alive across a brief provider blip rather than aborting the whole worklist mid-flight. Governed by `LoopConfig.max_stream_retries` (default `2`) and `LoopConfig.stream_retry_base_delay_seconds` (default `0.5`); set retries to `0` to restore surface-every-error behavior. The retry fires only on a clean early failure (nothing streamed yet), so it can never duplicate output the consumer already saw, and the held error is forwarded normally once the budget is spent. The budget is per stream attempt — a clean stream resets it — so each iteration of a multi-step turn gets a fresh allowance.
+- `FakeProvider.error(code, message, *, recoverable=False)` gained the `recoverable` flag so tests can script recoverable vs terminal provider failures.
 
-### Notes
-- This is a **language-level, in-process** sandbox, not OS-level isolation. A
-  synchronous CPU loop cannot be preempted by the wall-clock timeout and will
-  block the event loop; mitigation belongs at deployment (worker watchdog).
-  Injected coroutines must propagate `CancelledError`, and injected mutable
-  objects are shared by reference (the namespace is shallow-copied). The module
-  is additive and not wired into the tool registry — consumers register it as a
-  builtin tool.
+### Fixed
+- `STREAMING -> CONTEXT_BUILD` is now a declared-legal phase transition. The success-claim correction path already returned `CONTEXT_BUILD` from streaming, but the transition table omitted it — so that retry (and the new recoverable-stream retry) would have been rejected as an illegal transition and forced the turn to `ERRORED`.
+
+## [0.14.3] - 2026-06-16
+
+### Changed
+- `agentkit.__version__` is now read from the installed package metadata (`importlib.metadata`) instead of a hand-edited string, so it can no longer drift from `pyproject.toml` on a release. It had drifted badly — the literal still read `0.1.0` at 0.14.x.
+
+### Docs
+- Backfilled the CHANGELOG entries that were skipped during fast iteration: `0.9.0`, `0.12.0`, `0.13.0`, `0.14.1`, `0.14.2`. The file now documents every shipped version.
+- Updated the install snippets in `README.md` and `docs/index.md` (they still pinned the long-obsolete `v0.1.0`).
+
+## [0.14.2] - 2026-06-16
+
+### Added
+- `agentkit.codeexec` now exposes a wider set of escape-safe builtins to model-authored scripts: `next`, `iter`, `type`, `bytes`, and the pure numeric/formatting family `divmod`, `pow`, `chr`, `ord`, `hex`, `oct`, `bin`, `format`, `hash`. None of these reach IO, imports, or the process, so the sandbox boundary is unchanged; they let a script iterate explicitly, do byte/number work, and introspect a value's type without a manual workaround.
+
+### Fixed
+- Removed `type` from the validator's `FORBIDDEN_NAMES` so it no longer rejects a builtin the namespace now allows — the namespace allowlist and validator denylist had drifted apart. Added `test_denylist_and_namespace_allowlist_are_disjoint` so the two lists can never silently contradict each other again.
+
+## [0.14.1] - 2026-06-14
+
+### Fixed
+- The finalize validator's Rule 1 (every claimed `action.tool` must correspond to a real tool call this turn) now normalizes server-qualified tool names before matching. A model that echoes a qualified name like `pikkolo.save_memory` in `actions_performed`, while the call log records the bare `save_memory`, no longer trips a false `fabricated_tool` violation and a needless finalize re-prompt on a legitimate action turn.
+
+## [0.14.0] - 2026-06-09
+
+### Added
+- `AgentSession.resume_with_approval_batch(turn_id, decisions)` — resume a suspended turn after applying a batch of approval verdicts in one call. Each entry is `{"call_id", "decision", "edited_args"?, "reason"?}`; verdicts are applied (and their `ApprovalGranted`/`ApprovalDenied` events emitted) in list order before the Loop restarts once at `TOOL_EXECUTING`. This is required for correctness when a turn suspends on multiple pending tool calls: `handle_tool_executing` runs only the approved/denied/unknown buckets, so any call left in `pending_user_approvals` after a single-call `resume_with_approval` is silently dropped. A UI that presents one approval card for N calls must use the batch method to resume them all on a single verdict.
+- `FakeProvider.tool_calls([(name, args), ...])` — script several tool calls in a single assistant message (parallel calls), so tests can exercise multi-pending-approval turns.
+
+### Changed
+- Refactored `resume_with_approval` internals into shared `_approval_timeout_stream`, `_build_verdict_event`, and `_resumed_loop_stream` helpers (behavior-preserving) now reused by the batch variant.
+
+## [0.13.0] - 2026-06-02
+
+### Added
+- Tool Plane capability hard-gate. A tool may declare a `capability`, and `ToolPlane` will keep it out of the per-turn catalog until the turn's `ToolContext` reports that capability satisfied — so a consumer can gate a whole family of tools behind tenant entitlement, page context, or feature flag without per-tool branching. The `tool_capability_satisfied(tool, context)` predicate is exported for reuse, and `ToolPlane.hot_set` lets a host pin a tool visible for the current turn.
+- `agentkit.resources` — a domain-free scriptable-resource framework the consuming app populates with `OpSpec`s. `OpRegistry` classifies operations conservatively (read / reversible-write / irreversible-write via the `Reversibility` enum); `ResourceNamespace` exposes uniform CRUD verbs (`create`/`replace`/`restore`/…) with a per-field whitelist; `EntitySpec` + `build_crud_specs` generate the specs for an entity; and `ApprovalScanner` walks an agent-authored script's AST, constant-propagates literal bindings, and classifies each call so the host can decide what needs approval before anything runs.
+
+## [0.12.0] - 2026-05-31
+
+### Added
+- `AgentConfig.tool_selector` hook — a per-iteration filter over the tool catalog, so the visible tool set can shrink or grow turn-by-turn (progressive disclosure) instead of being fixed for the whole session.
+- Generic per-turn tool resolver plus a built-in BM25 `search_tools` tool (`make_search_tools_builtin`): when the full catalog is too large to expose at once, the model can search for the tool it needs and the resolver promotes the match into the live set for that turn.
+
+## [0.11.0] - 2026-05-31
+
+### Added
+- `LoopConfig.force_finalize_on_missing_reprompt` (default `False`) — when a turn ends without calling the finalize tool and `handle_finalize_check` re-prompts the model to finalize, this constrains that re-prompt turn to the finalize tool via `tool_choice`. Without it, a model that already answered inline can spend a whole additional free-form turn (thinking, re-narrating) before — or instead of — finalizing, holding the consumer in a streaming state for minutes even though the answer is already on screen. The re-prompt now resolves to a fast, guaranteed finalize call that yields a real envelope. Opt-in because it requires provider support for named `tool_choice`; the finalize tool is resolved from the registry by the same bare-name convention the validator uses (`finalize_response` / `finalize`), and the handler falls back to an unconstrained re-prompt when no finalize tool is registered. The flag is one-shot per re-prompt (consumed in `handle_streaming`), so only the recovery turn is constrained.
+
+## [0.10.0] - 2026-05-31
+
+### Added
+- `agentkit.codeexec.SAFE_MODULES` — a curated mapping of pure-compute stdlib modules (`math`, `statistics`, `datetime`, `json`, `decimal`, `itertools`, `collections`, `re`) a host MAY merge into a script's namespace so model-authored scripts can do real math/date/parsing work **without** an `import` statement. Imports stay banned by the validator; the modules are handed in as objects exactly like any other injected name, and dunder attribute access on them is still rejected at parse time, so this does not reopen the sandbox escape. Modules with IO / process / import reach (`os`, `sys`, `subprocess`, `importlib`, `pathlib`, `socket`, `builtins`) are deliberately excluded, as is `random` (mutable global state). Opt-in per call: `execute({**SAFE_MODULES, "client": client}, source)`.
+
+### Changed
+- The validator's import-rejection message now guides the model toward pre-bound modules ("…are already available by name — use them directly without import") instead of the bare "import statements are not allowed", so a failed first attempt self-corrects rather than falling back to manual computation.
+
+## [0.9.0] - 2026-05-23
+
+### Added
+- `AgentConfig.provider_selector` hook — pick the provider per streaming iteration (e.g. route a quality turn to a stronger model, a cheap turn to a fast one) instead of binding one provider for the whole session. Validated as selector-XOR-provider so a session configures exactly one of the two.
+- `UsageRecorded` public event — token usage now surfaces on the event stream alongside the existing `ctx.metadata` usages, so consumers can meter spend live without reaching into loop internals.
+- `UsageEvent` widened with required `model` and `provider_name` fields, stamped by every provider (Anthropic, OpenRouter, and the fakes), so usage records are attributable to a specific model/provider.
 
 ## [0.8.0] - 2026-05-22
 

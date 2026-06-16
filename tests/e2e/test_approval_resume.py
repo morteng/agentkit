@@ -327,3 +327,133 @@ async def test_default_builtins_no_longer_includes_request_approval():
     assert "kit.request_approval" not in names
     assert "kit.subagent.spawn" in names  # but subagent stays
     assert "kit.finalize" in names
+
+
+def _make_batch_approval_session() -> tuple[AgentSession, list[dict]]:
+    """Session whose first turn emits TWO HIGH_WRITE calls in one message, so the
+    turn suspends with two pending approvals, then a finalize after resume."""
+    config = AgentConfig()
+    config.guards.approval = RiskBasedApprovalGate()
+    config.stores.session = FakeSessionStore()
+    config.stores.memory = FakeMemoryStore()
+    config.stores.checkpoint = FakeCheckpointStore()
+
+    registry = ToolRegistry()
+    registry.register_default_builtins()
+
+    spec = ToolSpec(
+        name="ampaera.devices.delete",
+        description="delete device (irreversible)",
+        parameters={"type": "object"},
+        returns=None,
+        risk=RiskLevel.HIGH_WRITE,
+        idempotent=False,
+        side_effects=SideEffects.EXTERNAL_IRREVERSIBLE,
+        requires_approval=ApprovalPolicy.BY_RISK,
+        cache_ttl_seconds=None,
+        timeout_seconds=10.0,
+    )
+    executions: list[dict] = []
+
+    async def handler(args, ctx):
+        executions.append(dict(args))
+        return ToolResult(
+            call_id=ctx.call_id,
+            status="ok",
+            content=[ContentBlockOut(type="text", text="deleted")],
+            error=None,
+            duration_ms=1,
+            cached=False,
+        )
+
+    registry.register_builtin(spec, handler)
+
+    provider = FakeProvider().script(
+        FakeProvider.tool_calls(
+            [
+                ("ampaera.devices.delete", {"id": "a"}),
+                ("ampaera.devices.delete", {"id": "b"}),
+            ]
+        ),
+        FakeProvider.tool_call(
+            "kit.finalize",
+            {
+                "status": "done",
+                "intent_kind": "action",
+                "summary": "Deleted both devices.",
+                "actions_performed": [
+                    {"tool": "devices.delete", "description": "deleted device a"},
+                    {"tool": "devices.delete", "description": "deleted device b"},
+                ],
+            },
+        ),
+    )
+    session = AgentSession(
+        owner=OwnerId("u:1"),
+        config=config,
+        provider=provider,
+        registry=registry,
+        model="m",
+    )
+    return session, executions
+
+
+@pytest.mark.asyncio
+async def test_resume_batch_approve_executes_every_pending_call():
+    """resume_with_approval_batch applies all verdicts so every approved call runs.
+
+    Regression for the chat-resume crash: a single-call resume would leave the
+    second call in pending_user_approvals, which TOOL_EXECUTING silently drops.
+    """
+    session, executions = _make_batch_approval_session()
+
+    needed: list[ApprovalNeeded] = []
+    async with session.run("delete a and b") as stream:
+        async for ev in stream:
+            if isinstance(ev, ApprovalNeeded):
+                needed.append(ev)
+    assert len(needed) == 2
+    assert executions == []  # nothing executed before approval
+
+    decisions = [{"call_id": n.call_id, "decision": "approve"} for n in needed]
+    events: list = []
+    async with session.resume_with_approval_batch(needed[0].turn_id, decisions) as s:
+        async for ev in s:
+            events.append(ev)
+
+    # Both verdict events surface, and BOTH tools actually ran.
+    granted = [e for e in events if isinstance(e, ApprovalGranted)]
+    assert {g.call_id for g in granted} == {n.call_id for n in needed}
+    assert sorted(e["id"] for e in executions) == ["a", "b"]
+    assert any(isinstance(e, TurnEnded) and e.reason is TurnEndReason.COMPLETED for e in events)
+
+
+@pytest.mark.asyncio
+async def test_resume_batch_mixed_approve_and_deny():
+    """A batch can approve some calls and deny others in one resume."""
+    session, executions = _make_batch_approval_session()
+
+    needed: list[ApprovalNeeded] = []
+    async with session.run("delete a and b") as stream:
+        async for ev in stream:
+            if isinstance(ev, ApprovalNeeded):
+                needed.append(ev)
+    assert len(needed) == 2
+
+    # Approve the first pending call, deny the second.
+    decisions = [
+        {"call_id": needed[0].call_id, "decision": "approve"},
+        {"call_id": needed[1].call_id, "decision": "deny", "reason": "too risky"},
+    ]
+    events: list = []
+    async with session.resume_with_approval_batch(needed[0].turn_id, decisions) as s:
+        async for ev in s:
+            events.append(ev)
+
+    granted = [e for e in events if isinstance(e, ApprovalGranted)]
+    denied = [e for e in events if isinstance(e, ApprovalDenied)]
+    assert [g.call_id for g in granted] == [needed[0].call_id]
+    assert [d.call_id for d in denied] == [needed[1].call_id]
+    assert denied[0].reason == "too risky"
+    # Only the approved call ran.
+    assert len(executions) == 1

@@ -10,6 +10,13 @@ import ast
 
 from agentkit.codeexec.errors import CodeValidationError
 
+# Denylist of builtin names that can break the sandbox: dynamic eval/compile,
+# I/O, namespace introspection, and attribute traversal (the string-literal
+# bypass of the dunder-name check below). `type` is intentionally NOT here: the
+# dunder-attribute rule plus the absence of getattr neutralize the
+# `type(x).__bases__[0].__subclasses__()` escape, and `type(x)` is a routine
+# inspection the curated namespace also exposes. Keep this set disjoint from
+# namespace.SAFE_BUILTIN_NAMES (enforced by a unit test) so the two gates agree.
 FORBIDDEN_NAMES = frozenset(
     {
         "eval",
@@ -28,7 +35,6 @@ FORBIDDEN_NAMES = frozenset(
         "breakpoint",
         "memoryview",
         "help",
-        "type",
     }
 )
 
@@ -45,7 +51,11 @@ def validate_source(source: str) -> ast.Module:
 
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
-            raise CodeValidationError("import statements are not allowed")
+            raise CodeValidationError(
+                "import statements are not allowed; any modules the host "
+                "provides (e.g. math, datetime, json) are already available "
+                "by name — use them directly without import"
+            )
         if isinstance(node, ast.Attribute):
             attr = node.attr
             if attr.startswith("__") and attr.endswith("__"):

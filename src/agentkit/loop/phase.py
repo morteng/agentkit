@@ -37,7 +37,14 @@ TRANSITIONS: dict[Phase, frozenset[Phase]] = {
     Phase.IDLE: frozenset({Phase.INTENT_GATE}),
     Phase.INTENT_GATE: frozenset({Phase.CONTEXT_BUILD, Phase.ERRORED}),
     Phase.CONTEXT_BUILD: frozenset({Phase.STREAMING, Phase.ERRORED}),
-    Phase.STREAMING: frozenset({Phase.TOOL_PHASE, Phase.FINALIZE_CHECK, Phase.ERRORED}),
+    Phase.STREAMING: frozenset(
+        {
+            Phase.TOOL_PHASE,
+            Phase.FINALIZE_CHECK,
+            Phase.CONTEXT_BUILD,  # success-claim correction retry, or recoverable-stream retry
+            Phase.ERRORED,
+        }
+    ),
     Phase.TOOL_PHASE: frozenset(
         {
             Phase.APPROVAL_WAIT,

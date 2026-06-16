@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator, Generator
 from typing import Any
 
 from agentkit._messages import Usage
+from agentkit._stream_trace import is_tracing, trace_delta
 from agentkit.providers.base import (
     MessageComplete,
     MessageStart,
@@ -35,8 +36,8 @@ def parse_tool_call_arguments(args_str: str) -> dict[str, Any] | None:
     return parsed
 
 
-async def parse_openrouter_stream(
-    chunks: AsyncIterator[Any], *, model: str
+async def parse_openrouter_stream(  # noqa: PLR0912 — chunk-type dispatch + tracing gate
+    chunks: AsyncIterator[Any], *, model: str, session_id: str | None = None
 ) -> AsyncIterator[ProviderEvent]:
     """Map OpenAI ChatCompletionChunk events to ProviderEvents.
 
@@ -48,22 +49,44 @@ async def parse_openrouter_stream(
         model: The model identifier used for this request (e.g. ``"openai/gpt-5"``).
             Stamped onto the emitted :class:`UsageEvent` so cost-ledger consumers
             can attribute usage without inspecting the originating request.
+        session_id: Optional session id, forwarded to the per-session stream
+            tracer (``agentkit._stream_trace``). When the session is allowlisted
+            via ``STREAM_TRACE_SESSIONS``, each text delta is logged at the
+            ``translator_in`` checkpoint — the upstream point where the openai
+            SDK has just delivered ``delta.content`` and we are about to emit
+            ``TextDelta``. Used to attribute chat truncation bugs to a layer
+            (Pikkolo F2 investigation). No-op when not allowlisted.
     """
     started = False
     finish_reason_raw: str | None = None
     final_usage: Usage | None = None
     pending_tools: dict[int, dict[str, Any]] = {}  # index -> {"id", "name", "args_buf"}
+    # Cache the membership check once per stream — no point repeating the
+    # set lookup per chunk, and tracing state is per-session-stable.
+    tracing_active = is_tracing(session_id)
 
     async for chunk in chunks:
         if not started:
             yield MessageStart()
             started = True
 
+        # Capture usage from any chunk that carries it. The OpenAI canonical
+        # ``include_usage`` shape is "empty choices + populated usage on a final
+        # chunk", but real OpenRouter responses (verified live against
+        # deepseek-chat-v3.1, deepseek-v3.1-terminus, gemini-2.5-flash,
+        # gemini-2.5-flash-lite-preview, with and without reasoning) deliver
+        # ``usage`` on the SAME chunk as the last delta + ``finish_reason``.
+        # Capturing only inside ``if choice is None`` silently dropped every
+        # usage chunk on OpenRouter — see the Pikkolo v0.128.0 ledger gap
+        # incident (zero ``chat_session`` rows in usage_ledger after deploy).
+        # Last-wins semantics are correct here: any chunk that re-publishes a
+        # usage object is meant to supersede the prior value.
+        usage = getattr(chunk, "usage", None)
+        if usage is not None:
+            final_usage = _usage_from_openai(usage)
+
         choice = chunk.choices[0] if chunk.choices else None
         if choice is None:
-            usage = getattr(chunk, "usage", None)
-            if usage is not None:
-                final_usage = _usage_from_openai(usage)
             continue
 
         delta = choice.delta
@@ -79,6 +102,11 @@ async def parse_openrouter_stream(
 
         # Text content.
         if text := getattr(delta, "content", None):
+            # Stream-trace checkpoint: ``delta.content`` as the openai SDK
+            # just delivered it. Diff against Pikkolo's ``adapter_in`` and
+            # ``adapter_out_cleaned`` to localize chat truncation bugs.
+            if tracing_active:
+                trace_delta(session_id, "translator_in", text, extra={"model": model})
             yield TextDelta(delta=text, block_index=0)
 
         # Tool calls — streamed as partial JSON across multiple chunks.

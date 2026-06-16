@@ -17,9 +17,23 @@ _DEFAULT_READ_PREFIXES: frozenset[str] = frozenset(
 )
 
 
+def _bare_name(name: str) -> str:
+    """Strip a single ``<server>.`` registry qualifier from a tool name.
+
+    Tools registered through a server namespace are presented to the model
+    as ``<server>.<tool>`` (e.g. ``pikkolo.save_memory``). The model often
+    echoes that qualified form back in ``actions_performed[].tool``, while the
+    turn's call-log summaries are keyed by the bare name. Rule 1 matches the
+    two against each other, so both sides must be normalized to the bare form
+    or a faithfully-reported write is misread as fabricated. Bare tool names
+    are snake_case and never contain a dot, so splitting on the first dot is
+    safe.
+    """
+    return name.split(".", 1)[-1]
+
+
 def _is_default_write(name: str) -> bool:
-    bare = name.split(".", 1)[-1]
-    return not any(bare.startswith(p) for p in _DEFAULT_READ_PREFIXES)
+    return not any(_bare_name(name).startswith(p) for p in _DEFAULT_READ_PREFIXES)
 
 
 def _summaries_since_last_user_turn(  # pyright: ignore[reportUnusedFunction]
@@ -124,6 +138,9 @@ def validate_envelope(  # noqa: PLR0912
     """
     violations: list[Violation] = []
 
+    # Names are normalized to their bare form on both sides (summary keys and
+    # action.tool below) so a server-qualified name the model echoed back
+    # (``pikkolo.save_memory``) still matches the bare-keyed call log.
     successful_writes: dict[str, int] = {}
     any_error = False
     for c in tool_calls:
@@ -131,12 +148,14 @@ def validate_envelope(  # noqa: PLR0912
             any_error = True
             continue
         if c.is_write:
-            successful_writes[c.name] = successful_writes.get(c.name, 0) + 1
+            key = _bare_name(c.name)
+            successful_writes[key] = successful_writes.get(key, 0) + 1
 
     # Rule 1
     consumed: dict[str, int] = {}
     for action in envelope.actions_performed:
-        available = successful_writes.get(action.tool, 0) - consumed.get(action.tool, 0)
+        tool = _bare_name(action.tool)
+        available = successful_writes.get(tool, 0) - consumed.get(tool, 0)
         if available <= 0:
             violations.append(
                 Violation(
@@ -145,7 +164,7 @@ def validate_envelope(  # noqa: PLR0912
                 )
             )
         else:
-            consumed[action.tool] = consumed.get(action.tool, 0) + 1
+            consumed[tool] = consumed.get(tool, 0) + 1
 
     # Rule 2
     if envelope.status == "blocked" and envelope.pending_confirmation is None:

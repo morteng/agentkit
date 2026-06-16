@@ -57,6 +57,13 @@ def test_streaming_can_transition_to_tool_phase_or_finalize():
     assert Phase.FINALIZE_CHECK in TRANSITIONS[Phase.STREAMING]
 
 
+def test_streaming_can_transition_to_context_build():
+    # success-claim correction retry and recoverable-stream retry both re-enter
+    # CONTEXT_BUILD for another provider iteration.
+    assert Phase.CONTEXT_BUILD in TRANSITIONS[Phase.STREAMING]
+    validate_transition(Phase.STREAMING, Phase.CONTEXT_BUILD)  # no raise
+
+
 def test_approval_wait_terminates_to_turn_ended():
     # Suspend semantics: approval-wait yields TurnEnded(reason=AWAITING_APPROVAL).
     # The phase transition is APPROVAL_WAIT -> TURN_ENDED for the suspend; resume
