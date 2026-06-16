@@ -64,6 +64,25 @@ SAFE_BUILTIN_NAMES = (
     "filter",
     "repr",
     "frozenset",
+    "bytes",
+    # Iterator protocol — `next(iter(xs))` is the idiomatic "first match" and a
+    # common need in generated data scripts; both are pure and non-escaping.
+    "iter",
+    "next",
+    # Type inspection. The AST validator rejects dunder names and getattr/eval
+    # are not exposed, so `type(x)` cannot be walked to __subclasses__/__globals__
+    # — the only forms that would make it a sandbox-escape primitive.
+    "type",
+    # Pure numeric / encoding helpers — no I/O, no attribute traversal.
+    "divmod",
+    "pow",
+    "chr",
+    "ord",
+    "hex",
+    "oct",
+    "bin",
+    "format",
+    "hash",
     "True",
     "False",
     "None",

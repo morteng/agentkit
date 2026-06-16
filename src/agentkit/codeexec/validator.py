@@ -10,6 +10,13 @@ import ast
 
 from agentkit.codeexec.errors import CodeValidationError
 
+# Denylist of builtin names that can break the sandbox: dynamic eval/compile,
+# I/O, namespace introspection, and attribute traversal (the string-literal
+# bypass of the dunder-name check below). `type` is intentionally NOT here: the
+# dunder-attribute rule plus the absence of getattr neutralize the
+# `type(x).__bases__[0].__subclasses__()` escape, and `type(x)` is a routine
+# inspection the curated namespace also exposes. Keep this set disjoint from
+# namespace.SAFE_BUILTIN_NAMES (enforced by a unit test) so the two gates agree.
 FORBIDDEN_NAMES = frozenset(
     {
         "eval",
@@ -28,7 +35,6 @@ FORBIDDEN_NAMES = frozenset(
         "breakpoint",
         "memoryview",
         "help",
-        "type",
     }
 )
 
