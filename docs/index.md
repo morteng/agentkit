@@ -13,11 +13,11 @@ See [examples/minimal](https://github.com/morteng/agentkit/tree/main/examples/mi
 ## Install
 
 ```bash
-uv add git+https://github.com/morteng/agentkit@v0.1.0
+uv add git+https://github.com/morteng/agentkit@v0.14.3
 ```
 
 With FastAPI extras:
 
 ```bash
-uv add 'agentkit[fastapi] @ git+https://github.com/morteng/agentkit@v0.1.0'
+uv add 'agentkit[fastapi] @ git+https://github.com/morteng/agentkit@v0.14.3'
 ```

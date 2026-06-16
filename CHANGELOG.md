@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
+## [0.14.3] - 2026-06-16
+
+### Changed
+- `agentkit.__version__` is now read from the installed package metadata (`importlib.metadata`) instead of a hand-edited string, so it can no longer drift from `pyproject.toml` on a release. It had drifted badly — the literal still read `0.1.0` at 0.14.x.
+
+### Docs
+- Backfilled the CHANGELOG entries that were skipped during fast iteration: `0.9.0`, `0.12.0`, `0.13.0`, `0.14.1`, `0.14.2`. The file now documents every shipped version.
+- Updated the install snippets in `README.md` and `docs/index.md` (they still pinned the long-obsolete `v0.1.0`).
+
+## [0.14.2] - 2026-06-16
+
+### Added
+- `agentkit.codeexec` now exposes a wider set of escape-safe builtins to model-authored scripts: `next`, `iter`, `type`, `bytes`, and the pure numeric/formatting family `divmod`, `pow`, `chr`, `ord`, `hex`, `oct`, `bin`, `format`, `hash`. None of these reach IO, imports, or the process, so the sandbox boundary is unchanged; they let a script iterate explicitly, do byte/number work, and introspect a value's type without a manual workaround.
+
+### Fixed
+- Removed `type` from the validator's `FORBIDDEN_NAMES` so it no longer rejects a builtin the namespace now allows — the namespace allowlist and validator denylist had drifted apart. Added `test_denylist_and_namespace_allowlist_are_disjoint` so the two lists can never silently contradict each other again.
+
+## [0.14.1] - 2026-06-14
+
+### Fixed
+- The finalize validator's Rule 1 (every claimed `action.tool` must correspond to a real tool call this turn) now normalizes server-qualified tool names before matching. A model that echoes a qualified name like `pikkolo.save_memory` in `actions_performed`, while the call log records the bare `save_memory`, no longer trips a false `fabricated_tool` violation and a needless finalize re-prompt on a legitimate action turn.
+
 ## [0.14.0] - 2026-06-09
 
 ### Added
@@ -14,6 +36,18 @@ from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
 ### Changed
 - Refactored `resume_with_approval` internals into shared `_approval_timeout_stream`, `_build_verdict_event`, and `_resumed_loop_stream` helpers (behavior-preserving) now reused by the batch variant.
+
+## [0.13.0] - 2026-06-02
+
+### Added
+- Tool Plane capability hard-gate. A tool may declare a `capability`, and `ToolPlane` will keep it out of the per-turn catalog until the turn's `ToolContext` reports that capability satisfied — so a consumer can gate a whole family of tools behind tenant entitlement, page context, or feature flag without per-tool branching. The `tool_capability_satisfied(tool, context)` predicate is exported for reuse, and `ToolPlane.hot_set` lets a host pin a tool visible for the current turn.
+- `agentkit.resources` — a domain-free scriptable-resource framework the consuming app populates with `OpSpec`s. `OpRegistry` classifies operations conservatively (read / reversible-write / irreversible-write via the `Reversibility` enum); `ResourceNamespace` exposes uniform CRUD verbs (`create`/`replace`/`restore`/…) with a per-field whitelist; `EntitySpec` + `build_crud_specs` generate the specs for an entity; and `ApprovalScanner` walks an agent-authored script's AST, constant-propagates literal bindings, and classifies each call so the host can decide what needs approval before anything runs.
+
+## [0.12.0] - 2026-05-31
+
+### Added
+- `AgentConfig.tool_selector` hook — a per-iteration filter over the tool catalog, so the visible tool set can shrink or grow turn-by-turn (progressive disclosure) instead of being fixed for the whole session.
+- Generic per-turn tool resolver plus a built-in BM25 `search_tools` tool (`make_search_tools_builtin`): when the full catalog is too large to expose at once, the model can search for the tool it needs and the resolver promotes the match into the live set for that turn.
 
 ## [0.11.0] - 2026-05-31
 
@@ -27,6 +61,13 @@ from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
 ### Changed
 - The validator's import-rejection message now guides the model toward pre-bound modules ("…are already available by name — use them directly without import") instead of the bare "import statements are not allowed", so a failed first attempt self-corrects rather than falling back to manual computation.
+
+## [0.9.0] - 2026-05-23
+
+### Added
+- `AgentConfig.provider_selector` hook — pick the provider per streaming iteration (e.g. route a quality turn to a stronger model, a cheap turn to a fast one) instead of binding one provider for the whole session. Validated as selector-XOR-provider so a session configures exactly one of the two.
+- `UsageRecorded` public event — token usage now surfaces on the event stream alongside the existing `ctx.metadata` usages, so consumers can meter spend live without reaching into loop internals.
+- `UsageEvent` widened with required `model` and `provider_name` fields, stamped by every provider (Anthropic, OpenRouter, and the fakes), so usage records are attributable to a specific model/provider.
 
 ## [0.8.0] - 2026-05-22
 
