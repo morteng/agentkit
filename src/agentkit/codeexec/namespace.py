@@ -86,6 +86,29 @@ SAFE_BUILTIN_NAMES = (
     "True",
     "False",
     "None",
+    # Builtin exception classes — needed so generated code can write defensive
+    # `try/except ValueError` and `raise ValueError(...)`. Without these the
+    # interpreter raises `NameError: name 'ValueError' is not defined` the moment
+    # a script references them, which makes recoverable error handling
+    # impossible. Same safety reasoning as `type`: the AST validator rejects
+    # dunder access, so an exception class cannot be walked to
+    # __subclasses__/__globals__ — exposing the names adds no escape surface.
+    "Exception",
+    "BaseException",
+    "ValueError",
+    "TypeError",
+    "KeyError",
+    "IndexError",
+    "AttributeError",
+    "RuntimeError",
+    "LookupError",
+    "ArithmeticError",
+    "ZeroDivisionError",
+    "OverflowError",
+    "StopIteration",
+    "StopAsyncIteration",
+    "AssertionError",
+    "NotImplementedError",
 )
 
 

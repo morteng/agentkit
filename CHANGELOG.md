@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
+## [0.15.1] - 2026-06-17
+
+### Added
+- `codeexec` exposes the builtin exception classes (`Exception`, `ValueError`, `TypeError`, `KeyError`, `IndexError`, `AttributeError`, `RuntimeError`, `LookupError`, `ArithmeticError`, `ZeroDivisionError`, `OverflowError`, `StopIteration`, `StopAsyncIteration`, `AssertionError`, `NotImplementedError`, `BaseException`) in the safe-builtins namespace. Generated code can now write defensive `try/except ValueError` and `raise ValueError(...)` instead of crashing with `NameError: name 'ValueError' is not defined` the moment it references them. Same safety reasoning as `type`/`next`: the AST validator already rejects dunder access, so an exception class cannot be walked to `__subclasses__`/`__globals__` — exposing the names adds no sandbox-escape surface.
+
 ## [0.15.0] - 2026-06-16
 
 ### Added

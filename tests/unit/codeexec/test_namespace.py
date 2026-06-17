@@ -29,6 +29,31 @@ def test_safe_builtins_has_iterator_type_and_numeric_helpers():
         assert name in b, f"{name} should be a safe builtin"
 
 
+def test_safe_builtins_has_exception_classes():
+    # try/except and raise need the exception classes in scope, or the
+    # interpreter raises NameError the moment generated code references them.
+    b = build_safe_builtins(StdoutBuffer(max_bytes=1024))
+    for name in [
+        "Exception",
+        "BaseException",
+        "ValueError",
+        "TypeError",
+        "KeyError",
+        "IndexError",
+        "AttributeError",
+        "RuntimeError",
+        "LookupError",
+        "ArithmeticError",
+        "ZeroDivisionError",
+        "OverflowError",
+        "StopIteration",
+        "StopAsyncIteration",
+        "AssertionError",
+        "NotImplementedError",
+    ]:
+        assert name in b, f"{name} should be a safe builtin"
+
+
 def test_safe_builtins_excludes_dangerous_names():
     b = build_safe_builtins(StdoutBuffer(max_bytes=1024))
     # getattr/setattr/hasattr are escape vectors (attribute traversal with a
