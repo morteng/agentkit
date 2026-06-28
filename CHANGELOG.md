@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
+## [0.16.0] - 2026-06-28
+
+### Added
+- Flat-surface generation from one `OpSpec`. `OpSpec` now carries `flat_alias`, `params` (a dict of `Param` with type/description/enum/required/alias/items_type), and `description`. A new `op_to_toolspec()` emits the provider `ToolSpec` (the flat chat tool a model sees) from an `OpSpec`, so the flat tool and the script-namespace method are derived from the same declaration and their names/params cannot drift. `ResourceNamespace` now binds positional args from the declared `params` order and accepts the id `alias` on `get`/`patch`/`delete`, folding the consumer-side "forgiving namespace" recovery shims into the framework. `EntitySpec` gained `id_param`/`field_params`/`flat_aliases`/`descriptions` so `build_crud_specs` attaches the flat metadata to every emitted CRUD op. Fully additive: an `OpSpec` without `flat_alias`/`params` behaves exactly as before (signature-introspection path unchanged), and `op_to_toolspec` returns `None` for it.
+
 ## [0.15.1] - 2026-06-17
 
 ### Added
