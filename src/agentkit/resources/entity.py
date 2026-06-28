@@ -15,7 +15,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from agentkit.resources.types import ClassifyFn, InverseFn, OpSpec, Reversibility, SnapshotFn
+from agentkit.resources.types import (
+    ClassifyFn,
+    InverseFn,
+    OpSpec,
+    Param,
+    Reversibility,
+    SnapshotFn,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -75,6 +82,12 @@ class EntitySpec:
     inverse_patch: InverseFn | None = None  # patch inverse-op (defaults to restore touched fields)
     inverse_delete: InverseFn | None = None  # delete inverse-op (defaults to {resource}.restore)
     delete_action_kind: str = "soft_delete"
+    # Flat-surface metadata (opt-in). When set, build_crud_specs attaches
+    # flat_alias/description/params so op_to_toolspec can emit the chat tool.
+    id_param: Param | None = None
+    field_params: dict[str, Param] = field(default_factory=dict)  # type: ignore[reportUnknownVariableType]
+    flat_aliases: dict[str, str] = field(default_factory=dict)  # type: ignore[reportUnknownVariableType]
+    descriptions: dict[str, str] = field(default_factory=dict)  # type: ignore[reportUnknownVariableType]
 
 
 def _make_snapshot(spec: EntitySpec) -> SnapshotFn:
@@ -137,6 +150,19 @@ def _make_inverse_restore(spec: EntitySpec) -> InverseFn:
     return inverse_restore
 
 
+def _verb_params(spec: EntitySpec, verb: str) -> dict[str, Param]:
+    """Assemble the params dict for one CRUD verb from the entity's metadata."""
+    params: dict[str, Param] = {}
+    if verb in ("get", "patch", "delete") and spec.id_param is not None:
+        params["id"] = spec.id_param
+    empty: frozenset[str] = frozenset()
+    field_set = spec.patchable if verb == "patch" else spec.creatable if verb == "create" else empty
+    for f in field_set:
+        if f in spec.field_params:
+            params[f] = spec.field_params[f]
+    return params
+
+
 def build_crud_specs(spec: EntitySpec) -> list[OpSpec]:
     """Emit the four uniform CRUD OpSpecs for one declared entity.
 
@@ -169,8 +195,22 @@ def build_crud_specs(spec: EntitySpec) -> list[OpSpec]:
         return {"id": str(id), "deleted": True}
 
     specs = [
-        OpSpec(name=f"{spec.resource}.get", apply=_get, is_read=True),
-        OpSpec(name=f"{spec.resource}.search", apply=_search, is_read=True),
+        OpSpec(
+            name=f"{spec.resource}.get",
+            apply=_get,
+            is_read=True,
+            description=spec.descriptions.get("get", ""),
+            flat_alias=spec.flat_aliases.get("get"),
+            params=_verb_params(spec, "get"),
+        ),
+        OpSpec(
+            name=f"{spec.resource}.search",
+            apply=_search,
+            is_read=True,
+            description=spec.descriptions.get("search", ""),
+            flat_alias=spec.flat_aliases.get("search"),
+            params=_verb_params(spec, "search"),
+        ),
         OpSpec(
             name=f"{spec.resource}.patch",
             apply=_patch,
@@ -179,6 +219,9 @@ def build_crud_specs(spec: EntitySpec) -> list[OpSpec]:
             snapshot=snapshot,
             inverse=inverse_patch,
             classify=spec.classify,
+            description=spec.descriptions.get("patch", ""),
+            flat_alias=spec.flat_aliases.get("patch"),
+            params=_verb_params(spec, "patch"),
         ),
         OpSpec(
             name=f"{spec.resource}.delete",
@@ -188,6 +231,9 @@ def build_crud_specs(spec: EntitySpec) -> list[OpSpec]:
             snapshot=snapshot,
             inverse=inverse_delete,
             classify=spec.delete_classify,
+            description=spec.descriptions.get("delete", ""),
+            flat_alias=spec.flat_aliases.get("delete"),
+            params=_verb_params(spec, "delete"),
         ),
     ]
 
@@ -208,6 +254,9 @@ def build_crud_specs(spec: EntitySpec) -> list[OpSpec]:
                 patchable=spec.creatable,
                 inverse=inverse_create,
                 classify=spec.create_classify,
+                description=spec.descriptions.get("create", ""),
+                flat_alias=spec.flat_aliases.get("create"),
+                params=_verb_params(spec, "create"),
             )
         )
 
@@ -231,6 +280,9 @@ def build_crud_specs(spec: EntitySpec) -> list[OpSpec]:
                 subject_type=spec.subject_type,
                 inverse=inverse_restore,
                 classify=spec.restore_classify,
+                description=spec.descriptions.get("restore", ""),
+                flat_alias=spec.flat_aliases.get("restore"),
+                params=_verb_params(spec, "restore"),
             )
         )
 
