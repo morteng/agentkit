@@ -44,6 +44,23 @@ ClassifyFn = Callable[[dict[str, Any], frozenset[str]], Reversibility]
 
 
 @dataclass
+class Param:
+    """LLM-grade parameter metadata for one OpSpec argument.
+
+    ``alias`` is the LLM-facing name (e.g. ``content_id``); the dict key under
+    ``OpSpec.params`` is the name ``apply`` receives (e.g. ``id``). When ``alias``
+    is set the generated flat tool exposes the alias and the namespace accepts it.
+    """
+
+    type: str = "string"
+    description: str = ""
+    enum: list[str] | None = None
+    required: bool = False
+    alias: str | None = None
+    items_type: str | None = None  # element type when ``type == "array"``
+
+
+@dataclass
 class OpSpec:
     """One scriptable operation, declared once, read by namespace + scanner + ledger."""
 
@@ -56,6 +73,9 @@ class OpSpec:
     snapshot: SnapshotFn | None = None
     inverse: InverseFn | None = None
     classify: ClassifyFn | None = None
+    description: str = ""
+    flat_alias: str | None = None  # LLM-facing chat-tool name; None = script-only
+    params: dict[str, Param] = field(default_factory=dict)  # type: ignore[reportUnknownVariableType]
 
 
 @dataclass
