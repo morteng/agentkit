@@ -27,6 +27,8 @@ Recorder = Callable[
     Awaitable[None],
 ]
 
+_MISSING = object()
+
 
 class ResourceNamespace:
     def __init__(
@@ -47,6 +49,22 @@ class ResourceNamespace:
     def _spec(self, verb: str) -> OpSpec:
         return self._reg.get(f"{self._resource}.{verb}")
 
+    def _id_alias(self, verb: str) -> str | None:
+        """The LLM-facing id alias for this resource, read off the verb's spec."""
+        name = f"{self._resource}.{verb}"
+        if not self._reg.has(name):
+            return None
+        idp = self._reg.get(name).params.get("id")
+        return idp.alias if idp else None
+
+    def _resolve_id(self, verb: str, id: Any, kwargs: dict[str, Any]) -> Any:
+        if id is not _MISSING:
+            return id
+        alias = self._id_alias(verb)
+        if alias and alias in kwargs:
+            return kwargs.pop(alias)
+        raise TypeError(f"{self._resource}.{verb}() requires 'id'")
+
     def __getattr__(self, verb: str) -> Callable[..., Awaitable[Any]]:
         """Resolve a declared, non-CRUD verb (``kb.cite``, ``graph.link``).
 
@@ -63,8 +81,13 @@ class ResourceNamespace:
         if not self._reg.has(name):
             raise AttributeError(verb)
         spec = self._reg.get(name)
+        param_names = list(spec.params.keys())
 
-        async def call(**kwargs: Any) -> Any:
+        async def call(*args: Any, **kwargs: Any) -> Any:
+            for pname, val in zip(param_names, args, strict=False):
+                if pname in kwargs:
+                    raise TypeError(f"{name}() got multiple values for argument '{pname}'")
+                kwargs[pname] = val
             if spec.is_read:
                 return await spec.apply(self._ctx, **kwargs)
             return await self._invoke_declared(spec, kwargs)
@@ -104,11 +127,14 @@ class ResourceNamespace:
     async def search(self, query: str = "", **filters: Any) -> Any:
         return await self._read("search", query=query, **filters)
 
-    async def get(self, id: Any) -> Any:
-        return await self._read("get", id=id)
+    async def get(self, id: Any = _MISSING, **kwargs: Any) -> Any:
+        return await self._read("get", id=self._resolve_id("get", id, kwargs))
 
-    async def patch(self, id: Any, **fields: Any) -> Any:
-        return await self._write("patch", {"id": id}, fields)
+    async def patch(self, id: Any = _MISSING, **fields: Any) -> Any:
+        # Resolve the id alias out of fields before the patchable whitelist runs,
+        # so an aliased id is never mistaken for a field.
+        rid = self._resolve_id("patch", id, fields)
+        return await self._write("patch", {"id": rid}, fields)
 
     async def replace(self, id: Any, **fields: Any) -> Any:
         # In-place edit verb (e.g. find-and-replace) — same write plumbing as
@@ -119,12 +145,13 @@ class ResourceNamespace:
     async def create(self, **fields: Any) -> Any:
         return await self._write("create", {}, fields)
 
-    async def delete(self, id: Any) -> Any:
+    async def delete(self, id: Any = _MISSING, **kwargs: Any) -> Any:
+        rid = self._resolve_id("delete", id, kwargs)
         spec = self._spec("delete")
         self._charge()
-        before = await spec.snapshot(self._ctx, id=id) if spec.snapshot else None
-        result: Any = await spec.apply(self._ctx, id=id)
+        before = await spec.snapshot(self._ctx, id=rid) if spec.snapshot else None
+        result: Any = await spec.apply(self._ctx, id=rid)
         after: dict[str, Any] | None = result if isinstance(result, dict) else None  # type: ignore[reportUnknownVariableType]
-        inverse = spec.inverse({"id": id}, before, after) if spec.inverse else None
-        await self._recorder(spec, {"id": id}, before, after, inverse)
+        inverse = spec.inverse({"id": rid}, before, after) if spec.inverse else None
+        await self._recorder(spec, {"id": rid}, before, after, inverse)
         return result  # type: ignore[reportUnknownVariableType]
