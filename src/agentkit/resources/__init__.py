@@ -7,6 +7,7 @@ from agentkit.resources.registry import OpRegistry
 from agentkit.resources.scanner import ApprovalScanner
 from agentkit.resources.types import (
     OpSpec,
+    Param,
     Reversibility,
     ScanFinding,
     ScriptClassification,
@@ -17,6 +18,7 @@ __all__ = [
     "EntitySpec",
     "OpRegistry",
     "OpSpec",
+    "Param",
     "ResourceNamespace",
     "Reversibility",
     "ScanFinding",
