@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
+## [0.16.1] - 2026-06-29
+
+### Changed
+- Unknown-tool errors now hint at scripting-namespace methods. A call to a dotted name (`content.patch`, `tasks.patch`) that matches no registered tool returns a message naming it as a scripting-namespace method to call inside the scripting tool (or via the matching flat tool), so a model that reached for a namespace verb as a standalone tool self-corrects in one hop instead of ping-ponging on a bare "unknown tool". Shared `unknown_tool_message()` covers both the registry and tool-executing handler paths. Plain (non-dotted) names are unchanged. Additive; substring `"unknown tool: <name>"` is preserved.
+
 ## [0.16.0] - 2026-06-28
 
 ### Added

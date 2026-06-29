@@ -77,6 +77,20 @@ async def test_registry_unknown_tool_returns_error_result():
     assert "missing" in (res.content[0].text or "")
 
 
+def test_unknown_tool_message_hints_dotted_names():
+    """A dotted name (a scripting-namespace method called as a standalone tool)
+    gets a self-correction hint; a plain name stays terse."""
+    from agentkit.tools.spec import unknown_tool_message
+
+    plain = unknown_tool_message("get_kb_fact")
+    assert plain == "unknown tool: get_kb_fact"
+
+    dotted = unknown_tool_message("content.patch")
+    assert dotted.startswith("unknown tool: content.patch")
+    assert "scripting" in dotted
+    assert "await content.patch(...)" in dotted
+
+
 class _FakeCtx:
     """Minimal stand-in for TurnContext (defined later)."""
 
