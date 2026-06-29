@@ -20,6 +20,7 @@ from agentkit.tools.spec import (
     ToolCall,
     ToolResult,
     ToolSpec,
+    unknown_tool_message,
 )
 from agentkit.tools.spec import ToolError as ToolErrorModel
 
@@ -148,7 +149,7 @@ class ToolRegistry:
         # the orchestrator and ends the turn with no result, so the model
         # never sees the mistake. As an error result it flows to the model,
         # which can self-correct with the right tool name.
-        msg = f"unknown tool: {call.name}"
+        msg = unknown_tool_message(call.name)
         return ToolResult(
             call_id=call.id,
             status="error",

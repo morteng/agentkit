@@ -76,3 +76,21 @@ class ToolResult(BaseModel):
     error: ToolError | None = None
     duration_ms: int = 0
     cached: bool = False
+
+
+def unknown_tool_message(name: str) -> str:
+    """The error text for a call to a name no registered tool matches.
+
+    A dotted name (``content.get``, ``tasks.patch``) is almost always a
+    scripting-namespace method the model reached for as a standalone tool. Naming
+    that explicitly lets the model self-correct in one hop — call it inside the
+    scripting tool, or use the matching flat tool if one exists — instead of
+    ping-ponging on a bare "unknown tool". Plain names get the bare message.
+    """
+    if "." in name:
+        return (
+            f"unknown tool: {name}. Dotted names are scripting-namespace methods, "
+            f"not standalone tools — call them inside the scripting tool "
+            f"(await {name}(...)), or use the matching flat tool if one exists."
+        )
+    return f"unknown tool: {name}"

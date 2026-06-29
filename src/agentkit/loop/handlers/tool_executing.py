@@ -4,7 +4,13 @@ from typing import TYPE_CHECKING, Any
 
 from agentkit.loop.context import TurnContext
 from agentkit.loop.phase import Phase
-from agentkit.tools.spec import ContentBlockOut, ToolCall, ToolError, ToolResult
+from agentkit.tools.spec import (
+    ContentBlockOut,
+    ToolCall,
+    ToolError,
+    ToolResult,
+    unknown_tool_message,
+)
 
 if TYPE_CHECKING:
     from agentkit.loop.tool_dispatcher import ToolDispatcher
@@ -48,7 +54,7 @@ async def handle_tool_executing(ctx: TurnContext, deps: dict[str, Any]) -> Phase
     # Unknown tool names get a status="error" result naming the bad tool, so
     # the model sees the mistake and can retry with a registered name.
     for c in unknown:
-        msg = f"unknown tool: {c['name']}"
+        msg = unknown_tool_message(c["name"])
         results.append(
             ToolResult(
                 call_id=c["id"],
