@@ -5,6 +5,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from agentkit.pii.types import RehydratePolicy
+
 
 class RiskLevel(StrEnum):
     READ = "read"
@@ -61,6 +63,13 @@ class ToolSpec(BaseModel):
     requires_approval: ApprovalPolicy
     cache_ttl_seconds: int | None
     timeout_seconds: float
+    rehydrate: RehydratePolicy = RehydratePolicy.DENY
+    """PII rehydration policy for this tool's model-produced arguments.
+
+    Default ``DENY`` keeps placeholders as placeholders (backward-compatible and
+    safe — closes the exfiltration channel). Only artifact-render / form-fill
+    tools with no model-supplied destination fields should set ``ALLOW``.
+    """
 
 
 class ToolCall(BaseModel):

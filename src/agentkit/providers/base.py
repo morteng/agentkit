@@ -52,6 +52,23 @@ class StopCondition(BaseModel):
     stop_sequences: list[str] = Field(default_factory=list)  # type: ignore[reportUnknownVariableType]
 
 
+class RoutingPreferences(BaseModel):
+    """Provider-agnostic routing / data-handling preferences for one request.
+
+    Populated by the PII firewall from a ``PiiPolicy``; adapters translate the
+    fields they support (OpenRouter emits a ``provider`` block, Anthropic has no
+    per-request ZDR flag — see its request builder). ``None`` on a
+    ``ProviderRequest`` means "no preferences" and is byte-identical to the
+    pre-firewall behaviour.
+    """
+
+    zdr: bool = False
+    data_collection: Literal["allow", "deny"] = "allow"
+    allow_fallbacks: bool = True
+    eu_only: bool = False
+    only: list[str] = Field(default_factory=list)  # type: ignore[reportUnknownVariableType]
+
+
 class ProviderRequest(BaseModel):
     model: str
     system: list[SystemBlock] = Field(default_factory=list)  # type: ignore[reportUnknownVariableType]
@@ -73,6 +90,13 @@ class ProviderRequest(BaseModel):
     is empty (the provider has nothing to choose from).
     """
     metadata: dict[str, str] = Field(default_factory=dict)  # type: ignore[reportUnknownVariableType]
+    routing: RoutingPreferences | None = None
+    """Optional data-handling / routing preferences (PII firewall).
+
+    ``None`` (default) → adapters emit no routing directives, preserving
+    existing payloads exactly. Set by ``Firewall.routing_prefs`` via
+    ``wrap_provider``.
+    """
 
 
 # ---- Event types -----------------------------------------------------------
