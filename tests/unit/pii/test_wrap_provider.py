@@ -82,3 +82,18 @@ async def test_zdr_route_failure_raises(detector: FakeDetector, tmap: FakeTokenM
     wrapped = wrap_provider(inner, _fw(detector), tmap_resolver=lambda req: tmap)
     with pytest.raises(ZdrRouteUnavailable):
         await _drain(wrapped.stream(_req("hi")))
+
+
+async def test_zdr_upstream_org_disabled_raises(detector: FakeDetector, tmap: FakeTokenMap):
+    # Observed live: a ZDR-capable upstream (Amazon Bedrock) rejects the routed
+    # request with "This organization has been disabled". Under require_zdr this
+    # is a route failure — refuse, don't surface a generic error.
+    inner = FakeProvider().script(
+        FakeProvider.error(
+            "provider_error",
+            "Provider returned error: This organization has been disabled.",
+        )
+    )
+    wrapped = wrap_provider(inner, _fw(detector), tmap_resolver=lambda req: tmap)
+    with pytest.raises(ZdrRouteUnavailable):
+        await _drain(wrapped.stream(_req("hi")))

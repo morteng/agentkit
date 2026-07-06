@@ -36,6 +36,12 @@ _ROUTE_FAILURE_MARKERS = (
     "data policy",
     "data_policy",
     "no provider",
+    # A ZDR-capable upstream provider rejects the routed request outright
+    # (observed live 2026-07-06: Amazon Bedrock's pooled ZDR route returned
+    # "This organization has been disabled" under allow_fallbacks=false). With
+    # no fallback permitted this is a route failure, not a transient error —
+    # treat it as refuse. See docs/spike-zdr-routing.md §6 (REDACTED2).
+    "organization has been disabled",
 )
 
 
