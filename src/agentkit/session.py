@@ -473,6 +473,7 @@ class AgentSession:
             "provider_selector": self.config.provider_selector,
             "model_selector": self.config.model_selector,
             "tool_selector": self.config.tool_selector,
+            "on_iteration_start": self.config.on_iteration_start,
             "message_builder": MessageBuilder(
                 model=self.model,
                 max_tokens=4096,

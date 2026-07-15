@@ -111,6 +111,18 @@ class AgentConfig(BaseSettings):
     # for progressive disclosure and Tool Plane routing. Typed Any to avoid
     # circular imports, same rationale as provider_selector and model_selector.
     tool_selector: Any = None
+    # Optional async hook fired at the top of CONTEXT_BUILD — i.e. once before
+    # every LLM call within a turn, not just at turn boundaries (the loop runs
+    # TOOL_RESULTS -> CONTEXT_BUILD -> STREAMING each iteration). Signature
+    # ``async def hook(ctx: TurnContext) -> None``; awaited, return value
+    # ignored. Because STREAMING rebuilds the provider request from
+    # ``ctx.history`` every iteration, a hook that appends a message to
+    # ``ctx.history`` here has it seen by the very next model call — the
+    # cooperative mid-run injection seam (drain a message inbox, add a recall,
+    # nudge the turn) without a mid-token interrupt. The runner still persists
+    # ``ctx.history`` at turn end, so it remains the single writer. Typed Any to
+    # avoid circular imports with TurnContext, same rationale as the selectors.
+    on_iteration_start: Any = None
 
     model_config = SettingsConfigDict(
         env_prefix="AGENTKIT_",
