@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
+## [0.18.0] - 2026-07-16
+
+### Added
+- PII firewall subsystem reconciled onto the 0.17.x trunk (previously lived only on `feat/pii-firewall`). New `agentkit.pii` package: `Firewall` (`scrub_request`/`scrub_text`/`rehydrate_output`/`rehydrate_tool_args`/`assert_no_residual_tokens`/`routing_prefs`), consumer-supplied `Detector` & `TokenMap` protocols, `PiiPolicy`, `RehydratePolicy`, `Span`, `ZdrRouteUnavailable`, and `wrap_provider` — a decorating `Provider` that scrubs the full request on egress, attaches ZDR-fail-closed routing prefs, scrubs error messages, and emits an outbound-payload audit. Inert (zero cost) when the tmap resolver returns `None`. Additive edits alongside it: `RoutingPreferences` + optional `ProviderRequest.routing`; the OpenRouter request builder emits provider prefs (fail-closed `allow_fallbacks: false`) only when routing is set; `ToolSpec.rehydrate` defaults to `DENY`; "organization has been disabled" is treated as a ZDR route failure.
+
+## [0.17.1] - 2026-07-16
+
+### Fixed
+- `search_tools` now advertises (and records) fully-qualified tool names, matching what `ToolRegistry.invoke` actually routes, so a model copying the advertised name no longer hits a fatal `unknown_tool`. A bare unknown name whose suffix matches exactly one registered qualified name gets a "did you mean …?" suggestion at both invoke boundaries (suggestion only, no transparent rerouting).
+
 ## [0.17.0] - 2026-07-16
 
 ### Added
