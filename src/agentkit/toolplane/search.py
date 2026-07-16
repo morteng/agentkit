@@ -117,13 +117,17 @@ def make_search_tools_builtin(
             )
         by_name: dict[str, ToolSpec] = {s.name: s for s in discoverable}
         lines: list[str] = []
-        bare_names: list[str] = []
+        qualified_names: list[str] = []
         for full_name, _score in ranked:
             spec = by_name[full_name]
-            bare = full_name.split(".", 1)[-1]
-            bare_names.append(bare)
-            lines.append(f"- {bare}: {spec.description}")
-        await record(ctx, bare_names)
+            # Advertise (and record) the fully-qualified name — the ONLY name
+            # ``ToolRegistry.invoke`` routes. Showing the bare name here made
+            # models copy an unroutable name and hit a fatal ``unknown_tool``.
+            # The promotion path (plane.py) matches bare OR qualified, so
+            # recording the qualified form keeps discovery→promotion working.
+            qualified_names.append(full_name)
+            lines.append(f"- {full_name}: {spec.description}")
+        await record(ctx, qualified_names)
         text = "Matched tools (now available this conversation):\n" + "\n".join(lines)
         return ToolResult(
             call_id="",

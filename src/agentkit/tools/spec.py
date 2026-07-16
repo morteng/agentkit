@@ -1,5 +1,6 @@
 """Canonical tool types — provider-agnostic."""
 
+from collections.abc import Iterable
 from enum import StrEnum
 from typing import Any, Literal
 
@@ -78,14 +79,23 @@ class ToolResult(BaseModel):
     cached: bool = False
 
 
-def unknown_tool_message(name: str) -> str:
+def unknown_tool_message(name: str, known_names: Iterable[str] | None = None) -> str:
     """The error text for a call to a name no registered tool matches.
 
     A dotted name (``content.get``, ``tasks.patch``) is almost always a
     scripting-namespace method the model reached for as a standalone tool. Naming
     that explicitly lets the model self-correct in one hop — call it inside the
     scripting tool, or use the matching flat tool if one exists — instead of
-    ping-ponging on a bare "unknown tool". Plain names get the bare message.
+    ping-ponging on a bare "unknown tool".
+
+    A plain (un-dotted) name that suffix-matches exactly ONE registered
+    qualified name — ``web_search`` when only ``REDACTED.web_search`` is
+    registered — is almost always the model copying an advertised tool minus
+    its namespace prefix. Surface a "did you mean" pointing at the routable
+    qualified name so the model retries with a name the registry will accept.
+    This is a suggestion only: no transparent rerouting. When ``known_names``
+    is not supplied, or the suffix match is absent/ambiguous, plain names get
+    the bare message.
     """
     if "." in name:
         return (
@@ -93,4 +103,11 @@ def unknown_tool_message(name: str) -> str:
             f"not standalone tools — call them inside the scripting tool "
             f"(await {name}(...)), or use the matching flat tool if one exists."
         )
+    if known_names is not None:
+        # Namespacing convention is ``<server>.<tool>`` (split on the first
+        # dot); mirror plane.py's ``_bare`` so the suffix compared here is the
+        # same one advertised elsewhere.
+        matches = [k for k in known_names if k.split(".", 1)[-1] == name]
+        if len(matches) == 1:
+            return f"unknown tool: {name}. Did you mean {matches[0]}?"
     return f"unknown tool: {name}"

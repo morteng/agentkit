@@ -91,6 +91,71 @@ def test_unknown_tool_message_hints_dotted_names():
     assert "await content.patch(...)" in dotted
 
 
+def test_unknown_tool_message_suggests_unique_qualified_suffix_match():
+    """A bare name that suffix-matches exactly one registered qualified name is
+    almost always the model dropping the namespace prefix off an advertised
+    tool. Point it at the routable qualified name with a 'did you mean'."""
+    from agentkit.tools.spec import unknown_tool_message
+
+    known = ["REDACTED.web_search", "REDACTED.get_content", "kit.finalize"]
+
+    msg = unknown_tool_message("web_search", known)
+    assert msg == "unknown tool: web_search. Did you mean REDACTED.web_search?"
+
+
+def test_unknown_tool_message_no_suggestion_when_ambiguous_or_absent():
+    """No suggestion when the suffix matches zero or more than one qualified
+    name — a wrong guess is worse than the terse message. Suggestion only,
+    never a transparent reroute."""
+    from agentkit.tools.spec import unknown_tool_message
+
+    # Two servers expose the same tool name — ambiguous, so stay terse.
+    ambiguous = ["alpha.search", "beta.search"]
+    assert unknown_tool_message("search", ambiguous) == "unknown tool: search"
+
+    # No suffix match at all.
+    assert unknown_tool_message("nope", ["REDACTED.web_search"]) == "unknown tool: nope"
+
+    # No known_names supplied — behaviour unchanged (terse).
+    assert unknown_tool_message("web_search") == "unknown tool: web_search"
+
+
+@pytest.mark.asyncio
+async def test_registry_unknown_bare_name_suggests_qualified_tool():
+    """End to end at the invoke boundary: an unknown bare name that uniquely
+    suffix-matches a registered MCP tool returns a 'did you mean' error result
+    naming the routable qualified name."""
+
+    class _FakeMCPClient:
+        name = "REDACTED"
+
+        async def initialize(self) -> None: ...
+        async def list_tools(self) -> list[ToolSpec]:
+            return [_spec("web_search")]
+
+        async def call_tool(self, name: str, arguments, *, on_progress=None):
+            return ToolResult(
+                call_id="",
+                status="ok",
+                content=[ContentBlockOut(type="text", text="ok")],
+            )
+
+        async def shutdown(self) -> None: ...
+        async def health_check(self) -> bool:
+            return True
+
+    reg = ToolRegistry()
+    reg.register_mcp_server("REDACTED", _FakeMCPClient())  # type: ignore[arg-type]
+    await reg.initialize_mcp_servers()
+
+    res = await reg.invoke(ToolCall(id="c", name="web_search", arguments={}), ctx=_FakeCtx())  # type: ignore[arg-type]
+    assert res.status == "error"
+    assert res.error is not None
+    assert res.error.code == "unknown_tool"
+    assert "Did you mean REDACTED.web_search?" in res.error.message
+    assert "Did you mean REDACTED.web_search?" in (res.content[0].text or "")
+
+
 class _FakeCtx:
     """Minimal stand-in for TurnContext (defined later)."""
 

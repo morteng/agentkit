@@ -71,8 +71,116 @@ async def test_search_tools_builtin_matches_discoverable_and_records():
     assert result.status == "ok"
     text = result.content[0].text
     assert text is not None
-    assert "csg_subtract" in text
-    assert "csg_subtract" in recorded
+    # Advertise AND record the fully-qualified name — the only name the
+    # registry routes. A bare "csg_subtract" here is unroutable.
+    assert "REDACTED.csg_subtract" in text
+    assert "REDACTED.csg_subtract" in recorded
+    assert "csg_subtract" not in recorded  # never the bare form
+
+
+@pytest.mark.asyncio
+async def test_search_tools_advertises_qualified_names_verbatim():
+    """Each advertised line must carry the full ``<server>.<tool>`` name — the
+    exact string the registry routes — not the bare tool name."""
+    specs = [
+        _spec("REDACTED.csg_subtract", "subtract one 3d shape from another csg"),
+        _spec("kit.search_tools", "search for tools"),
+    ]
+    plane = ToolPlane(
+        visibility_of=lambda s: (
+            ToolVisibility(baseline="discoverable") if s.name == "REDACTED.csg_subtract" else None
+        ),
+        context_of=_as_ctx,
+        role_ranks=ROLE_RANKS,
+    )
+    plane.resolve(ToolContext(role="editor", role_rank=1), specs)
+
+    async def record(turn_ctx, names):
+        pass
+
+    _, handler = make_search_tools_builtin(plane, record)
+
+    class _Ctx:
+        pass
+
+    result = await handler({"query": "3d csg", "limit": 5}, _Ctx())
+    text = result.content[0].text
+    assert text is not None
+    # The line is the fully-qualified name, verbatim — not "- csg_subtract:".
+    assert "- REDACTED.csg_subtract:" in text
+    assert "- csg_subtract:" not in text
+
+
+@pytest.mark.asyncio
+async def test_search_tools_surfaced_name_is_invocable_verbatim():
+    """A tool surfaced by search_tools must be invocable under the exact name
+    shown. Regression guard for the prod bug: the advertised name was bare
+    (``web_search``) while the registry only routed the qualified name
+    (``REDACTED.web_search``), so copying the advertised name hit unknown_tool.
+    """
+    from agentkit.tools.registry import ToolRegistry
+    from agentkit.tools.spec import ContentBlockOut, ToolCall, ToolResult
+
+    class _FakeMCPClient:
+        name = "REDACTED"
+
+        async def initialize(self) -> None: ...
+        async def list_tools(self):
+            return [_spec("csg_subtract", "subtract one 3d shape from another csg")]
+
+        async def call_tool(self, name, arguments, *, on_progress=None):
+            return ToolResult(
+                call_id="",
+                status="ok",
+                content=[ContentBlockOut(type="text", text="subtracted")],
+            )
+
+        async def shutdown(self) -> None: ...
+        async def health_check(self) -> bool:
+            return True
+
+    reg = ToolRegistry()
+    reg.register_mcp_server("REDACTED", _FakeMCPClient())  # type: ignore[arg-type]
+    await reg.initialize_mcp_servers()
+    specs = reg.list_specs()  # yields the qualified "REDACTED.csg_subtract"
+
+    plane = ToolPlane(
+        visibility_of=lambda s: (
+            ToolVisibility(baseline="discoverable") if s.name == "REDACTED.csg_subtract" else None
+        ),
+        context_of=_as_ctx,
+        role_ranks=ROLE_RANKS,
+    )
+    plane.resolve(ToolContext(role="editor", role_rank=1), specs)
+
+    async def record(turn_ctx, names):
+        pass
+
+    _, handler = make_search_tools_builtin(plane, record)
+
+    class _Ctx:
+        pass
+
+    result = await handler({"query": "3d csg", "limit": 5}, _Ctx())
+    text = result.content[0].text
+    assert text is not None
+
+    # Extract the name exactly as advertised to the model.
+    shown = text.splitlines()[1].removeprefix("- ").split(":", 1)[0]
+    assert shown == "REDACTED.csg_subtract"
+
+    # The advertised name routes cleanly — no unknown_tool.
+    invoked = await reg.invoke(
+        ToolCall(id="c1", name=shown, arguments={}),
+        ctx=_FakeCtx(),  # type: ignore[arg-type]
+    )
+    assert invoked.status == "ok"
+    assert invoked.error is None
+    assert invoked.content[0].text == "subtracted"
+
+
+class _FakeCtx:
+    call_id = "c1"
 
 
 @pytest.mark.asyncio
