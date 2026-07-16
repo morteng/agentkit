@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
+## [0.17.0] - 2026-07-16
+
+### Added
+- `AgentConfig.on_iteration_start` — an optional async hook awaited at the top of every `CONTEXT_BUILD`, i.e. before each LLM call within a turn, not only at turn boundaries. It receives the live `TurnContext`, so a consumer can append a message to `ctx.history` (or otherwise mutate context) and have it seen by the very next provider request. Mirrors the existing `model_selector`/`tool_selector` per-iteration hooks (carried on `AgentConfig`, threaded through `AgentSession._build_deps()`, typed `Any` to avoid a circular import). This is the supported seam for cooperative mid-run injection — steering a running turn without driving the loop by hand or overriding private handlers. Fully additive: `on_iteration_start=None` (the default) preserves the prior pass-through behavior exactly.
+
 ## [0.16.1] - 2026-06-29
 
 ### Changed
