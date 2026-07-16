@@ -20,17 +20,39 @@ from agentkit.envelope import (
     Violation,
 )
 from agentkit.finalize_validator import validate_envelope
+from agentkit.pii import Action as PiiAction
+from agentkit.pii import (
+    Detector,
+    Firewall,
+    PiiPolicy,
+    RehydratePolicy,
+    Span,
+    TokenMap,
+    ZdrRouteUnavailable,
+    wrap_provider,
+)
+from agentkit.providers.base import RoutingPreferences
 from agentkit.session import AgentSession
 
 __all__ = [
     "Action",
     "AgentConfig",
     "AgentSession",
+    "Detector",
     "Envelope",
+    "Firewall",
     "PendingConfirmation",
+    "PiiAction",
+    "PiiPolicy",
+    "RehydratePolicy",
+    "RoutingPreferences",
+    "Span",
+    "TokenMap",
     "ToolCallSummary",
     "ValidationResult",
     "Violation",
+    "ZdrRouteUnavailable",
     "__version__",
     "validate_envelope",
+    "wrap_provider",
 ]

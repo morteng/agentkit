@@ -60,6 +60,14 @@ def build_anthropic_request(req: ProviderRequest) -> dict[str, Any]:
         payload["stop_sequences"] = req.stop_when.stop_sequences
     if req.metadata:
         payload["metadata"] = req.metadata
+    # TODO(pii-firewall): Anthropic has no per-request ZDR / data-collection flag
+    # like OpenRouter's `provider` block — zero-data-retention and no-train are
+    # account/enterprise-level settings (org zero-retention agreement), not
+    # per-call. So `req.routing` intentionally maps to nothing in the payload
+    # here; the no-train/zero-retention posture is enforced at the API-key/org
+    # level for PII workspaces. We still accept `routing` so the builder does not
+    # break when the firewall attaches it.
+    _ = req.routing
     return payload
 
 

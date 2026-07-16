@@ -5,7 +5,7 @@ from typing import Any
 
 from agentkit._content import ImageBlock, TextBlock, ToolResultBlock, ToolUseBlock
 from agentkit._messages import Message, MessageRole
-from agentkit.providers.base import NamedToolChoice, ProviderRequest
+from agentkit.providers.base import NamedToolChoice, ProviderRequest, RoutingPreferences
 from agentkit.providers.caching import compute_breakpoints
 from agentkit.providers.openrouter.model_quirks import requires_cache_blocks
 from agentkit.providers.openrouter.tool_translator import to_openai_tool
@@ -54,7 +54,26 @@ def build_openrouter_request(req: ProviderRequest) -> dict[str, Any]:
         payload["stop"] = req.stop_when.stop_sequences
     if req.metadata:
         payload["metadata"] = req.metadata
+    if req.routing is not None:
+        payload["provider"] = _build_provider_prefs(req.routing)
     return payload
+
+
+def _build_provider_prefs(routing: RoutingPreferences) -> dict[str, Any]:
+    """OpenRouter ``provider`` preferences from routing (doc 01 §7).
+
+    ``allow_fallbacks: false`` is the fail-closed gate: OpenRouter returns an
+    error rather than routing to a non-compliant provider, which the firewall
+    decorator catches and turns into ``ZdrRouteUnavailable``.
+    """
+    prefs: dict[str, Any] = {
+        "zdr": routing.zdr,
+        "data_collection": routing.data_collection,
+        "allow_fallbacks": routing.allow_fallbacks,
+    }
+    if routing.eu_only and routing.only:
+        prefs["only"] = routing.only
+    return prefs
 
 
 def _to_openai_tool_choice(
