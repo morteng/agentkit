@@ -80,6 +80,40 @@ class RedisSessionStore(SessionStore):
             {str(session_id): updated.updated_at.timestamp() * 1000},
         )
 
+    async def replace(self, session_id: SessionId, messages: list[Message]) -> None:
+        sess = await self.get(session_id)
+        if sess is None:
+            raise StoreError(f"session not found: {session_id}")
+        updated = sess.model_copy(
+            update={
+                "message_count": len(messages),
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        msgs_key = self._c.keys.messages(session_id)
+        sess_key = self._c.keys.session(session_id)
+        encoded = [
+            to_versioned_json(m.model_dump(mode="json"), schema_version=_SCHEMA_V) for m in messages
+        ]
+        # MULTI/EXEC: delete + repopulate + refresh session doc as one atomic
+        # swap, so a concurrent reader never observes the messages list
+        # mid-replace (empty after DEL but before the new RPUSH lands).
+        async with self._c.redis.pipeline(transaction=True) as pipe:  # type: ignore[no-untyped-call]
+            pipe.delete(msgs_key)  # type: ignore[no-untyped-call]
+            if encoded:
+                pipe.rpush(msgs_key, *encoded)  # type: ignore[no-untyped-call]
+                pipe.expire(msgs_key, self._ttl)  # type: ignore[no-untyped-call]
+            pipe.set(  # type: ignore[no-untyped-call]
+                sess_key,
+                to_versioned_json(updated.model_dump(mode="json"), schema_version=_SCHEMA_V),
+                ex=self._ttl,
+            )
+            pipe.zadd(  # type: ignore[no-untyped-call]
+                self._c.keys.owner_index(updated.owner),
+                {str(session_id): updated.updated_at.timestamp() * 1000},
+            )
+            await pipe.execute()  # type: ignore[no-untyped-call]
+
     async def list_messages(self, session_id: SessionId, *, limit: int = 200) -> list[Message]:
         raws: list[bytes] = await self._c.redis.lrange(  # type: ignore[no-untyped-call,reportUnknownVariableType]
             self._c.keys.messages(session_id), -limit, -1

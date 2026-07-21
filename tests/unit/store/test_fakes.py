@@ -41,6 +41,45 @@ async def test_session_store_get_returns_none_for_missing():
 
 
 @pytest.mark.asyncio
+async def test_session_store_replace_swaps_messages_and_updates_count():
+    store = FakeSessionStore()
+    sid = new_id(SessionId)
+    await store.create(sid, OwnerId("user:abc"))
+    for text in ("one", "two", "three"):
+        await store.append_message(
+            sid,
+            Message(
+                id=new_id(MessageId),
+                session_id=sid,
+                role=MessageRole.USER,
+                content=[TextBlock(text=text)],
+                created_at=datetime.now(UTC),
+            ),
+        )
+    sess = await store.get(sid)
+    assert sess is not None
+    assert sess.message_count == 3
+
+    replacement = [
+        Message(
+            id=new_id(MessageId),
+            session_id=sid,
+            role=MessageRole.USER,
+            content=[TextBlock(text="summary")],
+            created_at=datetime.now(UTC),
+        )
+    ]
+    await store.replace(sid, replacement)
+
+    msgs = await store.list_messages(sid)
+    assert len(msgs) == 1
+    assert msgs[0].content[0].text == "summary"  # type: ignore[union-attr]
+    sess = await store.get(sid)
+    assert sess is not None
+    assert sess.message_count == 1
+
+
+@pytest.mark.asyncio
 async def test_memory_store_save_recall_search():
     store = FakeMemoryStore()
     scope = MemoryScope(namespace="t", user_id="u1")

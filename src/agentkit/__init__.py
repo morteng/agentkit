@@ -10,6 +10,7 @@ try:
 except PackageNotFoundError:  # running from a source tree without an install
     __version__ = "0.0.0+unknown"
 
+from agentkit.compaction import COMPACTION_SUMMARY_ANNOTATION, CompactionResult, compact_history
 from agentkit.config import AgentConfig
 from agentkit.envelope import (
     Action,
@@ -35,9 +36,11 @@ from agentkit.providers.base import RoutingPreferences
 from agentkit.session import AgentSession
 
 __all__ = [
+    "COMPACTION_SUMMARY_ANNOTATION",
     "Action",
     "AgentConfig",
     "AgentSession",
+    "CompactionResult",
     "Detector",
     "Envelope",
     "Firewall",
@@ -53,6 +56,7 @@ __all__ = [
     "Violation",
     "ZdrRouteUnavailable",
     "__version__",
+    "compact_history",
     "validate_envelope",
     "wrap_provider",
 ]

@@ -43,6 +43,17 @@ class SessionStore(Protocol):
 
     async def append_message(self, session_id: SessionId, message: Message) -> None: ...
 
+    async def replace(self, session_id: SessionId, messages: list[Message]) -> None:
+        """Atomically replace a session's full message list.
+
+        Used by :func:`agentkit.compaction.compact_history` to swap the stored
+        transcript for a compacted one (summary message + kept tail) in one
+        step — never observable as a partial (deleted-but-not-yet-repopulated)
+        state. Implementations MUST make the swap atomic and update
+        ``message_count``/``updated_at`` accordingly.
+        """
+        ...
+
     async def list_messages(
         self,
         session_id: SessionId,

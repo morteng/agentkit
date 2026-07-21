@@ -47,6 +47,16 @@ class FakeSessionStore(SessionStore):
             )
             self._sessions[session_id] = sess
 
+    async def replace(self, session_id: SessionId, messages: list[Message]) -> None:
+        self._messages[session_id] = list(messages)
+        if (sess := self._sessions.get(session_id)) is not None:
+            self._sessions[session_id] = sess.model_copy(
+                update={
+                    "message_count": len(messages),
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+
     async def list_messages(self, session_id: SessionId, *, limit: int = 200) -> list[Message]:
         return list(self._messages.get(session_id, [])[-limit:])
 
