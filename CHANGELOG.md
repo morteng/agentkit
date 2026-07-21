@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
+## [0.19.0] - 2026-07-21
+
+### Added
+- Conversation-history compaction: `agentkit.compaction.compact_history(store, session_id, summarizer, *, keep_recent=8, min_messages=12)` — the first trimming/summarization primitive in agentkit. `summarizer` is a host-supplied `Callable[[list[Message]], Awaitable[str]]`; agentkit never calls an LLM itself, so model choice, prompting, and cost stay with the host. Loads the full transcript, no-ops (`CompactionResult(compacted=False)`) below `min_messages`, otherwise keeps the trailing `keep_recent` messages and walks the cut point earlier to the nearest safe boundary — a genuine USER turn (skipping `INJECTED_CORRECTION_ANNOTATION` messages) with no `ToolUseBlock`/`ToolResultBlock` pair split across it, since providers like Gemini and Anthropic hard-reject an orphaned tool result. If the only safe boundary is index 0, also a no-op. On a real cut, awaits `summarizer` with exactly the dropped prefix and writes `[summary_message, *kept_tail]` back via the new `SessionStore.replace(session_id, messages)` — added to the protocol plus both `FakeSessionStore` and `RedisSessionStore` (atomic MULTI/EXEC swap, preserves the messages-key TTL). The summary message is a USER message tagged `metadata.annotations[COMPACTION_SUMMARY_ANNOTATION]` with a bilingual "[Samtalesammendrag / conversation summary — earlier messages were condensed]" prefix. No auto-trigger is wired into the loop — a host invokes `compact_history` from its own seam (e.g. `AgentConfig.on_iteration_start`); auto-compaction policy ships separately, if at all.
+
 ## [0.18.0] - 2026-07-16
 
 ### Added
