@@ -6,6 +6,7 @@ from typing import Any
 
 from agentkit.mcp_client.base import MCPClient, ProgressCallback
 from agentkit.tools.spec import ToolError, ToolResult, ToolSpec
+from agentkit.tools.validation import validate_arguments
 
 InProcessHandler = Callable[[dict[str, Any]], Awaitable[ToolResult]]
 
@@ -13,11 +14,14 @@ InProcessHandler = Callable[[dict[str, Any]], Awaitable[ToolResult]]
 class InProcessMCPClient(MCPClient):
     """Same-process MCP-shaped tool server.
 
-    Handlers are async callables of ``(arguments) -> ToolResult``. The client
-    validates against ``ToolSpec.parameters`` is a future enhancement (the
-    current implementation trusts handlers); the wire schema matches MCP
-    sufficiently that swapping in a real MCP server (subprocess) is transparent
-    to callers.
+    Handlers are async callables of ``(arguments) -> ToolResult``. Arguments
+    are validated against the registered ``ToolSpec.parameters`` (JSON Schema)
+    before dispatch — see ``agentkit.tools.validation`` — so a malformed call
+    surfaces as a structured error result instead of an opaque handler-side
+    exception. A real subprocess MCP server gets this for free from the MCP
+    SDK; the in-process shortcut bypasses that transport, so it does its own
+    check here. Otherwise the wire schema matches MCP sufficiently that
+    swapping in a real MCP server (subprocess) is transparent to callers.
     """
 
     def __init__(self, name: str) -> None:
@@ -56,6 +60,17 @@ class InProcessMCPClient(MCPClient):
             raise KeyError(name)
         _spec, handler = self._handlers[name]
         started = time.perf_counter()
+        validation_error = validate_arguments(_spec, arguments)
+        if validation_error is not None:
+            elapsed = int((time.perf_counter() - started) * 1000)
+            return ToolResult(
+                call_id="",
+                status="error",
+                content=[],
+                error=validation_error,
+                duration_ms=elapsed,
+                cached=False,
+            )
         try:
             result = await handler(arguments)
         except Exception as exc:  # surface as ToolResult, not raise

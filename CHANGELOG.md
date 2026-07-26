@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
+## [Unreleased]
+
+### Fixed
+
+- `InProcessMCPClient.call_tool` now validates arguments against the registered
+  `ToolSpec.parameters` (JSON Schema) before dispatching to the handler.
+  Previously a malformed call — missing required field, wrong type — fell
+  straight through and surfaced as an opaque `handler_exception` carrying a raw
+  `KeyError`/`TypeError` message, which the model could not act on. Failures now
+  return the same `status="error"` `ToolResult` shape as the existing exception
+  path, with a structured `invalid_arguments` error naming the offending
+  field(s) and what was expected, so the model can self-correct on the next call
+  instead of retrying blind. A subprocess/stdio MCP server already gets this
+  from the MCP SDK; this closes the gap for the in-process shortcut. Adds
+  `agentkit.tools.validation.validate_arguments` (`jsonschema.Draft7Validator`);
+  a tool registered with an empty or unconstrained schema is unaffected.
+
 ## [0.22.2] - 2026-08-15
 
 ### Fixed
