@@ -154,6 +154,7 @@ class AgentSession:
             history=history,
             clock=SystemClock(),
             memory_store=self.config.stores.memory,
+            memory_scope=self.config.stores.memory_scope,
             event_queue=queue,
         )
         ctx.metadata["owner"] = self.owner
@@ -210,6 +211,7 @@ class AgentSession:
             history=history,
             clock=SystemClock(),
             memory_store=self.config.stores.memory,
+            memory_scope=self.config.stores.memory_scope,
             event_queue=queue,
         )
         ctx.event_sequence = int(data.get("event_sequence", 0))

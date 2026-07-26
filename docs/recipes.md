@@ -65,21 +65,29 @@ from agentkit._ids import OwnerId
 from agentkit.guards.approval import RiskBasedApprovalGate
 from agentkit.providers.openrouter import OpenRouterProvider
 from agentkit.store.fakes import FakeCheckpointStore, FakeMemoryStore, FakeSessionStore
+from agentkit.store.memory import MemoryScope
 from agentkit.tools.registry import ToolRegistry
 from agentkit.transports.websocket import mount_websocket_route
 
 app = FastAPI()
 
 async def session_factory(ws: WebSocket) -> AgentSession:
+    user_id = ws.headers.get("x-user-id", "anon")
     config = AgentConfig()
     config.guards.approval = RiskBasedApprovalGate()
     config.stores.session = FakeSessionStore()
     config.stores.memory = FakeMemoryStore()
+    # A memory store on its own is inert: kit.memory.save/recall need a scope
+    # as well, and answer memory_not_configured without one. session_id stays
+    # None so the memories are persistent — visible in future sessions too.
+    config.stores.memory_scope = MemoryScope(
+        namespace="prefs", tenant_id="acme", user_id=user_id
+    )
     config.stores.checkpoint = FakeCheckpointStore()
     registry = ToolRegistry()
     registry.register_default_builtins()
     return AgentSession(
-        owner=OwnerId(ws.headers.get("x-user-id", "anon")),
+        owner=OwnerId(user_id),
         config=config,
         provider=OpenRouterProvider(api_key=...),
         registry=registry,

@@ -8,6 +8,8 @@ from typing import Any
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from agentkit.store.memory import MemoryScope
+
 
 class LoopConfig(BaseModel):
     max_iterations: int = 10  # cap turns per top-level run() call
@@ -77,6 +79,20 @@ class StoreBundle(BaseModel):
     session: Any = None  # SessionStore
     memory: Any = None  # MemoryStore
     checkpoint: Any = None  # CheckpointStore
+    # Scope handed to every MemoryStore call. Lives here, next to ``memory``,
+    # because a store and its scope are only ever useful together: every
+    # MemoryStore method takes a MemoryScope, and a scope without a store
+    # addresses nothing. Consumers already reach for ``config.stores.memory``,
+    # so the scope is discoverable in the same place.
+    #
+    # Unlike the store/guard fields above, this is typed concretely rather than
+    # ``Any``: MemoryScope is a leaf pydantic model (stdlib + pydantic imports
+    # only), so importing it here introduces no cycle — the ``Any`` idiom exists
+    # for protocol types whose modules import back into the runtime.
+    #
+    # Left None, ``kit.memory.save``/``kit.memory.recall`` return the explicit
+    # ``memory_not_configured`` error rather than silently no-op'ing.
+    memory_scope: MemoryScope | None = None
 
     model_config = {"arbitrary_types_allowed": True}
 
