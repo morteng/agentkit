@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
+## [0.20.0] - 2026-07-26
+
+### Fixed
+- `kit.memory.save` / `kit.memory.recall` now work. Their guard requires both `TurnContext.memory_store` and `TurnContext.memory_scope`, but `AgentSession` only ever set `memory_store`, and no config field could carry a scope — so `memory_scope` was structurally always `None` and every session answered `memory_not_configured` regardless of how the stores were wired. New `StoreBundle.memory_scope: MemoryScope | None = None`, threaded into `TurnContext` at both construction sites: `run()` and `_load_resume_context()` (the approval-resume path builds its own context, so memory would otherwise vanish across a suspend/resume). The field sits on `StoreBundle` next to `memory` because a store and its scope are only useful together, and is typed concretely rather than `Any` — `MemoryScope` is a leaf pydantic model, so importing it into `config.py` adds no cycle, and pydantic validates it. Left unset the tools still return the explicit `memory_not_configured` error; that contract is unchanged and now covered by tests. `subagents/isolation.py` already inherited `parent.memory_scope`, so subagent memory starts working too. Additive and backward compatible. The WebSocket recipe in `docs/recipes.md` now configures a scope alongside the store.
+
 ## [0.19.0] - 2026-07-21
 
 ### Added
