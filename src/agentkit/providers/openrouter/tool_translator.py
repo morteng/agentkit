@@ -11,15 +11,18 @@ from typing import Any
 import json_repair
 
 from agentkit.providers.base import ToolDefinition
+from agentkit.providers.openrouter.tool_name_codec import ToolNameCodec
 
 logger = logging.getLogger(__name__)
 
 
-def to_openai_tool(td: ToolDefinition) -> dict[str, Any]:
+def to_openai_tool(
+    td: ToolDefinition, *, name_codec: ToolNameCodec | None = None
+) -> dict[str, Any]:
     return {
         "type": "function",
         "function": {
-            "name": td.name,
+            "name": name_codec.encode(td.name) if name_codec is not None else td.name,
             "description": td.description,
             "parameters": td.parameters,
         },

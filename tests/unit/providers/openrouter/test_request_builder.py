@@ -10,6 +10,7 @@ from agentkit.providers.base import (
     ToolDefinition,
 )
 from agentkit.providers.openrouter.request_builder import build_openrouter_request
+from agentkit.providers.openrouter.tool_name_codec import ToolNameCodec
 
 
 def _msg(role: MessageRole, text: str) -> Message:
@@ -79,6 +80,29 @@ def test_assistant_message_with_only_thinking_block_is_skipped():
     payload = build_openrouter_request(req)
     # The empty assistant message should be omitted entirely.
     assert payload["messages"] == []
+
+
+def test_qualified_tool_names_are_encoded_in_tools_and_replayed_history():
+    from agentkit._content import ToolUseBlock
+
+    history = Message(
+        id=new_id(MessageId),
+        session_id=new_id(SessionId),
+        role=MessageRole.ASSISTANT,
+        content=[ToolUseBlock(id="call_1", name="REDACTED.search", arguments={"q": "sommer"})],
+        created_at=datetime.now(UTC),
+    )
+    req = ProviderRequest(
+        model="openai/gpt-5.6-luna",
+        messages=[history],
+        tools=[ToolDefinition(name="REDACTED.search", description="søk", parameters={})],
+        tool_choice=NamedToolChoice(name="REDACTED.search"),
+        max_tokens=100,
+    )
+    payload = build_openrouter_request(req, name_codec=ToolNameCodec.from_request(req))
+    assert payload["tools"][0]["function"]["name"] == "REDACTED__search"
+    assert payload["tool_choice"]["function"]["name"] == "REDACTED__search"
+    assert payload["messages"][0]["tool_calls"][0]["function"]["name"] == "REDACTED__search"
 
 
 def test_assistant_message_with_tool_calls_only_uses_none_content():

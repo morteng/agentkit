@@ -8,10 +8,14 @@ from agentkit._messages import Message, MessageRole
 from agentkit.providers.base import NamedToolChoice, ProviderRequest, RoutingPreferences
 from agentkit.providers.caching import compute_breakpoints
 from agentkit.providers.openrouter.model_quirks import requires_cache_blocks
+from agentkit.providers.openrouter.tool_name_codec import ToolNameCodec
 from agentkit.providers.openrouter.tool_translator import to_openai_tool
 
 
-def build_openrouter_request(req: ProviderRequest) -> dict[str, Any]:
+def build_openrouter_request(
+    req: ProviderRequest, *, name_codec: ToolNameCodec | None = None
+) -> dict[str, Any]:
+    name_codec = name_codec or ToolNameCodec.from_request(req)
     use_blocks = requires_cache_blocks(req.model)
     bp = compute_breakpoints(system=req.system, tools=req.tools, messages=req.messages)
 
@@ -34,7 +38,12 @@ def build_openrouter_request(req: ProviderRequest) -> dict[str, Any]:
     for i, msg in enumerate(req.messages):
         cache_this = bp.history_cache_index > 0 and i == bp.history_cache_index - 1 and use_blocks
         messages_payload.extend(
-            _serialise_message(msg, attach_cache=cache_this, use_blocks=use_blocks)
+            _serialise_message(
+                msg,
+                attach_cache=cache_this,
+                use_blocks=use_blocks,
+                name_codec=name_codec,
+            )
         )
 
     payload: dict[str, Any] = {
@@ -44,8 +53,8 @@ def build_openrouter_request(req: ProviderRequest) -> dict[str, Any]:
         "stream": True,
     }
     if req.tools:
-        payload["tools"] = [to_openai_tool(t) for t in req.tools]
-        tc = _to_openai_tool_choice(req.tool_choice)
+        payload["tools"] = [to_openai_tool(t, name_codec=name_codec) for t in req.tools]
+        tc = _to_openai_tool_choice(req.tool_choice, name_codec=name_codec)
         if tc is not None:
             payload["tool_choice"] = tc
     if req.temperature is not None:
@@ -77,7 +86,7 @@ def _build_provider_prefs(routing: RoutingPreferences) -> dict[str, Any]:
 
 
 def _to_openai_tool_choice(
-    choice: str | NamedToolChoice,
+    choice: str | NamedToolChoice, *, name_codec: ToolNameCodec | None = None
 ) -> str | dict[str, Any] | None:
     """Translate a ProviderRequest.tool_choice into OpenAI/OpenRouter's wire shape.
 
@@ -90,7 +99,8 @@ def _to_openai_tool_choice(
     provider's default.
     """
     if isinstance(choice, NamedToolChoice):
-        return {"type": "function", "function": {"name": choice.name}}
+        name = name_codec.encode(choice.name) if name_codec is not None else choice.name
+        return {"type": "function", "function": {"name": name}}
     if choice == "required":
         return "required"
     if choice == "none":
@@ -99,7 +109,11 @@ def _to_openai_tool_choice(
 
 
 def _serialise_message(
-    msg: Message, *, attach_cache: bool, use_blocks: bool
+    msg: Message,
+    *,
+    attach_cache: bool,
+    use_blocks: bool,
+    name_codec: ToolNameCodec | None = None,
 ) -> list[dict[str, Any]]:
     """Most messages map to one OpenAI message; tool results map to one per call."""
     if msg.role == MessageRole.USER:
@@ -117,7 +131,10 @@ def _serialise_message(
                     {
                         "id": b.id,
                         "type": "function",
-                        "function": {"name": b.name, "arguments": json.dumps(b.arguments)},
+                        "function": {
+                            "name": name_codec.encode(b.name) if name_codec is not None else b.name,
+                            "arguments": json.dumps(b.arguments),
+                        },
                     }
                 )
         if not text_parts and not tool_calls:

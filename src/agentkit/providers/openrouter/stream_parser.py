@@ -18,6 +18,7 @@ from agentkit.providers.base import (
     UsageEvent,
 )
 from agentkit.providers.openrouter.model_quirks import parse_finish_reason
+from agentkit.providers.openrouter.tool_name_codec import ToolNameCodec
 from agentkit.providers.openrouter.tool_translator import parse_tool_args_with_repair
 
 
@@ -37,7 +38,11 @@ def parse_tool_call_arguments(args_str: str) -> dict[str, Any] | None:
 
 
 async def parse_openrouter_stream(  # noqa: PLR0912 — chunk-type dispatch + tracing gate
-    chunks: AsyncIterator[Any], *, model: str, session_id: str | None = None
+    chunks: AsyncIterator[Any],
+    *,
+    model: str,
+    session_id: str | None = None,
+    name_codec: ToolNameCodec | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Map OpenAI ChatCompletionChunk events to ProviderEvents.
 
@@ -111,7 +116,7 @@ async def parse_openrouter_stream(  # noqa: PLR0912 — chunk-type dispatch + tr
 
         # Tool calls — streamed as partial JSON across multiple chunks.
         if tool_calls := getattr(delta, "tool_calls", None):
-            for ev in _process_tool_call_deltas(tool_calls, pending_tools):
+            for ev in _process_tool_call_deltas(tool_calls, pending_tools, name_codec=name_codec):
                 yield ev
 
         if choice.finish_reason:
@@ -122,7 +127,7 @@ async def parse_openrouter_stream(  # noqa: PLR0912 — chunk-type dispatch + tr
     # If a stream terminates abnormally (None/"length"/"stop" with pending tools),
     # we drop the partial tool calls rather than risk executing with empty args.
     if finish_reason_raw == "tool_calls":
-        for ev in _flush_pending_tools(pending_tools):
+        for ev in _flush_pending_tools(pending_tools, name_codec=name_codec):
             yield ev
 
     if final_usage is not None:
@@ -133,6 +138,8 @@ async def parse_openrouter_stream(  # noqa: PLR0912 — chunk-type dispatch + tr
 def _process_tool_call_deltas(
     tool_calls: Any,
     pending_tools: dict[int, dict[str, Any]],
+    *,
+    name_codec: ToolNameCodec | None = None,
 ) -> Generator[ProviderEvent, None, None]:
     """Process streaming tool-call delta chunks and yield events."""
     for tc in tool_calls:
@@ -145,7 +152,8 @@ def _process_tool_call_deltas(
             continue
         if fn.name and slot["name"] is None:
             slot["name"] = fn.name
-            yield ToolCallStart(call_id=slot["id"] or f"call_{idx}", tool_name=fn.name)
+            tool_name = name_codec.decode(fn.name) if name_codec is not None else fn.name
+            yield ToolCallStart(call_id=slot["id"] or f"call_{idx}", tool_name=tool_name)
         if fn.arguments:
             slot["args_buf"] += fn.arguments
             yield ToolCallDelta(
@@ -156,6 +164,8 @@ def _process_tool_call_deltas(
 
 def _flush_pending_tools(
     pending_tools: dict[int, dict[str, Any]],
+    *,
+    name_codec: ToolNameCodec | None = None,
 ) -> Generator[ProviderEvent, None, None]:
     """Yield ToolCallComplete events for all accumulated tool calls."""
     for slot in pending_tools.values():
@@ -168,7 +178,7 @@ def _flush_pending_tools(
             args = {}
         yield ToolCallComplete(
             call_id=slot["id"] or "",
-            tool_name=slot["name"],
+            tool_name=(name_codec.decode(slot["name"]) if name_codec is not None else slot["name"]),
             arguments=args,
         )
 

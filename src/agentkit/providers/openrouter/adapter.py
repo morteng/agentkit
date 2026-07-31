@@ -19,6 +19,7 @@ from agentkit.providers.base import (
 from agentkit.providers.openrouter.pricing import estimate_cost_usd
 from agentkit.providers.openrouter.request_builder import build_openrouter_request
 from agentkit.providers.openrouter.stream_parser import parse_openrouter_stream
+from agentkit.providers.openrouter.tool_name_codec import ToolNameCodec
 
 
 def _map_openai_error(exc: BaseException) -> ErrorEvent:  # noqa: PLR0911 — exhaustive SDK exception mapping
@@ -133,7 +134,8 @@ class OpenRouterProvider(Provider):
         return self._model_capabilities.get(model, self.capabilities)
 
     async def stream(self, request: ProviderRequest) -> AsyncIterator[ProviderEvent]:
-        payload = build_openrouter_request(request)
+        name_codec = ToolNameCodec.from_request(request)
+        payload = build_openrouter_request(request, name_codec=name_codec)
         # Always include usage info per chunk via stream_options when supported.
         payload.setdefault("stream_options", {"include_usage": True})
         # Reasoning config is provider-instance-scoped (set in __init__) rather
@@ -162,6 +164,7 @@ class OpenRouterProvider(Provider):
                 chunks,  # type: ignore[reportUnknownArgumentType]
                 model=request.model,
                 session_id=session_id,
+                name_codec=name_codec,
             )
             async for ev in stream:
                 yield ev

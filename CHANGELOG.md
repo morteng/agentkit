@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
+## [0.21.0] - 2026-07-31
+
+### Fixed
+- OpenRouter now encodes agentkit's canonical qualified tool names (for example,
+  `REDACTED.search` and `kit.current_time`) into OpenAI-compatible function names
+  at the provider boundary, and decodes streamed calls back before dispatch.
+  Canonical names remain unchanged in routing, history, audit records, and UI
+  events, including replayed tool-call history and named tool choices.
+
 ## [0.20.0] - 2026-07-26
 
 ### Fixed

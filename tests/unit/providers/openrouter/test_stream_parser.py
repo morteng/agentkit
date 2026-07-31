@@ -7,8 +7,9 @@ from typing import Any
 
 import pytest
 
-from agentkit.providers.base import UsageEvent
+from agentkit.providers.base import ToolCallComplete, ToolCallStart, UsageEvent
 from agentkit.providers.openrouter.stream_parser import parse_openrouter_stream
+from agentkit.providers.openrouter.tool_name_codec import ToolNameCodec
 
 
 class _Delta:
@@ -80,6 +81,34 @@ async def test_pending_tool_calls_are_dropped_when_stream_ends_abnormally():
     assert "tool_call_complete" not in types
     # MessageComplete still fires.
     assert types[-1] == "message_complete"
+
+
+@pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_wire_tool_name_is_decoded_to_canonical_name():
+    chunks: list[Any] = [
+        _Chunk(
+            [
+                _Choice(
+                    _Delta(tool_calls=[_ToolCallStreamChunk(0, "call_1", "REDACTED__search", "{}")])
+                )
+            ]
+        ),
+        _Chunk([_Choice(_Delta(), finish_reason="tool_calls")]),
+    ]
+    codec = ToolNameCodec.from_names(["REDACTED.search"])
+    events = [
+        ev
+        async for ev in parse_openrouter_stream(
+            _aiter(chunks), model="openai/gpt-5.6-luna", name_codec=codec
+        )
+    ]
+    starts = [ev for ev in events if isinstance(ev, ToolCallStart)]
+    completes = [ev for ev in events if isinstance(ev, ToolCallComplete)]
+    assert [ev.tool_name for ev in starts + completes] == [
+        "REDACTED.search",
+        "REDACTED.search",
+    ]
 
 
 @pytest.mark.asyncio
