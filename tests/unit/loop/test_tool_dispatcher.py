@@ -43,19 +43,31 @@ def _ok(call_id: str, text: str) -> ToolResult:
 
 @pytest.mark.asyncio
 async def test_reads_dispatch_in_parallel():
-    reg = ToolRegistry()
-    started = []
+    """Both reads must be in flight at once — proven by rendezvous, not by a clock.
 
-    async def slow_handler(name):
+    This asserted ``elapsed < 0.08`` against two 0.05s handlers, leaving 0.03s
+    of headroom over the ideal. That measures the machine as much as the
+    dispatcher, and it flaked at 0.096s on a loaded box.
+
+    A barrier turns the same claim into a structural one: neither handler can
+    pass ``wait()`` until the other has reached it, so the call returns at all
+    ONLY if both were running concurrently. A sequential dispatcher blocks the
+    first handler forever, which ``wait_for`` reports as a timeout. The
+    generous 5s ceiling is a deadlock detector, not a performance budget — load
+    can make this test slow, but it can no longer make it wrong.
+    """
+    reg = ToolRegistry()
+    both_running = asyncio.Barrier(2)
+
+    async def rendezvous_handler(name):
         async def h(args, ctx):
-            started.append(name)
-            await asyncio.sleep(0.05)
+            await both_running.wait()
             return _ok(ctx.call_id, name)
 
         return h
 
-    reg.register_builtin(_spec("kit.a"), await slow_handler("a"))
-    reg.register_builtin(_spec("kit.b"), await slow_handler("b"))
+    reg.register_builtin(_spec("kit.a"), await rendezvous_handler("a"))
+    reg.register_builtin(_spec("kit.b"), await rendezvous_handler("b"))
 
     disp = ToolDispatcher(registry=reg, policy=DispatchPolicy(max_parallel=8))
 
@@ -63,15 +75,10 @@ async def test_reads_dispatch_in_parallel():
         ToolCall(id="c1", name="kit.a", arguments={}),
         ToolCall(id="c2", name="kit.b", arguments={}),
     ]
-    import time
 
-    t0 = time.perf_counter()
-    results = await disp.run(calls, ctx=_FakeCtx())
-    elapsed = time.perf_counter() - t0
+    results = await asyncio.wait_for(disp.run(calls, ctx=_FakeCtx()), timeout=5)
 
     assert len(results) == 2
-    # Sequential would be ~0.10s; parallel should be < 0.08s.
-    assert elapsed < 0.08
 
 
 @pytest.mark.asyncio
