@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
 import pytest
+import structlog
 
 from agentkit._messages import Usage
 from agentkit.events import (
@@ -16,6 +17,7 @@ from agentkit.providers.base import (
     MessageStart,
     TextDelta,
     ToolCallComplete,
+    ToolCallDelta,
     ToolCallStart,
     UsageEvent,
 )
@@ -70,3 +72,52 @@ async def test_stream_mux_translates_tool_call():
     started = [e async for e in mux.translate(src()) if isinstance(e, PubToolCallStarted)]
     assert started and started[0].tool_name == "x"
     assert started[0].arguments == {"a": 1}  # arguments are populated when complete arrives
+
+
+@pytest.mark.asyncio
+async def test_start_without_complete_logs_residue():
+    """A provider that starts a tool call and never completes it produces NO
+    user-facing event at all — starts and deltas are parked here by design. This
+    is the provider-agnostic seam where that symptom becomes greppable, whatever
+    the parser upstream did or failed to do."""
+    ctx = TurnContext.empty(clock=FixedClock(datetime.now(UTC)))
+    mux = StreamMux(ctx)
+
+    async def src():
+        yield MessageStart()
+        yield ToolCallStart(call_id="call_1", tool_name="rm_file")
+        yield ToolCallDelta(call_id="call_1", arguments_delta='{"path":')
+        yield MessageComplete(finish_reason="max_tokens")
+
+    with structlog.testing.capture_logs() as logs:
+        out = [e async for e in mux.translate(src())]
+
+    assert not [e for e in out if isinstance(e, PubToolCallStarted)], (
+        "an incomplete call must not reach the consumer"
+    )
+    residue = [entry for entry in logs if entry["event"] == "tool_call_start_without_complete"]
+    assert len(residue) == 1, f"expected one residue log, got {[e['event'] for e in logs]}"
+    assert residue[0]["log_level"] == "warning"
+    assert residue[0]["count"] == 1
+    assert residue[0]["tools"] == ["rm_file"]
+    assert residue[0]["session_id"] == str(ctx.session_id)
+    assert residue[0]["turn_id"] == str(ctx.turn_id)
+
+
+@pytest.mark.asyncio
+async def test_completed_tool_call_leaves_no_residue():
+    """The residue log runs on every stream for every provider — it must stay
+    silent when every start was matched, or it is noise nobody will grep for."""
+    ctx = TurnContext.empty(clock=FixedClock(datetime.now(UTC)))
+    mux = StreamMux(ctx)
+
+    async def src():
+        yield MessageStart()
+        yield ToolCallStart(call_id="call_1", tool_name="x")
+        yield ToolCallComplete(call_id="call_1", tool_name="x", arguments={"a": 1})
+        yield MessageComplete(finish_reason="tool_use")
+
+    with structlog.testing.capture_logs() as logs:
+        _ = [e async for e in mux.translate(src())]
+
+    assert [entry["event"] for entry in logs] == []

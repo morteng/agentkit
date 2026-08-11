@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from agentkit._ids import EventId, MessageId, new_id
+from agentkit._logging import get_logger
 from agentkit.events import (
     ErrorCode,
     Errored,
@@ -27,6 +28,8 @@ from agentkit.loop.context import TurnContext
 from agentkit.providers.base import ProviderEvent
 from agentkit.tools.registry import ToolRegistry
 from agentkit.tools.spec import RiskLevel
+
+log = get_logger(__name__)
 
 
 class StreamMux:
@@ -125,6 +128,21 @@ class StreamMux:
                         message=ev.message,
                         recoverable=ev.recoverable,
                     )
+
+        # Provider-agnostic residue check. A start with no complete means the
+        # consumer got NO event for that call at all — starts and deltas are
+        # parked here by design. This is the one seam that sees the symptom for
+        # every provider, including ones whose parser has no end-of-stream
+        # handling. Keep it to a length check and one call: it runs at the end
+        # of every stream, and anything that raises here breaks all streaming.
+        if pending_tool_starts:
+            log.warning(
+                "tool_call_start_without_complete",
+                count=len(pending_tool_starts),
+                tools=[meta["tool_name"] for meta in pending_tool_starts.values()],
+                session_id=str(self._ctx.session_id),
+                turn_id=str(self._ctx.turn_id),
+            )
 
     def _risk_for(self, tool_name: str) -> str:
         """Look up the registered tool's risk level; fall back to READ for unknown.

@@ -5,6 +5,7 @@ this parser maps each event variant onto agentkit's normalised type.
 """
 
 import json
+import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -20,6 +21,8 @@ from agentkit.providers.base import (
     ToolCallStart,
     UsageEvent,
 )
+
+logger = logging.getLogger(__name__)
 
 _FINISH_REASON_MAP: dict[str, str] = {
     "end_turn": "end_turn",
@@ -133,6 +136,15 @@ def _handle_block_stop(
     try:
         args: dict[str, Any] = json.loads(args_raw)
     except json.JSONDecodeError:
+        # Truncated tool JSON (the SDK closes open blocks on max_tokens). Where
+        # the OpenRouter parser DROPS a call it cannot trust, this one emits it
+        # with empty arguments — a known divergence, deliberately left unchanged
+        # until logs say whether it fires. Never log ``args_raw`` itself: it can
+        # carry user text. Only its length.
+        logger.warning(
+            "anthropic.tool_args_unparseable_defaulted_empty",
+            extra={"tool_name": meta["name"], "args_buf_len": len(args_raw)},
+        )
         args = {}
     return ToolCallComplete(
         call_id=meta["call_id"],

@@ -1,12 +1,15 @@
 """Tests for Anthropic stream parser — event mapping and UsageEvent stamping."""
 
+import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
 
 from agentkit.providers.anthropic.stream_parser import parse_anthropic_stream
-from agentkit.providers.base import UsageEvent
+from agentkit.providers.base import ToolCallComplete, UsageEvent
+
+_PARSER_LOGGER = "agentkit.providers.anthropic.stream_parser"
 
 # ---------------------------------------------------------------------------
 # Fake Anthropic SDK event objects
@@ -66,6 +69,44 @@ class _MessageStopEvent:
     type = "message_stop"
 
 
+class _ToolUseBlock:
+    type = "tool_use"
+
+    def __init__(self, block_id: str, name: str) -> None:
+        self.id = block_id
+        self.name = name
+
+
+class _ContentBlockStartEvent:
+    type = "content_block_start"
+
+    def __init__(self, index: int, block_id: str, name: str) -> None:
+        self.index = index
+        self.content_block = _ToolUseBlock(block_id, name)
+
+
+class _InputJSONDelta:
+    type = "input_json_delta"
+
+    def __init__(self, partial_json: str) -> None:
+        self.partial_json = partial_json
+
+
+class _ContentBlockDeltaEvent:
+    type = "content_block_delta"
+
+    def __init__(self, index: int, partial_json: str) -> None:
+        self.index = index
+        self.delta = _InputJSONDelta(partial_json)
+
+
+class _ContentBlockStopEvent:
+    type = "content_block_stop"
+
+    def __init__(self, index: int) -> None:
+        self.index = index
+
+
 async def _aiter(items: list[Any]) -> AsyncIterator[Any]:
     for it in items:
         yield it
@@ -99,3 +140,58 @@ async def test_anthropic_stamps_model_and_provider_name_on_usage_event():
     assert usage_events[0].provider_name == "anthropic"
     assert usage_events[0].usage.input_tokens == 20
     assert usage_events[0].usage.output_tokens == 15
+
+
+@pytest.mark.asyncio
+async def test_truncated_tool_json_coerces_empty_args_and_logs(caplog):
+    """Truncated tool JSON at block-stop becomes ``arguments == {}`` and the call
+    is emitted ANYWAY — where the OpenRouter parser drops a call it cannot trust,
+    this one executes it on a corrupted intent. That divergence is deliberate and
+    unchanged here; this test is the tripwire that makes any future alignment a
+    visible contract change, and pins the warning that makes it greppable."""
+    events_in: list[Any] = [
+        _MessageStartEvent(usage=_MessageUsage(input_tokens=5)),
+        _ContentBlockStartEvent(0, "toolu_1", "rm_file"),
+        _ContentBlockDeltaEvent(0, '{"path": "/etc/'),  # stream truncated mid-JSON
+        _ContentBlockStopEvent(0),
+        _MessageDeltaEvent(stop_reason="max_tokens", output_tokens=3),
+        _MessageStopEvent(),
+    ]
+    with caplog.at_level(logging.WARNING, logger=_PARSER_LOGGER):
+        events_out = [
+            ev async for ev in parse_anthropic_stream(_aiter(events_in), model="anthropic/claude")
+        ]
+
+    completes = [e for e in events_out if isinstance(e, ToolCallComplete)]
+    assert len(completes) == 1, "Anthropic emits the call despite unparseable args"
+    assert completes[0].arguments == {}
+    assert completes[0].tool_name == "rm_file"
+
+    records = [
+        r for r in caplog.records if r.message == "anthropic.tool_args_unparseable_defaulted_empty"
+    ]
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING
+    assert records[0].tool_name == "rm_file"
+    assert records[0].args_buf_len == len('{"path": "/etc/')
+
+
+@pytest.mark.asyncio
+async def test_well_formed_tool_json_does_not_log(caplog):
+    """The coercion warning must stay quiet on the happy path."""
+    events_in: list[Any] = [
+        _MessageStartEvent(usage=_MessageUsage(input_tokens=5)),
+        _ContentBlockStartEvent(0, "toolu_1", "add"),
+        _ContentBlockDeltaEvent(0, '{"a": 1}'),
+        _ContentBlockStopEvent(0),
+        _MessageDeltaEvent(stop_reason="tool_use", output_tokens=3),
+        _MessageStopEvent(),
+    ]
+    with caplog.at_level(logging.WARNING, logger=_PARSER_LOGGER):
+        events_out = [
+            ev async for ev in parse_anthropic_stream(_aiter(events_in), model="anthropic/claude")
+        ]
+
+    completes = [e for e in events_out if isinstance(e, ToolCallComplete)]
+    assert completes[0].arguments == {"a": 1}
+    assert [r.message for r in caplog.records if r.name == _PARSER_LOGGER] == []

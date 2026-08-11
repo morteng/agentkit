@@ -2,6 +2,7 @@
 
 import importlib
 import json
+import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -63,6 +64,9 @@ async def _aiter(items: list[Any]) -> AsyncIterator[Any]:
         yield it
 
 
+_PARSER_LOGGER = "agentkit.providers.openrouter.stream_parser"
+
+
 @pytest.mark.asyncio
 async def test_pending_tool_calls_are_dropped_when_stream_ends_abnormally():
     """If the stream terminates without finish_reason="tool_calls", any pending
@@ -84,6 +88,148 @@ async def test_pending_tool_calls_are_dropped_when_stream_ends_abnormally():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("finish_reason", ["length", "stop", None])
+async def test_dropped_pending_tools_emit_warning_log(caplog, finish_reason):
+    """The drop is contract (see the test above); the SILENCE is the bug. A
+    discarded pending tool call must leave exactly one greppable WARNING naming
+    the finish_reason, the count, and whether args had actually arrived."""
+    chunks: list[Any] = [
+        _Chunk(
+            [
+                _Choice(
+                    _Delta(tool_calls=[_ToolCallStreamChunk(0, "call_1", "rm_file", '{"path":1}')])
+                )
+            ]
+        ),
+        _Chunk([_Choice(_Delta(), finish_reason=finish_reason)]),
+    ]
+    with caplog.at_level(logging.WARNING, logger=_PARSER_LOGGER):
+        events = [
+            ev
+            async for ev in parse_openrouter_stream(
+                _aiter(chunks), model="test/model", session_id="sess-1"
+            )
+        ]
+
+    # Contract re-pinned beside the log: still dropped, message still completes.
+    assert "tool_call_complete" not in [ev.type for ev in events]
+
+    records = [r for r in caplog.records if r.message == "openrouter.pending_tool_calls_dropped"]
+    assert len(records) == 1, f"expected one drop warning, got {len(records)}"
+    rec = records[0]
+    assert rec.levelno == logging.WARNING
+    assert rec.finish_reason == finish_reason
+    assert rec.dropped_count == 1
+    assert rec.model == "test/model"
+    assert rec.session_id == "sess-1"
+    assert rec.tools == [{"name": "rm_file", "has_id": True, "args_buf_len": len('{"path":1}')}]
+
+
+@pytest.mark.asyncio
+async def test_no_drop_warning_on_the_happy_path(caplog):
+    """The drop warning must not fire when the flush actually happens — otherwise
+    it is noise on every successful tool call and nobody will grep for it."""
+    chunks: list[Any] = [
+        _Chunk([_Choice(_Delta(tool_calls=[_ToolCallStreamChunk(0, "call_1", "add", "{}")]))]),
+        _Chunk([_Choice(_Delta(), finish_reason="tool_calls")]),
+    ]
+    with caplog.at_level(logging.WARNING, logger=_PARSER_LOGGER):
+        events = [ev async for ev in parse_openrouter_stream(_aiter(chunks), model="test/model")]
+    assert [ev.type for ev in events].count("tool_call_complete") == 1
+    assert [r.message for r in caplog.records if r.name == _PARSER_LOGGER] == []
+
+
+@pytest.mark.asyncio
+async def test_nameless_slot_with_args_is_skipped_and_logged(caplog):
+    """Arguments arrived, the name delta never did. Nothing is dispatchable, so
+    the slot is skipped — but no ToolCallStart was emitted for it either, and
+    that asymmetry has to be visible somewhere."""
+    chunks: list[Any] = [
+        _Chunk([_Choice(_Delta(tool_calls=[_ToolCallStreamChunk(0, "call_1", None, '{"a":1}')]))]),
+        _Chunk([_Choice(_Delta(), finish_reason="tool_calls")]),
+    ]
+    with caplog.at_level(logging.WARNING, logger=_PARSER_LOGGER):
+        events = [ev async for ev in parse_openrouter_stream(_aiter(chunks), model="test/model")]
+
+    types = [ev.type for ev in events]
+    assert "tool_call_complete" not in types, "a nameless slot must never be dispatched"
+    assert "tool_call_start" not in types, "Start only fires when a name arrives"
+
+    records = [r for r in caplog.records if r.message == "openrouter.nameless_tool_slot_skipped"]
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING
+    assert records[0].args_buf_nonempty is True
+    assert records[0].args_buf_len == len('{"a":1}')
+    assert records[0].has_id is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("nameless_first", [True, False])
+async def test_named_and_nameless_slots_mixed_flush(caplog, nameless_first):
+    """One bad slot must not take the batch down with it: the named sibling in
+    the same message still flushes.
+
+    Both orderings matter. The flush is a generator, so a bad slot in the SECOND
+    position cannot retract a complete already yielded from the first — only the
+    nameless-first ordering can catch an over-eager ``return`` (or a raise) that
+    abandons the rest of the batch. A single-order version of this test passes
+    against exactly that bug.
+    """
+    named = _ToolCallStreamChunk(0, "call_1", "add", '{"a":1}')
+    nameless = _ToolCallStreamChunk(1, "call_2", None, '{"b":2}')
+    if nameless_first:
+        named.index, nameless.index = 1, 0
+    ordered = [nameless, named] if nameless_first else [named, nameless]
+    chunks: list[Any] = [
+        _Chunk([_Choice(_Delta(tool_calls=ordered))]),
+        _Chunk([_Choice(_Delta(), finish_reason="tool_calls")]),
+    ]
+    with caplog.at_level(logging.WARNING, logger=_PARSER_LOGGER):
+        events = [ev async for ev in parse_openrouter_stream(_aiter(chunks), model="test/model")]
+
+    completes = [ev for ev in events if isinstance(ev, ToolCallComplete)]
+    assert [ev.tool_name for ev in completes] == ["add"]
+    assert completes[0].arguments == {"a": 1}
+    assert [r.message for r in caplog.records if r.name == _PARSER_LOGGER] == [
+        "openrouter.nameless_tool_slot_skipped"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unparseable_args_default_empty_is_logged(caplog):
+    """Irreparable argument JSON is still emitted with ``arguments == {}`` — that
+    is the current contract, unchanged here. Executing a call on a corrupted
+    intent is the more dangerous of the two failure shapes, so it gets a log."""
+    chunks: list[Any] = [
+        _Chunk(
+            [
+                _Choice(
+                    _Delta(
+                        tool_calls=[
+                            _ToolCallStreamChunk(0, "call_1", "rm_file", "not json at all !!!")
+                        ]
+                    )
+                )
+            ]
+        ),
+        _Chunk([_Choice(_Delta(), finish_reason="tool_calls")]),
+    ]
+    with caplog.at_level(logging.WARNING, logger=_PARSER_LOGGER):
+        events = [ev async for ev in parse_openrouter_stream(_aiter(chunks), model="test/model")]
+
+    completes = [ev for ev in events if isinstance(ev, ToolCallComplete)]
+    assert len(completes) == 1
+    assert completes[0].arguments == {}
+
+    records = [
+        r for r in caplog.records if r.message == "openrouter.tool_args_unparseable_defaulted_empty"
+    ]
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING
+    assert records[0].tool_name == "rm_file"
+    assert records[0].args_buf_len == len("not json at all !!!")
+
+
 @pytest.mark.asyncio
 async def test_wire_tool_name_is_decoded_to_canonical_name():
     chunks: list[Any] = [

@@ -1,6 +1,7 @@
 """Translate OpenAI-protocol streaming responses into ProviderEvents."""
 
 import json
+import logging
 from collections.abc import AsyncIterator, Generator
 from typing import Any
 
@@ -20,6 +21,15 @@ from agentkit.providers.base import (
 from agentkit.providers.openrouter.model_quirks import parse_finish_reason
 from agentkit.providers.openrouter.tool_name_codec import ToolNameCodec
 from agentkit.providers.openrouter.tool_translator import parse_tool_args_with_repair
+
+logger = logging.getLogger(__name__)
+
+
+def _decode_name(name: str | None, name_codec: ToolNameCodec | None) -> str | None:
+    """Decode a wire tool name for logging — the name a human greps for."""
+    if name is None:
+        return None
+    return name_codec.decode(name) if name_codec is not None else name
 
 
 def parse_tool_call_arguments(args_str: str) -> dict[str, Any] | None:
@@ -129,6 +139,29 @@ async def parse_openrouter_stream(  # noqa: PLR0912 — chunk-type dispatch + tr
     if finish_reason_raw == "tool_calls":
         for ev in _flush_pending_tools(pending_tools, name_codec=name_codec):
             yield ev
+    elif pending_tools:
+        # The drop itself is deliberate (see above); the SILENCE was not. Without
+        # this line the discard is indistinguishable from the model never having
+        # called a tool — StreamMux forwards only ``tool_call_complete``, so no
+        # downstream layer sees the start either. Never log ``args_buf`` content:
+        # argument buffers carry user text and would sidestep the PII firewall.
+        logger.warning(
+            "openrouter.pending_tool_calls_dropped",
+            extra={
+                "finish_reason": finish_reason_raw,
+                "dropped_count": len(pending_tools),
+                "tools": [
+                    {
+                        "name": _decode_name(slot["name"], name_codec),
+                        "has_id": slot["id"] is not None,
+                        "args_buf_len": len(slot["args_buf"]),
+                    }
+                    for slot in pending_tools.values()
+                ],
+                "model": model,
+                "session_id": session_id,
+            },
+        )
 
     if final_usage is not None:
         yield UsageEvent(usage=final_usage, model=model, provider_name="openrouter")
@@ -170,11 +203,36 @@ def _flush_pending_tools(
     """Yield ToolCallComplete events for all accumulated tool calls."""
     for slot in pending_tools.values():
         if slot["name"] is None:
+            # Arguments may have arrived without the function-name delta ever
+            # landing — a protocol violation somewhere in OpenRouter's backend
+            # fan-out. Nothing is dispatchable, so skipping is the only option;
+            # the log is how we find out whether it ever happens. No
+            # ``finish_reason`` field: this flush only runs on "tool_calls".
+            # No ToolCallStart was emitted for this slot either (that fires only
+            # when a name arrives), so mux-level accounting stays consistent.
+            logger.warning(
+                "openrouter.nameless_tool_slot_skipped",
+                extra={
+                    "has_id": slot["id"] is not None,
+                    "args_buf_len": len(slot["args_buf"]),
+                    "args_buf_nonempty": bool(slot["args_buf"]),
+                },
+            )
             continue
         try:
             parsed: Any = parse_tool_call_arguments(slot["args_buf"] or "")
             args: dict[str, Any] = dict(parsed) if isinstance(parsed, dict) else {}  # type: ignore[reportUnknownArgumentType]
         except json.JSONDecodeError:
+            # Unparseable even after json_repair. Current contract: emit with
+            # empty args rather than drop. Logged because an executed call with
+            # {} is a real action on a corrupted intent.
+            logger.warning(
+                "openrouter.tool_args_unparseable_defaulted_empty",
+                extra={
+                    "tool_name": _decode_name(slot["name"], name_codec),
+                    "args_buf_len": len(slot["args_buf"]),
+                },
+            )
             args = {}
         yield ToolCallComplete(
             call_id=slot["id"] or "",
