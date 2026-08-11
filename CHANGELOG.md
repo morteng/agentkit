@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
+## [0.21.1] - 2026-08-11
+
+### Fixed
+- Streamed tool calls that agentkit discards or empties are no longer silent. Four sites gained a `WARNING`; no behaviour anywhere changed, so event sequences, arguments, finish reasons, and phase transitions are byte-identical to 0.21.0. The OpenRouter parser logs `openrouter.pending_tool_calls_dropped` when a non-`tool_calls` finish reason discards accumulated calls (carrying `finish_reason`, `dropped_count`, and per-slot `name`/`has_id`/`args_buf_len`), `openrouter.nameless_tool_slot_skipped` when arguments arrive for a slot whose function-name delta never did, and `openrouter.tool_args_unparseable_defaulted_empty` when arguments survive neither `json.loads` nor `json_repair` and are coerced to `{}`. The Anthropic parser logs the same coercion as `anthropic.tool_args_unparseable_defaulted_empty`. `StreamMux` logs `tool_call_start_without_complete` at end of stream — provider-agnostic, and the only seam that catches the symptom for a provider whose parser has no end-of-stream handling, since the mux forwards only `tool_call_complete` and a dropped call therefore reaches no consumer at all. Argument buffers are never logged, only their lengths: they carry user text and a raw-args log would sidestep the PII firewall. **Known divergence, deliberately unchanged:** on truncated tool JSON, OpenRouter **drops** the call while Anthropic **emits** it with `arguments={}`. Both are now visible; which one is right is a contract question that waits on the data these logs produce. Consumers that page on `WARNING` should expect these names to be the first real occurrence, and the names themselves are now grep and alert targets — treat renames as breaking.
+
 ## [0.21.0] - 2026-07-31
 
 ### Fixed
