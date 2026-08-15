@@ -5,6 +5,18 @@ catch malformed arguments *before* they reach the handler. A stdio/subprocess
 MCP server validates independently inside the real MCP SDK; the in-process
 shortcut bypasses that transport entirely, so this is the only place those
 handlers get schema enforcement.
+
+Known gap — no normalisation hook. Arguments are validated exactly as the model
+emitted them, so a spec cannot declare an enum case-insensitive and must choose
+between an exact enum and none at all. Handlers commonly normalise
+(``str(args.get(k, "")).strip().lower()``); enabling validation makes that
+normalisation unreachable, so ``"Music"`` against ``enum: ["music", ...]`` became
+a refusal where it used to be a match. Survivable rather than fine: the refusal
+is ``retryable`` and lists the accepted values, so a model spends one wasted call
+and then succeeds. The first downstream consumer to hit this (REDACTED — six
+enum-valued arguments, every one with a normalising handler) worked around it by
+writing "lowercase, exactly as listed" into each enum description. Recorded here
+so that workaround does not become the reason nobody fixes the cause.
 """
 
 from __future__ import annotations
