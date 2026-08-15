@@ -25,38 +25,38 @@ def _reg():
 
 
 def _scan(src):
-    return ApprovalScanner(client_var="REDACTED").scan(src, _reg())
+    return ApprovalScanner(client_var="acme").scan(src, _reg())
 
 
 def test_reads_only_no_approval():
-    src = "rows = await REDACTED.content.search('x')\nprint(len(rows))"
+    src = "rows = await acme.content.search('x')\nprint(len(rows))"
     c = _scan(src)
     assert c.findings == []
     assert c.requires_approval is False
 
 
 def test_reversible_patch_no_approval():
-    src = "await REDACTED.content.patch(cid, tags=['needs-photo'])"
+    src = "await acme.content.patch(cid, tags=['needs-photo'])"
     c = _scan(src)
     assert c.worst is Reversibility.REVERSIBLE
     assert c.requires_approval is False
 
 
 def test_static_publish_requires_approval():
-    src = "await REDACTED.content.patch(cid, status='published')"
+    src = "await acme.content.patch(cid, status='published')"
     c = _scan(src)
     assert c.worst is Reversibility.GATED
     assert c.requires_approval is True
 
 
 def test_dynamic_status_requires_approval():
-    src = "await REDACTED.content.patch(cid, status=target)"
+    src = "await acme.content.patch(cid, status=target)"
     c = _scan(src)
     assert c.worst is Reversibility.GATED
 
 
 def test_delete_requires_approval():
-    src = "await REDACTED.content.delete(cid)"
+    src = "await acme.content.delete(cid)"
     c = _scan(src)
     assert c.requires_approval is True
 
@@ -64,8 +64,8 @@ def test_delete_requires_approval():
 def test_loop_with_mixed_calls_worst_wins():
     src = (
         "for c in drafts:\n"
-        "    await REDACTED.content.patch(c.id, tags=['x'])\n"
-        "await REDACTED.content.delete(bad_id)\n"
+        "    await acme.content.patch(c.id, tags=['x'])\n"
+        "await acme.content.delete(bad_id)\n"
     )
     c = _scan(src)
     assert len(c.findings) == 2
@@ -85,7 +85,7 @@ def test_ignores_non_client_calls():
 
 def test_const_var_review_is_reversible():
     """`s = "review"; patch(status=s)` must NOT gate — review is a free transition."""
-    src = "s = 'review'\nawait REDACTED.content.patch(cid, status=s)"
+    src = "s = 'review'\nawait acme.content.patch(cid, status=s)"
     c = _scan(src)
     assert c.worst is Reversibility.REVERSIBLE
     assert c.requires_approval is False
@@ -93,27 +93,27 @@ def test_const_var_review_is_reversible():
 
 def test_const_var_published_still_gates():
     """A variable that provably holds a gated literal still gates."""
-    src = "s = 'published'\nawait REDACTED.content.patch(cid, status=s)"
+    src = "s = 'published'\nawait acme.content.patch(cid, status=s)"
     c = _scan(src)
     assert c.requires_approval is True
 
 
 def test_reassigned_var_stays_conservative():
     """Ambiguous (reassigned) binding is not a constant — stays gated."""
-    src = "s = 'review'\ns = compute()\nawait REDACTED.content.patch(cid, status=s)"
+    src = "s = 'review'\ns = compute()\nawait acme.content.patch(cid, status=s)"
     c = _scan(src)
     assert c.requires_approval is True
 
 
 def test_loop_target_var_is_not_constant():
     """A for-loop target is not a constant binding — stays gated."""
-    src = "for s in statuses:\n    await REDACTED.content.patch(cid, status=s)"
+    src = "for s in statuses:\n    await acme.content.patch(cid, status=s)"
     c = _scan(src)
     assert c.requires_approval is True
 
 
 def test_free_var_stays_gated():
     """An unbound/free variable cannot be resolved — stays gated (regression guard)."""
-    src = "await REDACTED.content.patch(cid, status=target)"
+    src = "await acme.content.patch(cid, status=target)"
     c = _scan(src)
     assert c.requires_approval is True

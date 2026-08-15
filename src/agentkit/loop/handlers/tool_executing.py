@@ -54,7 +54,7 @@ async def handle_tool_executing(ctx: TurnContext, deps: dict[str, Any]) -> Phase
     # Unknown tool names get a status="error" result naming the bad tool, so
     # the model sees the mistake and can retry with a registered name. Pass the
     # registered names so a bare name that suffix-matches one qualified tool
-    # (e.g. web_search -> REDACTED.web_search) gets a "did you mean" hint.
+    # (e.g. web_search -> acme.web_search) gets a "did you mean" hint.
     known_names = [s.name for s in deps["registry"].list_specs()]
     for c in unknown:
         msg = unknown_tool_message(c["name"], known_names)

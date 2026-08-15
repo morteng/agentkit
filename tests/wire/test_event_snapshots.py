@@ -151,7 +151,7 @@ EVENT_FIXTURES: list[tuple[type[BaseEvent], str, dict[str, Any]]] = [
         "tool_call_started",
         {
             "call_id": CALL_ID,
-            "tool_name": "REDACTED.search",
+            "tool_name": "acme.search",
             "arguments": {"query": "Oslo Fjord"},
             "risk": "read",
         },
@@ -185,7 +185,7 @@ EVENT_FIXTURES: list[tuple[type[BaseEvent], str, dict[str, Any]]] = [
         "approval_needed",
         {
             "call_id": CALL_ID,
-            "tool_name": "REDACTED.delete_content",
+            "tool_name": "acme.delete_content",
             "arguments": {"content_id": "cnt_abc123"},
             "rationale": "Destructive operation requires confirmation",
             "risk": "destructive",

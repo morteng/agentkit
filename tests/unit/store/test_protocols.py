@@ -18,7 +18,7 @@ def test_protocols_are_abstract():
 
 
 def test_memory_scope_distinguishes_session_vs_persistent():
-    persistent = MemoryScope(namespace="REDACTED", user_id="u1")
-    session_scoped = MemoryScope(namespace="REDACTED", user_id="u1", session_id="sess_a")
+    persistent = MemoryScope(namespace="globex", user_id="u1")
+    session_scoped = MemoryScope(namespace="globex", user_id="u1", session_id="sess_a")
     assert persistent != session_scoped
     assert persistent.session_id is None

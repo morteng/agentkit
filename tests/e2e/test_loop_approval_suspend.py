@@ -27,13 +27,13 @@ pytestmark = pytest.mark.e2e
 @pytest.mark.asyncio
 async def test_high_write_call_suspends_for_approval():
     provider = FakeProvider().script(
-        FakeProvider.tool_call("REDACTED.devices.control", {"id": "heat-pump", "off": True}),
+        FakeProvider.tool_call("globex.devices.control", {"id": "heat-pump", "off": True}),
     )
     queue: asyncio.Queue = asyncio.Queue()
     registry = ToolRegistry()
 
     spec = ToolSpec(
-        name="REDACTED.devices.control",
+        name="globex.devices.control",
         description="control device",
         parameters={"type": "object"},
         returns=None,
@@ -83,4 +83,4 @@ async def test_high_write_call_suspends_for_approval():
     while not queue.empty():
         streamed.append(queue.get_nowait())
     needed = [e for e in streamed if isinstance(e, ApprovalNeeded)]
-    assert needed and needed[0].tool_name == "REDACTED.devices.control"
+    assert needed and needed[0].tool_name == "globex.devices.control"

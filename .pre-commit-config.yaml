@@ -28,3 +28,9 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
+
+      - id: check-no-private-identifiers
+        name: check no private identifiers
+        entry: uv run python scripts/check_no_private_identifiers.py
+        language: system
+        pass_filenames: false

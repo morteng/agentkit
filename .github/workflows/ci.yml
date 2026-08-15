@@ -15,6 +15,16 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run pyright
+      # gitleaks below cannot catch this class: nothing here is a credential.
+      # The blocklist is not in the repo, because a list of names you must not
+      # publish is itself a thing you must not publish. It arrives as a secret,
+      # which forks and outside PRs do not get — there the step says it skipped
+      # and passes, because a contributor cannot be asked to avoid names they
+      # are not allowed to see. On `main` the secret is present and the check
+      # is real.
+      - run: uv run python scripts/check_no_private_identifiers.py
+        env:
+          AGENTKIT_PRIVATE_IDENTIFIERS: ${{ secrets.AGENTKIT_PRIVATE_IDENTIFIERS }}
 
   unit:
     runs-on: ubuntu-latest

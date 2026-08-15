@@ -374,15 +374,11 @@ async def test_id_less_tool_call_uses_one_fallback_call_id_across_all_events():
 async def test_wire_tool_name_is_decoded_to_canonical_name():
     chunks: list[Any] = [
         _Chunk(
-            [
-                _Choice(
-                    _Delta(tool_calls=[_ToolCallStreamChunk(0, "call_1", "REDACTED__search", "{}")])
-                )
-            ]
+            [_Choice(_Delta(tool_calls=[_ToolCallStreamChunk(0, "call_1", "acme__search", "{}")]))]
         ),
         _Chunk([_Choice(_Delta(), finish_reason="tool_calls")]),
     ]
-    codec = ToolNameCodec.from_names(["REDACTED.search"])
+    codec = ToolNameCodec.from_names(["acme.search"])
     events = [
         ev
         async for ev in parse_openrouter_stream(
@@ -392,8 +388,8 @@ async def test_wire_tool_name_is_decoded_to_canonical_name():
     starts = [ev for ev in events if isinstance(ev, ToolCallStart)]
     completes = [ev for ev in events if isinstance(ev, ToolCallComplete)]
     assert [ev.tool_name for ev in starts + completes] == [
-        "REDACTED.search",
-        "REDACTED.search",
+        "acme.search",
+        "acme.search",
     ]
 
 
@@ -473,7 +469,7 @@ async def test_usage_captured_when_arrives_with_non_empty_choices():
     canonical pattern). Live probes against deepseek-chat-v3.1,
     deepseek-v3.1-terminus, gemini-2.5-flash, and gemini-2.5-flash-lite-preview
     all emit this shape; the parser must capture usage on every chunk, not only
-    when ``choices`` is empty. REDACTED v0.128.0 deploy left ``usage_ledger``
+    when ``choices`` is empty. A downstream consumer's deploy once left ``usage_ledger``
     empty for 4+ hours because the original guard discarded these chunks.
     """
     chunks: list[Any] = [
@@ -502,7 +498,7 @@ async def test_usage_captured_when_arrives_with_non_empty_choices():
 async def test_translator_in_traced_when_session_allowlisted(monkeypatch, tmp_path):
     """Each TextDelta yielded by the parser must emit a ``translator_in`` JSONL
     line when ``session_id`` is allowlisted via STREAM_TRACE_SESSIONS. This is the
-    upstream checkpoint that lets us localize REDACTED F2 chat truncation."""
+    upstream checkpoint that lets us localize a downstream consumer's chat truncation bugs."""
     sid = "drammen-trace-session"
     monkeypatch.setenv("STREAM_TRACE_SESSIONS", sid)
     monkeypatch.setenv("STREAM_TRACE_DIR", str(tmp_path))

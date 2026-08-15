@@ -46,7 +46,7 @@ async def test_approval_suspend_then_resume_executes_tool():
         registry.register_builtin(spec, handler)
 
     spec = ToolSpec(
-        name="REDACTED.devices.control",
+        name="globex.devices.control",
         description="control device",
         parameters={"type": "object"},
         returns=None,
@@ -73,7 +73,7 @@ async def test_approval_suspend_then_resume_executes_tool():
     registry.register_builtin(spec, control)
 
     provider = FakeProvider().script(
-        FakeProvider.tool_call("REDACTED.devices.control", {"id": "heat-pump"}),
+        FakeProvider.tool_call("globex.devices.control", {"id": "heat-pump"}),
         # After resume executes the tool, the loop iterates back to streaming.
         # Have the provider finalize so the resumed turn ends COMPLETED.
         FakeProvider.tool_call(
@@ -135,7 +135,7 @@ def _make_approval_session() -> tuple[AgentSession, ToolSpec, list[dict]]:
     registry.register_default_builtins()
 
     spec = ToolSpec(
-        name="REDACTED.devices.delete",
+        name="globex.devices.delete",
         description="delete device (irreversible)",
         parameters={"type": "object"},
         returns=None,
@@ -162,7 +162,7 @@ def _make_approval_session() -> tuple[AgentSession, ToolSpec, list[dict]]:
     registry.register_builtin(spec, handler)
 
     provider = FakeProvider().script(
-        FakeProvider.tool_call("REDACTED.devices.delete", {"id": "x"}),
+        FakeProvider.tool_call("globex.devices.delete", {"id": "x"}),
         FakeProvider.tool_call(
             "kit.finalize",
             {
@@ -385,7 +385,7 @@ def _make_batch_approval_session() -> tuple[AgentSession, list[dict]]:
     registry.register_default_builtins()
 
     spec = ToolSpec(
-        name="REDACTED.devices.delete",
+        name="globex.devices.delete",
         description="delete device (irreversible)",
         parameters={"type": "object"},
         returns=None,
@@ -414,8 +414,8 @@ def _make_batch_approval_session() -> tuple[AgentSession, list[dict]]:
     provider = FakeProvider().script(
         FakeProvider.tool_calls(
             [
-                ("REDACTED.devices.delete", {"id": "a"}),
-                ("REDACTED.devices.delete", {"id": "b"}),
+                ("globex.devices.delete", {"id": "a"}),
+                ("globex.devices.delete", {"id": "b"}),
             ]
         ),
         FakeProvider.tool_call(

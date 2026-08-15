@@ -26,7 +26,7 @@ def _tool_call_msg() -> Message:
         id=new_id(MessageId),
         session_id=new_id(SessionId),
         role=MessageRole.ASSISTANT,
-        content=[ToolUseBlock(id="c1", name="REDACTED.rules.create", arguments={})],
+        content=[ToolUseBlock(id="c1", name="globex.rules.create", arguments={})],
         created_at=datetime.now(UTC),
     )
 

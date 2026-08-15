@@ -1,7 +1,8 @@
 """Tests for the per-session stream-delta tracer.
 
-Tracer is meant for chat truncation investigations (REDACTED F2 etc.) and
-must never affect the streaming hot path. These tests pin:
+Tracer is meant for chat truncation investigations (a downstream consumer's
+chat truncation bug, etc.) and must never affect the streaming hot path.
+These tests pin:
 
   - opt-in via STREAM_TRACE_SESSIONS env: empty -> no-op, allowlist -> match,
     "*" -> match every session.

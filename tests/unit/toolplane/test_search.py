@@ -31,7 +31,7 @@ def _spec(name, desc):
 
 def test_bm25_ranks_relevant_doc_first():
     docs = {
-        "a": "subtract one 3d shape from another csg boolean",
+        "a": "subtract one 3d shape from another boolean",
         "b": "translate content into another language",
         "c": "geocode an address to coordinates",
     }
@@ -43,13 +43,13 @@ def test_bm25_ranks_relevant_doc_first():
 @pytest.mark.asyncio
 async def test_search_tools_builtin_matches_discoverable_and_records():
     specs = [
-        _spec("REDACTED.csg_subtract", "subtract one 3d shape from another csg"),
-        _spec("REDACTED.translate_content", "translate content to a language"),
+        _spec("acme.shape_subtract", "subtract one 3d shape from another"),
+        _spec("acme.translate_content", "translate content to a language"),
         _spec("kit.search_tools", "search for tools"),
     ]
     plane = ToolPlane(
         visibility_of=lambda s: (
-            ToolVisibility(baseline="discoverable") if s.name == "REDACTED.csg_subtract" else None
+            ToolVisibility(baseline="discoverable") if s.name == "acme.shape_subtract" else None
         ),
         context_of=_as_ctx,
         role_ranks=ROLE_RANKS,
@@ -72,10 +72,10 @@ async def test_search_tools_builtin_matches_discoverable_and_records():
     text = result.content[0].text
     assert text is not None
     # Advertise AND record the fully-qualified name — the only name the
-    # registry routes. A bare "csg_subtract" here is unroutable.
-    assert "REDACTED.csg_subtract" in text
-    assert "REDACTED.csg_subtract" in recorded
-    assert "csg_subtract" not in recorded  # never the bare form
+    # registry routes. A bare "shape_subtract" here is unroutable.
+    assert "acme.shape_subtract" in text
+    assert "acme.shape_subtract" in recorded
+    assert "shape_subtract" not in recorded  # never the bare form
 
 
 @pytest.mark.asyncio
@@ -83,12 +83,12 @@ async def test_search_tools_advertises_qualified_names_verbatim():
     """Each advertised line must carry the full ``<server>.<tool>`` name — the
     exact string the registry routes — not the bare tool name."""
     specs = [
-        _spec("REDACTED.csg_subtract", "subtract one 3d shape from another csg"),
+        _spec("acme.shape_subtract", "subtract one 3d shape from another"),
         _spec("kit.search_tools", "search for tools"),
     ]
     plane = ToolPlane(
         visibility_of=lambda s: (
-            ToolVisibility(baseline="discoverable") if s.name == "REDACTED.csg_subtract" else None
+            ToolVisibility(baseline="discoverable") if s.name == "acme.shape_subtract" else None
         ),
         context_of=_as_ctx,
         role_ranks=ROLE_RANKS,
@@ -106,9 +106,9 @@ async def test_search_tools_advertises_qualified_names_verbatim():
     result = await handler({"query": "3d csg", "limit": 5}, _Ctx())
     text = result.content[0].text
     assert text is not None
-    # The line is the fully-qualified name, verbatim — not "- csg_subtract:".
-    assert "- REDACTED.csg_subtract:" in text
-    assert "- csg_subtract:" not in text
+    # The line is the fully-qualified name, verbatim — not "- shape_subtract:".
+    assert "- acme.shape_subtract:" in text
+    assert "- shape_subtract:" not in text
 
 
 @pytest.mark.asyncio
@@ -116,17 +116,17 @@ async def test_search_tools_surfaced_name_is_invocable_verbatim():
     """A tool surfaced by search_tools must be invocable under the exact name
     shown. Regression guard for the prod bug: the advertised name was bare
     (``web_search``) while the registry only routed the qualified name
-    (``REDACTED.web_search``), so copying the advertised name hit unknown_tool.
+    (``acme.web_search``), so copying the advertised name hit unknown_tool.
     """
     from agentkit.tools.registry import ToolRegistry
     from agentkit.tools.spec import ContentBlockOut, ToolCall, ToolResult
 
     class _FakeMCPClient:
-        name = "REDACTED"
+        name = "acme"
 
         async def initialize(self) -> None: ...
         async def list_tools(self):
-            return [_spec("csg_subtract", "subtract one 3d shape from another csg")]
+            return [_spec("shape_subtract", "subtract one 3d shape from another")]
 
         async def call_tool(self, name, arguments, *, on_progress=None):
             return ToolResult(
@@ -140,13 +140,13 @@ async def test_search_tools_surfaced_name_is_invocable_verbatim():
             return True
 
     reg = ToolRegistry()
-    reg.register_mcp_server("REDACTED", _FakeMCPClient())  # type: ignore[arg-type]
+    reg.register_mcp_server("acme", _FakeMCPClient())  # type: ignore[arg-type]
     await reg.initialize_mcp_servers()
-    specs = reg.list_specs()  # yields the qualified "REDACTED.csg_subtract"
+    specs = reg.list_specs()  # yields the qualified "acme.shape_subtract"
 
     plane = ToolPlane(
         visibility_of=lambda s: (
-            ToolVisibility(baseline="discoverable") if s.name == "REDACTED.csg_subtract" else None
+            ToolVisibility(baseline="discoverable") if s.name == "acme.shape_subtract" else None
         ),
         context_of=_as_ctx,
         role_ranks=ROLE_RANKS,
@@ -167,7 +167,7 @@ async def test_search_tools_surfaced_name_is_invocable_verbatim():
 
     # Extract the name exactly as advertised to the model.
     shown = text.splitlines()[1].removeprefix("- ").split(":", 1)[0]
-    assert shown == "REDACTED.csg_subtract"
+    assert shown == "acme.shape_subtract"
 
     # The advertised name routes cleanly — no unknown_tool.
     invoked = await reg.invoke(
@@ -186,12 +186,12 @@ class _FakeCtx:
 @pytest.mark.asyncio
 async def test_search_tools_negative_limit_does_not_drop_results():
     specs = [
-        _spec("REDACTED.csg_subtract", "subtract one 3d shape from another csg"),
+        _spec("acme.shape_subtract", "subtract one 3d shape from another"),
         _spec("kit.search_tools", "search for tools"),
     ]
     plane = ToolPlane(
         visibility_of=lambda s: (
-            ToolVisibility(baseline="discoverable") if s.name == "REDACTED.csg_subtract" else None
+            ToolVisibility(baseline="discoverable") if s.name == "acme.shape_subtract" else None
         ),
         context_of=_as_ctx,
         role_ranks=ROLE_RANKS,
@@ -213,4 +213,4 @@ async def test_search_tools_negative_limit_does_not_drop_results():
     assert result.status == "ok"
     text = result.content[0].text
     assert text is not None
-    assert "csg_subtract" in text
+    assert "shape_subtract" in text

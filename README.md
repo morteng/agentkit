@@ -23,4 +23,4 @@ See `examples/minimal/`.
 
 ## Architecture
 
-See `docs/architecture.md` for the full design. Spec lives in the consuming project (REDACTED) at `docs/superpowers/specs/2026-05-03-agentkit-library-design.md`.
+See `docs/architecture.md` for the full design. The original spec lives in a downstream consuming project's repo.

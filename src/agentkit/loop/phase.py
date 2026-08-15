@@ -1,6 +1,6 @@
 """Phase enum and transition table for the agent loop.
 
-This is the formal state machine that replaces REDACTED's nested control flow.
+This is the formal state machine that replaces a downstream consumer's nested control flow.
 Every legal move is in TRANSITIONS; everything else raises.
 """
 

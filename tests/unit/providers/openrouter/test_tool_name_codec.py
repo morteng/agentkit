@@ -14,11 +14,11 @@ from agentkit.providers.openrouter.tool_name_codec import (
 
 
 def test_qualified_names_encode_and_round_trip():
-    codec = ToolNameCodec.from_names(["REDACTED.search", "kit.current_time"])
+    codec = ToolNameCodec.from_names(["acme.search", "kit.current_time"])
 
-    assert codec.encode("REDACTED.search") == "REDACTED__search"
+    assert codec.encode("acme.search") == "acme__search"
     assert codec.encode("kit.current_time") == "kit__current_time"
-    assert codec.decode("REDACTED__search") == "REDACTED.search"
+    assert codec.decode("acme__search") == "acme.search"
     assert codec.decode("kit__current_time") == "kit.current_time"
     assert all(is_wire_safe_name(name) for name in codec.wire_to_canonical)
 
@@ -41,10 +41,10 @@ def test_long_or_unicode_name_uses_safe_digest():
 
 
 def test_malformed_provider_name_fails_closed_to_safe_sentinel():
-    codec = ToolNameCodec.from_names(["REDACTED.search"])
+    codec = ToolNameCodec.from_names(["acme.search"])
 
-    assert codec.decode("REDACTED.search") == UNKNOWN_INVALID_TOOL_NAME
-    assert is_wire_safe_name(codec.decode("REDACTED.search"))
+    assert codec.decode("acme.search") == UNKNOWN_INVALID_TOOL_NAME
+    assert is_wire_safe_name(codec.decode("acme.search"))
 
 
 def test_request_codec_includes_tool_choice_and_replayed_history():
@@ -58,13 +58,13 @@ def test_request_codec_includes_tool_choice_and_replayed_history():
     request = ProviderRequest(
         model="openai/gpt-5.6-luna",
         messages=[history],
-        tools=[ToolDefinition(name="REDACTED.search", description="søk", parameters={})],
-        tool_choice=NamedToolChoice(name="REDACTED.search"),
+        tools=[ToolDefinition(name="acme.search", description="søk", parameters={})],
+        tool_choice=NamedToolChoice(name="acme.search"),
     )
     codec = ToolNameCodec.from_request(request)
 
     assert codec.encode("kit.current_time") == "kit__current_time"
-    assert codec.encode("REDACTED.search") == "REDACTED__search"
+    assert codec.encode("acme.search") == "acme__search"
 
 
 def test_empty_name_is_rejected():

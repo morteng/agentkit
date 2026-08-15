@@ -1,9 +1,9 @@
 """Per-session raw stream-delta logger for chat truncation investigations.
 
-This is the agentkit-side companion to REDACTED's
-``api/app/agents/sdk/stream_trace.py``. It exists because chat truncation
-bugs (REDACTED F2: leading-character drops at chunk boundaries) need a
-checkpoint UPSTREAM of the REDACTED agentkit adapter — the existing
+This is the agentkit-side companion to a downstream consumer's own
+``api/app/agents/sdk/stream_trace.py``. It exists because a chat truncation
+bug found in that consumer (leading-character drops at chunk boundaries) needed a
+checkpoint UPSTREAM of that consumer's agentkit adapter — the existing
 ``adapter_in`` trace already shows the chars missing, so the bug enters
 before agentkit hands the delta over.
 
@@ -26,7 +26,8 @@ JSONL line shape (one object per delta):
     {
       "ts": "2026-05-27T10:14:33.421Z",
       "session_id": "...",
-      "checkpoint": "translator_in",   # REDACTED also uses "adapter_in" / "adapter_out_cleaned"
+      "checkpoint": "translator_in",   # a downstream consumer also uses
+                                        # "adapter_in" / "adapter_out_cleaned"
       "content_repr": "'Her er hva...'",  # repr() so whitespace stays visible
       "content_len": 22,
       "iteration": 3,                     # optional
@@ -44,11 +45,11 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-# Default trace dir matches REDACTED's existing tooling so traces from both
-# sides land in the same place without configuration. Ops can override
-# with STREAM_TRACE_DIR if a different layout is needed (REDACTED, future
-# tenants).
-_DEFAULT_TRACE_DIR = "/tmp/REDACTED-stream-trace"
+# Default trace dir matches a downstream consumer's existing tooling so
+# traces from both sides land in the same place without configuration. Ops
+# can override with STREAM_TRACE_DIR if a different layout is needed
+# (other consumers, future tenants).
+_DEFAULT_TRACE_DIR = "/tmp/agentkit-stream-trace"
 
 _SESSIONS_ENV = "STREAM_TRACE_SESSIONS"
 _DIR_ENV = "STREAM_TRACE_DIR"

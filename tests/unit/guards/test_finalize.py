@@ -139,7 +139,7 @@ def test_recall_memories_classifies_as_read():
     from agentkit.guards.finalize import _is_default_write
 
     assert _is_default_write("recall_memories") is False
-    assert _is_default_write("REDACTED.recall_memories") is False
+    assert _is_default_write("acme.recall_memories") is False
     # Sanity: actual writes still classify as writes.
     assert _is_default_write("patch_content") is True
     assert _is_default_write("create_content") is True

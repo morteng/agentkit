@@ -75,7 +75,7 @@ def _make_session(*responses, executions: list[dict]) -> AgentSession:
     registry = ToolRegistry()
     registry.register_default_builtins()
     spec = ToolSpec(
-        name="REDACTED.devices.delete",
+        name="globex.devices.delete",
         description="delete device (irreversible)",
         parameters={"type": "object"},
         returns=None,
@@ -132,7 +132,7 @@ async def _stored(session: AgentSession) -> list[Message]:
 async def test_resume_persists_the_tool_result_and_the_rest_of_the_turn():
     executions: list[dict] = []
     session = _make_session(
-        FakeProvider.tool_call("REDACTED.devices.delete", {"id": "x"}),
+        FakeProvider.tool_call("globex.devices.delete", {"id": "x"}),
         _FINALIZE,
         executions=executions,
     )
@@ -165,7 +165,7 @@ async def test_resume_persists_the_tool_result_and_the_rest_of_the_turn():
 async def test_turn_after_a_resume_loads_a_well_formed_transcript():
     executions: list[dict] = []
     session = _make_session(
-        FakeProvider.tool_call("REDACTED.devices.delete", {"id": "x"}),
+        FakeProvider.tool_call("globex.devices.delete", {"id": "x"}),
         _FINALIZE,
         FakeProvider.text("anything else?"),
         executions=executions,
@@ -189,7 +189,7 @@ async def test_denied_resume_persists_the_denial_result():
     """A denied call still needs a result in the store, or the history is broken."""
     executions: list[dict] = []
     session = _make_session(
-        FakeProvider.tool_call("REDACTED.devices.delete", {"id": "x"}),
+        FakeProvider.tool_call("globex.devices.delete", {"id": "x"}),
         _FINALIZE,
         executions=executions,
     )
@@ -212,7 +212,7 @@ async def test_denied_resume_persists_the_denial_result():
 async def test_unknown_call_id_leaves_the_checkpoint_resumable():
     executions: list[dict] = []
     session = _make_session(
-        FakeProvider.tool_call("REDACTED.devices.delete", {"id": "x"}),
+        FakeProvider.tool_call("globex.devices.delete", {"id": "x"}),
         _FINALIZE,
         executions=executions,
     )
@@ -244,7 +244,7 @@ async def test_unknown_call_id_leaves_the_checkpoint_resumable():
 async def test_duplicate_call_id_in_a_batch_is_rejected_before_anything_runs():
     executions: list[dict] = []
     session = _make_session(
-        FakeProvider.tool_call("REDACTED.devices.delete", {"id": "x"}),
+        FakeProvider.tool_call("globex.devices.delete", {"id": "x"}),
         _FINALIZE,
         executions=executions,
     )
@@ -275,8 +275,8 @@ async def test_single_call_resume_auto_denies_the_calls_it_did_not_rule_on():
     session = _make_session(
         FakeProvider.tool_calls(
             [
-                ("REDACTED.devices.delete", {"id": "a"}),
-                ("REDACTED.devices.delete", {"id": "b"}),
+                ("globex.devices.delete", {"id": "a"}),
+                ("globex.devices.delete", {"id": "b"}),
             ]
         ),
         _FINALIZE,
@@ -315,7 +315,7 @@ async def test_expired_approval_closes_the_open_call_in_the_store():
     must not keep a tool_use that nothing can ever answer."""
     executions: list[dict] = []
     session = _make_session(
-        FakeProvider.tool_call("REDACTED.devices.delete", {"id": "x"}),
+        FakeProvider.tool_call("globex.devices.delete", {"id": "x"}),
         _FINALIZE,
         executions=executions,
     )
@@ -345,7 +345,7 @@ async def test_check_approval_expiry_closes_the_open_call_even_when_nobody_ever_
     can find and close this out."""
     executions: list[dict] = []
     session = _make_session(
-        FakeProvider.tool_call("REDACTED.devices.delete", {"id": "x"}),
+        FakeProvider.tool_call("globex.devices.delete", {"id": "x"}),
         _FINALIZE,
         executions=executions,
     )

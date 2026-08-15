@@ -29,7 +29,7 @@ def test_model_selector_accepts_callable():
 
 def test_model_and_provider_selectors_are_independent():
     """The two selectors are independent fields — setting one doesn't
-    affect the other. REDACTED's tier router sets both."""
+    affect the other. a downstream consumer's tier router sets both."""
 
     def prov(ctx):
         return None

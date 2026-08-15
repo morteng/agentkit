@@ -33,8 +33,8 @@ def test_owner_index_key_escapes_the_owner_id():
 
 def test_memory_key_includes_full_scope():
     kb = KeyBuilder(prefix="agentkit")
-    scope = MemoryScope(namespace="REDACTED", user_id="u1")
-    assert "REDACTED" in kb.memory(scope, "k1")
+    scope = MemoryScope(namespace="globex", user_id="u1")
+    assert "globex" in kb.memory(scope, "k1")
     assert "u1" in kb.memory(scope, "k1")
 
 

@@ -386,7 +386,7 @@ opt-out is named — read why before reaching for it.
 
 ### Fixed
 - OpenRouter now encodes agentkit's canonical qualified tool names (for example,
-  `REDACTED.search` and `kit.current_time`) into OpenAI-compatible function names
+  `acme.search` and `kit.current_time`) into OpenAI-compatible function names
   at the provider boundary, and decodes streamed calls back before dispatch.
   Canonical names remain unchanged in routing, history, audit records, and UI
   events, including replayed tool-call history and named tool choices.
@@ -460,7 +460,7 @@ opt-out is named — read why before reaching for it.
 ## [0.14.1] - 2026-06-14
 
 ### Fixed
-- The finalize validator's Rule 1 (every claimed `action.tool` must correspond to a real tool call this turn) now normalizes server-qualified tool names before matching. A model that echoes a qualified name like `REDACTED.save_memory` in `actions_performed`, while the call log records the bare `save_memory`, no longer trips a false `fabricated_tool` violation and a needless finalize re-prompt on a legitimate action turn.
+- The finalize validator's Rule 1 (every claimed `action.tool` must correspond to a real tool call this turn) now normalizes server-qualified tool names before matching. A model that echoes a qualified name like `acme.save_memory` in `actions_performed`, while the call log records the bare `save_memory`, no longer trips a false `fabricated_tool` violation and a needless finalize re-prompt on a legitimate action turn.
 
 ## [0.14.0] - 2026-06-09
 

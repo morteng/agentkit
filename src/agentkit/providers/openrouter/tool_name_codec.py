@@ -1,6 +1,6 @@
 """Encode canonical agentkit tool names for OpenAI-compatible wire APIs.
 
-Agentkit uses qualified names (for example ``REDACTED.search``) internally.
+Agentkit uses qualified names (for example ``acme.search``) internally.
 OpenAI-compatible function schemas impose a stricter identifier grammar and do
 not accept dots.  This module keeps the canonical names unchanged in history,
 routing, and tool events while translating names only at the provider boundary.

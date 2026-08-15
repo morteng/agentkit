@@ -97,10 +97,10 @@ def test_unknown_tool_message_suggests_unique_qualified_suffix_match():
     tool. Point it at the routable qualified name with a 'did you mean'."""
     from agentkit.tools.spec import unknown_tool_message
 
-    known = ["REDACTED.web_search", "REDACTED.get_content", "kit.finalize"]
+    known = ["acme.web_search", "acme.get_content", "kit.finalize"]
 
     msg = unknown_tool_message("web_search", known)
-    assert msg == "unknown tool: web_search. Did you mean REDACTED.web_search?"
+    assert msg == "unknown tool: web_search. Did you mean acme.web_search?"
 
 
 def test_unknown_tool_message_no_suggestion_when_ambiguous_or_absent():
@@ -114,7 +114,7 @@ def test_unknown_tool_message_no_suggestion_when_ambiguous_or_absent():
     assert unknown_tool_message("search", ambiguous) == "unknown tool: search"
 
     # No suffix match at all.
-    assert unknown_tool_message("nope", ["REDACTED.web_search"]) == "unknown tool: nope"
+    assert unknown_tool_message("nope", ["acme.web_search"]) == "unknown tool: nope"
 
     # No known_names supplied — behaviour unchanged (terse).
     assert unknown_tool_message("web_search") == "unknown tool: web_search"
@@ -127,7 +127,7 @@ async def test_registry_unknown_bare_name_suggests_qualified_tool():
     naming the routable qualified name."""
 
     class _FakeMCPClient:
-        name = "REDACTED"
+        name = "acme"
 
         async def initialize(self) -> None: ...
         async def list_tools(self) -> list[ToolSpec]:
@@ -145,15 +145,15 @@ async def test_registry_unknown_bare_name_suggests_qualified_tool():
             return True
 
     reg = ToolRegistry()
-    reg.register_mcp_server("REDACTED", _FakeMCPClient())  # type: ignore[arg-type]
+    reg.register_mcp_server("acme", _FakeMCPClient())  # type: ignore[arg-type]
     await reg.initialize_mcp_servers()
 
     res = await reg.invoke(ToolCall(id="c", name="web_search", arguments={}), ctx=_FakeCtx())  # type: ignore[arg-type]
     assert res.status == "error"
     assert res.error is not None
     assert res.error.code == "unknown_tool"
-    assert "Did you mean REDACTED.web_search?" in res.error.message
-    assert "Did you mean REDACTED.web_search?" in (res.content[0].text or "")
+    assert "Did you mean acme.web_search?" in res.error.message
+    assert "Did you mean acme.web_search?" in (res.content[0].text or "")
 
 
 class _FakeCtx:

@@ -188,9 +188,9 @@ async def test_registry_refuses_a_capability_gated_tool_at_execution_time():
             content=[ContentBlockOut(type="text", text="purged")],
         )
 
-    spec = _spec("REDACTED.prune_facts", risk=RiskLevel.DESTRUCTIVE)
+    spec = _spec("acme.prune_facts", risk=RiskLevel.DESTRUCTIVE)
     plane = _plane(
-        {"REDACTED.prune_facts": ToolVisibility(capability="kb_admin")},
+        {"acme.prune_facts": ToolVisibility(capability="kb_admin")},
         context_of=lambda turn_ctx: cast("TurnContext", turn_ctx).metadata["tool_context"],
     )
     reg = ToolRegistry(authorizer=ToolPlaneAuthorizer(plane))

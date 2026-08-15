@@ -104,7 +104,7 @@ def _const_bindings(tree: ast.AST) -> dict[str, Any]:
 
 
 class ApprovalScanner:
-    def __init__(self, client_var: str = "REDACTED") -> None:
+    def __init__(self, client_var: str = "acme") -> None:
         self._var = client_var
 
     def _op_name(self, func: ast.Attribute) -> str | None:

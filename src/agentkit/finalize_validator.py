@@ -3,7 +3,7 @@
 Inspects the parsed ``Envelope`` plus the turn's tool-call log. Never
 reads user message text. See the design spec:
 ``docs/superpowers/specs/2026-05-10-envelope-intent-kind-design.md``
-in the REDACTED repo.
+in the consuming project's repo.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ def _bare_name(name: str) -> str:
     """Strip a single ``<server>.`` registry qualifier from a tool name.
 
     Tools registered through a server namespace are presented to the model
-    as ``<server>.<tool>`` (e.g. ``REDACTED.save_memory``). The model often
+    as ``<server>.<tool>`` (e.g. ``acme.save_memory``). The model often
     echoes that qualified form back in ``actions_performed[].tool``, while the
     turn's call-log summaries are keyed by the bare name. Rule 1 matches the
     two against each other, so both sides must be normalized to the bare form
@@ -133,14 +133,14 @@ def validate_envelope(  # noqa: PLR0912
     9. answer_evidence_consistent: answer_evidence='tool_results' requires at
        least one successful read tool call in this turn's tool log.
 
-    Rule 8 (CTA coverage) is consumer-specific and lives in REDACTED's
-    adapter, not here.
+    Rule 8 (CTA coverage) is consumer-specific and lives in a downstream
+    consumer's adapter, not here.
     """
     violations: list[Violation] = []
 
     # Names are normalized to their bare form on both sides (summary keys and
     # action.tool below) so a server-qualified name the model echoed back
-    # (``REDACTED.save_memory``) still matches the bare-keyed call log.
+    # (``acme.save_memory``) still matches the bare-keyed call log.
     successful_writes: dict[str, int] = {}
     any_error = False
     for c in tool_calls:

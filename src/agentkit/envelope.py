@@ -1,6 +1,6 @@
 """Canonical Envelope schema for terminal `finalize_response`-style tools.
 
-Consumers (e.g. REDACTED) register a thin tool wrapper whose input dict
+Consumers (e.g. a downstream agent product) register a thin tool wrapper whose input dict
 parses to ``Envelope``; the structural validator (see
 ``agentkit.finalize_validator``) inspects the parsed envelope plus the
 turn's tool-call log to decide whether the agent's "I'm done" claim is
@@ -9,7 +9,7 @@ internally consistent.
 Design intent: the model self-declares ``intent_kind`` per turn so the
 runtime never inspects user message text to infer whether work was
 expected. See ``docs/superpowers/specs/2026-05-10-envelope-intent-kind-design.md``
-in the REDACTED repo.
+in the consuming project's repo.
 """
 
 from __future__ import annotations

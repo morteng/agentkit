@@ -1,8 +1,8 @@
 """Consumer-supplied protocols: ``Detector`` and ``TokenMap``.
 
-agentkit owns the mechanism (the ``Firewall`` and the decorating provider); the
-consumer (REDACTED2) implements these two protocols with its Norwegian
-recognizers and its ``ContactInfo``-backed deterministic map. REDACTED/REDACTED do
+agentkit owns the mechanism (the ``Firewall`` and the decorating provider); one
+downstream consumer implements these two protocols with its own locale-specific
+recognizers and its ``ContactInfo``-backed deterministic map. Other consumers do
 not implement them at all — they pass ``tmap_resolver`` returning ``None`` and
 the firewall is inert.
 

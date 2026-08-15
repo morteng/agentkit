@@ -41,34 +41,34 @@ def test_predicate_untagged_tool_always_satisfied():
 
 
 def test_capability_missing_hides_tool():
-    vis = {"REDACTED.create_menu": ToolVisibility(baseline="hot", capability="restaurant_menu")}
+    vis = {"acme.create_menu": ToolVisibility(baseline="hot", capability="restaurant_menu")}
     plane = _plane(vis)
-    specs = [_spec("REDACTED.create_menu")]
+    specs = [_spec("acme.create_menu")]
     ctx = ToolContext(role="editor", role_rank=1, capabilities=frozenset())
     out = plane.resolve(ctx, specs)
     assert out == []
-    assert plane.rationale["REDACTED.create_menu"].tier == "hidden"
-    assert "capability" in plane.rationale["REDACTED.create_menu"].reason
+    assert plane.rationale["acme.create_menu"].tier == "hidden"
+    assert "capability" in plane.rationale["acme.create_menu"].reason
 
 
 def test_capability_present_keeps_tool_visible():
-    vis = {"REDACTED.create_menu": ToolVisibility(baseline="hot", capability="restaurant_menu")}
+    vis = {"acme.create_menu": ToolVisibility(baseline="hot", capability="restaurant_menu")}
     plane = _plane(vis)
-    specs = [_spec("REDACTED.create_menu")]
+    specs = [_spec("acme.create_menu")]
     ctx = ToolContext(role="editor", role_rank=1, capabilities=frozenset({"restaurant_menu"}))
     out = plane.resolve(ctx, specs)
-    assert [s.name for s in out] == ["REDACTED.create_menu"]
-    assert plane.rationale["REDACTED.create_menu"].tier == "hot"
+    assert [s.name for s in out] == ["acme.create_menu"]
+    assert plane.rationale["acme.create_menu"].tier == "hot"
 
 
 def test_capability_gate_beats_page_promotion():
     vis = {
-        "REDACTED.create_menu": ToolVisibility(
+        "acme.create_menu": ToolVisibility(
             baseline="discoverable", pages=["/dashboard/restaurant/*"], capability="restaurant_menu"
         )
     }
     plane = _plane(vis)
-    specs = [_spec("REDACTED.create_menu")]
+    specs = [_spec("acme.create_menu")]
     ctx = ToolContext(
         role="editor",
         role_rank=1,
@@ -77,4 +77,4 @@ def test_capability_gate_beats_page_promotion():
     )
     out = plane.resolve(ctx, specs)
     assert out == []
-    assert plane.rationale["REDACTED.create_menu"].tier == "hidden"
+    assert plane.rationale["acme.create_menu"].tier == "hidden"

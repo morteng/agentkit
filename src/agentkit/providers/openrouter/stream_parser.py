@@ -111,7 +111,7 @@ async def parse_openrouter_stream(  # noqa: PLR0912 — chunk-type dispatch + tr
             ``translator_in`` checkpoint — the upstream point where the openai
             SDK has just delivered ``delta.content`` and we are about to emit
             ``TextDelta``. Used to attribute chat truncation bugs to a layer
-            (REDACTED F2 investigation). No-op when not allowlisted.
+            (a downstream consumer's chat-truncation investigation). No-op when not allowlisted.
     """
     started = False
     finish_reason_raw: str | None = None
@@ -133,7 +133,7 @@ async def parse_openrouter_stream(  # noqa: PLR0912 — chunk-type dispatch + tr
         # gemini-2.5-flash-lite-preview, with and without reasoning) deliver
         # ``usage`` on the SAME chunk as the last delta + ``finish_reason``.
         # Capturing only inside ``if choice is None`` silently dropped every
-        # usage chunk on OpenRouter — see the REDACTED v0.128.0 ledger gap
+        # usage chunk on OpenRouter — see the downstream ledger-gap
         # incident (zero ``chat_session`` rows in usage_ledger after deploy).
         # Last-wins semantics are correct here: any chunk that re-publishes a
         # usage object is meant to supersede the prior value.
@@ -159,7 +159,7 @@ async def parse_openrouter_stream(  # noqa: PLR0912 — chunk-type dispatch + tr
         # Text content.
         if text := getattr(delta, "content", None):
             # Stream-trace checkpoint: ``delta.content`` as the openai SDK
-            # just delivered it. Diff against REDACTED's ``adapter_in`` and
+            # just delivered it. Diff against a downstream consumer's ``adapter_in`` and
             # ``adapter_out_cleaned`` to localize chat truncation bugs.
             if tracing_active:
                 trace_delta(session_id, "translator_in", text, extra={"model": model})

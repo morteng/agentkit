@@ -55,11 +55,11 @@ async def test_default_policy_requires_user_for_high_writes():
 @pytest.mark.asyncio
 async def test_per_tool_override_takes_precedence():
     gate = RiskBasedApprovalGate(
-        policy_overrides={"REDACTED.devices.control": ApprovalDecision.NEEDS_USER},
+        policy_overrides={"globex.devices.control": ApprovalDecision.NEEDS_USER},
     )
     decision = await gate.decide(
-        ToolCall(id="c1", name="REDACTED.devices.control", arguments={}),
-        _spec("REDACTED.devices.control", RiskLevel.READ),
+        ToolCall(id="c1", name="globex.devices.control", arguments={}),
+        _spec("globex.devices.control", RiskLevel.READ),
         ctx=None,
     )
     assert decision is ApprovalDecision.NEEDS_USER

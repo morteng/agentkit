@@ -45,7 +45,7 @@ _ROUTE_FAILURE_MARKERS = (
     # (observed live 2026-07-06: Amazon Bedrock's pooled ZDR route returned
     # "This organization has been disabled" under allow_fallbacks=false). With
     # no fallback permitted this is a route failure, not a transient error —
-    # treat it as refuse. See docs/spike-zdr-routing.md §6 (REDACTED2).
+    # treat it as refuse. See docs/spike-zdr-routing.md §6.
     "organization has been disabled",
 )
 
@@ -58,8 +58,9 @@ def _looks_like_route_failure(event: ErrorEvent) -> bool:
 class ScrubbingProvider(Provider):
     """A Provider decorator applying a ``Firewall`` at the egress boundary.
 
-    Inert when ``tmap_resolver`` returns ``None`` for a request (REDACTED/REDACTED
-    pay nothing): the request and every event pass through untouched.
+    Inert when ``tmap_resolver`` returns ``None`` for a request (consumers that
+    don't implement it pay nothing): the request and every event pass through
+    untouched.
     """
 
     name: str

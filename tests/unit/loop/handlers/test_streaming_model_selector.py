@@ -5,7 +5,7 @@ model rather than the session's constructor-time model.
 
 Orthogonal to provider_selector: model_selector swaps the model_id;
 provider_selector swaps the Provider instance (e.g. for per-tier
-reasoning_effort). REDACTED's tier router sets both off a shared tracker
+reasoning_effort). a downstream consumer's tier router sets both off a shared tracker
 so quality_model_id is actually called when the tier escalates.
 """
 
@@ -133,7 +133,7 @@ async def test_handler_falls_back_when_model_selector_key_missing():
 async def test_model_and_provider_selectors_compose():
     """Both selectors fire per iteration: provider_selector picks the Provider,
     model_selector picks the model_id. They're independent inputs to the
-    request — REDACTED's tier router uses both off a shared tracker so the
+    request — a downstream consumer's tier router uses both off a shared tracker so the
     model on the wire matches the chosen tier."""
     captured: list[tuple[str, str]] = []
 

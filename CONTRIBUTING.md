@@ -25,7 +25,7 @@ pattern.
 `tests/wire/snapshots/*.json` pins the on-the-wire shape of every event
 emitted by the loop. Any change to event field names, types, or default
 values shows up as a JSON diff in PR review — that diff IS the signal to
-consumers (REDACTED's translator, future consumers' frontends) that the
+consumers (a downstream consumer's translator, future consumers' frontends) that the
 wire contract changed.
 
 To accept a deliberate change:
@@ -44,20 +44,18 @@ need to do.
 
 ## Nightly cross-repo eval
 
-`.github/workflows/nightly-REDACTED.yml` runs once daily at 03:00 UTC. It
-checks out REDACTED at `main`, force-installs agentkit at the current `main`
-SHA, and runs REDACTED's full test suite plus the smoke-mode eval harness
-(5 canonical prompts × 3 replicates ≈ 3 minutes, ~$1 OpenRouter spend).
+A private downstream product runs its own wire-contract suite against this
+repo's `main` every night and raises an issue on its own tracker after two
+consecutive failures. That job lives in the consumer's repository, not here.
 
-**On a single failure:** the workflow logs red but does not page. This
-absorbs single-run flakiness in the eval scoring.
+It used to live here, checking the consumer out by name with a cross-repo
+token — which meant a public repo advertised a private product's name, its
+database and cache topology, its test layout and an issue number, all to catch
+regressions in a dependency. Inverting it costs nothing: this repo is public,
+so the consumer's checkout of it needs no credential, and a breakage gets
+filed where someone can fix it.
 
-**On two consecutive failures:** the workflow opens or comments on a
-GitHub Issue tagged `nightly-regression`, listing both failing run URLs.
-Investigate before the next agentkit tag.
-
-**Required repo secrets:** `REDACTED_REPO_TOKEN` (read-only token for
-morteng/REDACTED-cms-mvp), `OPENROUTER_API_KEY` (budget-capped via
-OpenRouter dashboard, ~$1/night).
-
-**Manual trigger:** Actions → nightly-REDACTED → Run workflow.
+If you maintain a consumer and want the same early warning, copy that shape:
+check out `morteng/agentkit` at `main` alongside your own tree, force-install
+it over your pin, and run your contract tests. Pin-bump regressions show up a
+tag early instead of on upgrade day.

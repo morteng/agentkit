@@ -59,7 +59,7 @@ class ToolError(BaseModel):
 class ToolSpec(BaseModel):
     """Provider-agnostic tool definition.
 
-    The ``name`` is the auto-namespaced identifier (e.g. ``REDACTED.devices.list``,
+    The ``name`` is the auto-namespaced identifier (e.g. ``acme.devices.list``,
     ``kit.finalize``). Registry assigns the prefix; tool authors pass the bare name.
     """
 
@@ -116,7 +116,7 @@ def unknown_tool_message(name: str, known_names: Iterable[str] | None = None) ->
     ping-ponging on a bare "unknown tool".
 
     A plain (un-dotted) name that suffix-matches exactly ONE registered
-    qualified name — ``web_search`` when only ``REDACTED.web_search`` is
+    qualified name — ``web_search`` when only ``acme.web_search`` is
     registered — is almost always the model copying an advertised tool minus
     its namespace prefix. Surface a "did you mean" pointing at the routable
     qualified name so the model retries with a name the registry will accept.
