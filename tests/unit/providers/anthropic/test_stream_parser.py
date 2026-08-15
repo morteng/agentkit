@@ -7,7 +7,8 @@ from typing import Any
 import pytest
 
 from agentkit.providers.anthropic.stream_parser import parse_anthropic_stream
-from agentkit.providers.base import ToolCallComplete, UsageEvent
+from agentkit.providers.base import ErrorEvent, ToolCallComplete, UsageEvent
+from agentkit.providers.tool_call_errors import INVALID_TOOL_ARGUMENTS_CODE
 
 _PARSER_LOGGER = "agentkit.providers.anthropic.stream_parser"
 
@@ -143,12 +144,21 @@ async def test_anthropic_stamps_model_and_provider_name_on_usage_event():
 
 
 @pytest.mark.asyncio
-async def test_truncated_tool_json_coerces_empty_args_and_logs(caplog):
-    """Truncated tool JSON at block-stop becomes ``arguments == {}`` and the call
-    is emitted ANYWAY — where the OpenRouter parser drops a call it cannot trust,
-    this one executes it on a corrupted intent. That divergence is deliberate and
-    unchanged here; this test is the tripwire that makes any future alignment a
-    visible contract change, and pins the warning that makes it greppable."""
+async def test_truncated_tool_json_is_rejected_never_defaulted_to_empty(caplog):
+    """Truncated tool JSON must not be dispatched with ``arguments == {}``.
+
+    This test used to pin the opposite: the parser emitted the call anyway on a
+    corrupted intent, and the assertion existed as a tripwire for whenever the
+    two providers were aligned. This is that alignment. ``rm_file`` with a
+    truncated ``{"path": "/etc/`` is the whole argument — an empty argument set
+    is not a neutral fallback, it is a different and more dangerous call than
+    the one the model tried to make.
+
+    Both parsers now resolve it the same way (see
+    ``agentkit.providers.tool_call_errors``): no ``ToolCallComplete``, one
+    recoverable ``ErrorEvent`` whose message is written for the model to read
+    and re-issue from.
+    """
     events_in: list[Any] = [
         _MessageStartEvent(usage=_MessageUsage(input_tokens=5)),
         _ContentBlockStartEvent(0, "toolu_1", "rm_file"),
@@ -162,18 +172,46 @@ async def test_truncated_tool_json_coerces_empty_args_and_logs(caplog):
             ev async for ev in parse_anthropic_stream(_aiter(events_in), model="anthropic/claude")
         ]
 
-    completes = [e for e in events_out if isinstance(e, ToolCallComplete)]
-    assert len(completes) == 1, "Anthropic emits the call despite unparseable args"
-    assert completes[0].arguments == {}
-    assert completes[0].tool_name == "rm_file"
+    assert [e for e in events_out if isinstance(e, ToolCallComplete)] == []
 
-    records = [
-        r for r in caplog.records if r.message == "anthropic.tool_args_unparseable_defaulted_empty"
-    ]
+    errors = [e for e in events_out if isinstance(e, ErrorEvent)]
+    assert len(errors) == 1
+    assert errors[0].code == INVALID_TOOL_ARGUMENTS_CODE
+    assert errors[0].recoverable is True
+    # Model-facing: it must name the call and say it did not run.
+    assert "rm_file" in errors[0].message
+    assert "NOT executed" in errors[0].message
+
+    records = [r for r in caplog.records if r.message == "anthropic.tool_args_unparseable_rejected"]
     assert len(records) == 1
     assert records[0].levelno == logging.WARNING
     assert records[0].tool_name == "rm_file"
     assert records[0].args_buf_len == len('{"path": "/etc/')
+
+
+@pytest.mark.asyncio
+async def test_tool_json_that_is_not_an_object_is_rejected():
+    """``json.loads`` accepts ``[1,2]`` / ``null`` / ``4``; a handler cannot.
+
+    The old ``args: dict = json.loads(...)`` annotation was a lie for these —
+    they parsed cleanly and were handed to the dispatcher as "arguments".
+    """
+    for payload in ("[1, 2]", "null", '"a string"', "42"):
+        events_in: list[Any] = [
+            _MessageStartEvent(usage=_MessageUsage(input_tokens=5)),
+            _ContentBlockStartEvent(0, "toolu_1", "add"),
+            _ContentBlockDeltaEvent(0, payload),
+            _ContentBlockStopEvent(0),
+            _MessageDeltaEvent(stop_reason="tool_use", output_tokens=3),
+            _MessageStopEvent(),
+        ]
+        events_out = [
+            ev async for ev in parse_anthropic_stream(_aiter(events_in), model="anthropic/claude")
+        ]
+        assert [e for e in events_out if isinstance(e, ToolCallComplete)] == [], payload
+        errors = [e for e in events_out if isinstance(e, ErrorEvent)]
+        assert len(errors) == 1, payload
+        assert errors[0].code == INVALID_TOOL_ARGUMENTS_CODE
 
 
 @pytest.mark.asyncio

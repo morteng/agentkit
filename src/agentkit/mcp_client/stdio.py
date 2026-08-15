@@ -2,11 +2,13 @@
 
 import asyncio
 import time
+from collections.abc import Callable
 from typing import Any
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from agentkit._logging import get_logger
 from agentkit.mcp_client.base import MCPClient, ProgressCallback
 from agentkit.tools.spec import (
     ApprovalPolicy,
@@ -18,9 +20,52 @@ from agentkit.tools.spec import (
     ToolSpec,
 )
 
+log = get_logger(__name__)
+
+MCPToolClassifier = Callable[[ToolSpec], ToolSpec | None]
+"""Consumer hook that assigns real agentkit metadata to an MCP tool.
+
+Called once per tool during :meth:`StdioMCPClient.list_tools` with the
+fail-closed default spec. Return a refined :class:`ToolSpec` (same ``name``)
+to classify the tool, or ``None`` to say "I do not know this tool" — which
+leaves it at the unclassified default, or drops it entirely under
+``require_classification``.
+"""
+
+UNCLASSIFIED_RISK = RiskLevel.HIGH_WRITE
+"""Risk assumed for an MCP tool nobody has classified.
+
+An external MCP server is code we did not write, describing itself. Its
+self-description says nothing about blast radius, so the only safe reading of
+"unknown" is "high" — ``HIGH_WRITE`` is the lowest rung that
+``DEFAULT_APPROVAL_POLICY`` routes to ``NEEDS_USER``. The previous default of
+``LOW_WRITE`` is auto-approved by that same table, which meant connecting a
+server silently granted it unattended write access.
+"""
+
+UNCLASSIFIED_APPROVAL = ApprovalPolicy.ALWAYS
+"""Approval policy for an unclassified MCP tool.
+
+``ALWAYS`` rather than ``BY_RISK`` on purpose: ``BY_RISK`` is only as safe as
+the deployment's risk table, and a consumer that remaps ``HIGH_WRITE`` to
+auto-approve for its own trusted builtins would silently re-open this hole for
+third-party servers. ``ALWAYS`` short-circuits the table. A consumer that
+genuinely wants an MCP tool unattended must say so per tool, via a classifier
+or ``RiskBasedApprovalGate(policy_overrides=...)``.
+"""
+
+UNCLASSIFIED_SIDE_EFFECTS = SideEffects.EXTERNAL_IRREVERSIBLE
+"""Side effects assumed for an unclassified MCP tool — the worst case."""
+
 
 class StdioMCPClient(MCPClient):
-    """Spawn an MCP server subprocess and speak JSON-RPC over its stdio."""
+    """Spawn an MCP server subprocess and speak JSON-RPC over its stdio.
+
+    Tools arrive unclassified: the MCP protocol carries a name, a description
+    and a JSON Schema, and nothing that maps onto agentkit's risk model. They
+    are therefore treated as the most dangerous thing they could be until a
+    consumer says otherwise — see :data:`UNCLASSIFIED_RISK` and ``classifier``.
+    """
 
     def __init__(
         self,
@@ -30,7 +75,28 @@ class StdioMCPClient(MCPClient):
         env: dict[str, str] | None = None,
         cwd: str | None = None,
         startup_timeout_seconds: float = 10.0,
+        classifier: MCPToolClassifier | None = None,
+        require_classification: bool = False,
     ) -> None:
+        """Create a client for one MCP server subprocess.
+
+        Args:
+            name: Server name; the registry uses it to namespace tool names.
+            command: argv of the server process. Must be non-empty.
+            env: Environment for the subprocess.
+            cwd: Working directory for the subprocess.
+            startup_timeout_seconds: Cap on how long the handshake may take.
+            classifier: Per-tool classification hook. Receives the fail-closed
+                default spec and returns the real one (same ``name``), or
+                ``None`` for "unknown".
+            require_classification: When True, a tool the classifier declines
+                to classify is not exposed at all — it is dropped from
+                ``list_tools`` and refused by ``call_tool``. Use this when an
+                MCP server must be fully described before any of it is
+                reachable. The default (False) still fails closed, just less
+                bluntly: unclassified tools stay callable but always require
+                user approval.
+        """
         if not command:
             raise ValueError("command must not be empty")
         self.name = name
@@ -41,6 +107,9 @@ class StdioMCPClient(MCPClient):
             cwd=cwd,
         )
         self._startup_timeout = startup_timeout_seconds
+        self._classifier = classifier
+        self._require_classification = require_classification
+        self._classified: set[str] = set()
         self._session: ClientSession | None = None
         self._stdio_ctx: Any = None
         self._client_ctx: Any = None
@@ -63,10 +132,47 @@ class StdioMCPClient(MCPClient):
             raise
 
     async def list_tools(self) -> list[ToolSpec]:
+        """List the server's tools, classified or fail-closed.
+
+        Every tool is first rendered as an unclassified spec (approval always
+        required); the consumer's ``classifier`` may then replace it with the
+        real thing. Under ``require_classification`` anything the classifier
+        declines is dropped here, which is what makes it uncallable — the
+        registry only ever learns about tools this method returns.
+        """
         if self._session is None:
             raise RuntimeError("call initialize() first")
         result = await self._session.list_tools()
-        return [_mcp_tool_to_spec(t) for t in result.tools]
+        specs: list[ToolSpec] = []
+        self._classified = set()
+        for tool in result.tools:
+            default = _mcp_tool_to_spec(tool)
+            refined = self._classifier(default) if self._classifier is not None else None
+            if refined is None:
+                if self._require_classification:
+                    log.warning(
+                        "mcp_tool_dropped_unclassified",
+                        server=self.name,
+                        tool=default.name,
+                    )
+                    continue
+                log.warning(
+                    "mcp_tool_unclassified",
+                    server=self.name,
+                    tool=default.name,
+                    risk=str(default.risk),
+                    requires_approval=str(default.requires_approval),
+                )
+                specs.append(default)
+                continue
+            if refined.name != default.name:
+                raise ValueError(
+                    "classifier must not rename a tool: "
+                    f"{default.name!r} was returned as {refined.name!r}"
+                )
+            self._classified.add(refined.name)
+            specs.append(refined)
+        return specs
 
     async def call_tool(
         self,
@@ -77,6 +183,23 @@ class StdioMCPClient(MCPClient):
     ) -> ToolResult:
         if self._session is None:
             raise RuntimeError("call initialize() first")
+        if self._require_classification and name not in self._classified:
+            # Belt to list_tools' braces: a caller holding a stale spec (or
+            # reaching past the registry) must not be able to run a tool the
+            # deployment never classified.
+            msg = (
+                f"tool {name!r} on MCP server {self.name!r} has not been classified; "
+                "this client requires an explicit classification before a tool is callable"
+            )
+            log.warning("mcp_call_refused_unclassified", server=self.name, tool=name)
+            return ToolResult(
+                call_id="",
+                status="denied",
+                content=[ContentBlockOut(type="text", text=msg)],
+                error=ToolError(code="mcp_tool_unclassified", message=msg),
+                duration_ms=0,
+                cached=False,
+            )
         # The MCP SDK's progress callback signature is
         # (progress, total, message) — adapt to our (message, progress, total)
         # so callers can forward straight to ctx.report_tool_progress.
@@ -142,22 +265,24 @@ class StdioMCPClient(MCPClient):
 
 
 def _mcp_tool_to_spec(tool: Any) -> ToolSpec:
-    """Translate the official ``mcp.types.Tool`` into our ``ToolSpec``.
+    """Translate the official ``mcp.types.Tool`` into an *unclassified* ToolSpec.
 
-    Risk-level and approval defaults are conservative: an MCP tool's spec
-    doesn't carry agentkit-specific metadata, so we treat all subprocess MCP
-    tools as ``LOW_WRITE`` by default. Consumers can wrap the registry to
-    override per tool.
+    An MCP tool description carries no agentkit metadata — no risk level, no
+    idempotency, no notion of reversibility — so this translation cannot know
+    what the tool does. It therefore assumes the worst on every axis, which is
+    the only reading of "unknown" that fails closed: the tool needs user
+    approval before it runs, every time, until a consumer classifies it (see
+    ``StdioMCPClient(classifier=...)``).
     """
     return ToolSpec(
         name=tool.name,
         description=tool.description or "",
         parameters=tool.inputSchema or {"type": "object"},
         returns=None,
-        risk=RiskLevel.LOW_WRITE,
+        risk=UNCLASSIFIED_RISK,
         idempotent=False,
-        side_effects=SideEffects.EXTERNAL_REVERSIBLE,
-        requires_approval=ApprovalPolicy.BY_RISK,
+        side_effects=UNCLASSIFIED_SIDE_EFFECTS,
+        requires_approval=UNCLASSIFIED_APPROVAL,
         cache_ttl_seconds=None,
         timeout_seconds=30.0,
     )

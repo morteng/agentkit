@@ -1,11 +1,15 @@
 """AgentConfig — Pydantic-Settings configuration for the agent runtime.
 
 Composed of nested config groups so consumers can override one slice at a time.
+
+Every field here is load-bearing: it changes runtime behaviour and a test proves
+it. A knob that only looks like a knob is a lie told to the consumer, so a
+setting the runtime cannot honour is deleted rather than kept for appearances.
 """
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from agentkit.store.memory import MemoryScope
@@ -29,9 +33,21 @@ class LoopConfig(BaseModel):
     # preserves the unconstrained re-prompt for consumers that have not
     # verified provider support.
     force_finalize_on_missing_reprompt: bool = False
+    # How many times a SuccessClaimGuard trip may interrupt the stream and
+    # re-prompt the model within one turn (see loop.handlers.streaming). Each
+    # trip costs a full extra model call, and the user has already seen the
+    # interrupted text, so the budget is small. Once it is spent the guard is
+    # disabled for the rest of the turn and the stream is allowed to finish:
+    # a completed answer beats a turn that loops or dies. 0 disables the
+    # correction entirely (the guard then only annotates ctx.metadata).
     max_claim_corrections: int = 1
+    # Wall-clock budget for a single chunk from the provider stream. A provider
+    # that accepts the request and then goes quiet (half-open socket, stuck
+    # gateway) otherwise parks the turn forever with the consumer stuck in a
+    # streaming state. On expiry the stream is closed and the turn takes the
+    # normal recoverable-error path (retried when nothing was emitted yet).
+    # Set 0 (or None) to wait indefinitely.
     streaming_chunk_timeout_seconds: float = 60.0
-    builtin_tool_note_enabled: bool = False  # the kit.note opt-in
     max_subagent_depth: int = 3  # how deep nested kit.subagent.spawn can recurse
     # Force-end the turn after N back-to-back errors from the same tool name.
     max_consecutive_tool_errors: int = 3
@@ -57,6 +73,10 @@ class ToolDispatchConfig(BaseModel):
 
 class EventsConfig(BaseModel):
     queue_size: int = 256
+    # Emit PhaseChanged onto the event stream. Off keeps the phase machine's
+    # internal chatter off the wire for consumers that only forward
+    # user-facing events; ``ctx.phase_log`` is recorded either way, so the
+    # per-phase timings survive for observability.
     publish_phase_changed: bool = True
 
 
@@ -73,6 +93,49 @@ class GuardConfig(BaseModel):
     success_claim: Any = None
     success_claim_enabled: bool = False
     approval_timeout_seconds: float = 24 * 60 * 60
+    # Per-principal turn rate limit, applied by the intent gate before any
+    # model call. On by default: a runtime with privileged tools and no limit
+    # lets one successful injection (or one runaway loop) spend without bound.
+    # The ceiling is well above interactive human use — see
+    # agentkit.guards.intent.DEFAULT_TURNS_PER_MINUTE. Set None to disable.
+    rate_limit_turns_per_minute: int | None = 60
+
+    # Cached because the limiter owns the sliding window: AgentSession rebuilds
+    # its deps every turn, and a gate rebuilt per turn would forget every turn
+    # it had just counted. Lives on the config object, which the consumer
+    # constructs once and shares across sessions — so the window spans the
+    # sessions of one principal, which is the point.
+    _intent_gate: Any = PrivateAttr(default=None)
+
+    def effective_intent_gate(self) -> Any:
+        """The IntentGate the loop should run, or None when nothing is configured.
+
+        Composes the built-in rate limiter with the consumer's own ``intent``
+        gate (limiter first, so an over-quota turn is rejected before any
+        custom check does work). Injecting ``intent`` therefore adds checks
+        rather than silently replacing the rate limit — set
+        ``rate_limit_turns_per_minute=None`` to opt out of it explicitly.
+        """
+        if self._intent_gate is None:
+            # Local import: agentkit.guards.intent imports the loop context,
+            # which must not depend on config. Same rationale as the ``Any``
+            # field types above.
+            from agentkit.guards.intent import (  # noqa: PLC0415
+                DefaultIntentGate,
+                InMemoryRateLimitCheck,
+            )
+
+            checks: list[Any] = []
+            if self.rate_limit_turns_per_minute is not None:
+                checks.append(
+                    InMemoryRateLimitCheck(turns_per_minute=self.rate_limit_turns_per_minute)
+                )
+            if self.intent is not None:
+                checks.append(self.intent)
+            if not checks:
+                return None
+            self._intent_gate = DefaultIntentGate(checks=checks)
+        return self._intent_gate
 
 
 class StoreBundle(BaseModel):
@@ -127,6 +190,15 @@ class AgentConfig(BaseSettings):
     # for progressive disclosure and Tool Plane routing. Typed Any to avoid
     # circular imports, same rationale as provider_selector and model_selector.
     tool_selector: Any = None
+    # Where the runtime writes its audit records. Set it once here and every
+    # tool dispatch and every approval verdict is recorded; leave it None and
+    # AgentSession installs agentkit.audit.NullAuditSink, which writes nothing.
+    # It is deliberately NOT a per-tool or per-client argument: that shape lets
+    # one forgotten keyword leave the single most destructive tool in a runtime
+    # unaudited while the harmless ones write rows. Wrap several sinks in
+    # MultiAuditSink. Typed Any to avoid a circular import, same rationale as
+    # the selectors above.
+    audit_sink: Any = None
     # Optional async hook fired at the top of CONTEXT_BUILD — i.e. once before
     # every LLM call within a turn, not just at turn boundaries (the loop runs
     # TOOL_RESULTS -> CONTEXT_BUILD -> STREAMING each iteration). Signature

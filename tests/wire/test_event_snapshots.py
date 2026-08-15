@@ -17,7 +17,12 @@ import pytest
 
 import agentkit.events  # noqa: F401 — ensures all submodules are imported so subclasses register
 from agentkit._messages import Usage
-from agentkit.events.approval import ApprovalDenied, ApprovalGranted, ApprovalNeeded
+from agentkit.events.approval import (
+    ApprovalDenied,
+    ApprovalGranted,
+    ApprovalNeeded,
+    ApprovalResolved,
+)
 from agentkit.events.base import BaseEvent
 from agentkit.events.lifecycle import (
     ErrorCode,
@@ -37,6 +42,7 @@ from agentkit.events.streaming import (
 )
 from agentkit.events.subagent import SubagentEnded, SubagentEvent, SubagentStarted
 from agentkit.events.tool import ToolCallProgress, ToolCallResult, ToolCallStarted
+from agentkit.guards.taint import TaintSource
 from agentkit.loop.phase import Phase
 from tests.wire._snapshot_helper import assert_event_snapshot
 
@@ -59,7 +65,8 @@ SUBAGENT_ID = "subagent_canonical"
 
 # ---------------------------------------------------------------------------
 # EVENT_FIXTURES: (EventClass, snapshot_name, event_kwargs)
-# 18 entries — one per concrete event class in the Event union.
+# One entry per concrete event class in the Event union; the meta-test below
+# fails if a class is added without one.
 # ---------------------------------------------------------------------------
 
 EVENT_FIXTURES: list[tuple[type[BaseEvent], str, dict[str, Any]]] = [
@@ -182,6 +189,17 @@ EVENT_FIXTURES: list[tuple[type[BaseEvent], str, dict[str, Any]]] = [
             "arguments": {"content_id": "cnt_abc123"},
             "rationale": "Destructive operation requires confirmation",
             "risk": "destructive",
+            # Both non-default: a snapshot of the empty case would not show a
+            # consumer what the reversibility axis or a taint entry looks like
+            # on the wire, which is the whole point of pinning this event.
+            "side_effects": "external_irreversible",
+            "taint": [
+                TaintSource(
+                    call_id="call_web_fetch",
+                    tool_name="web.fetch",
+                    kind="untrusted",
+                )
+            ],
             "timeout_at": datetime(2026, 1, 1, 0, 5, 0, tzinfo=UTC),
         },
     ),
@@ -199,6 +217,20 @@ EVENT_FIXTURES: list[tuple[type[BaseEvent], str, dict[str, Any]]] = [
         {
             "call_id": CALL_ID,
             "reason": "User declined",
+        },
+    ),
+    (
+        ApprovalResolved,
+        "approval_resolved",
+        {
+            "call_id": CALL_ID,
+            # The expiry case, deliberately: it is the outcome the other two
+            # approval events cannot express, and the reason this event exists.
+            "decision": "deny",
+            "resolved_by": "system",
+            "edited_args": None,
+            "reason": "approval window closed",
+            "expired": True,
         },
     ),
     # --- Subagent ---

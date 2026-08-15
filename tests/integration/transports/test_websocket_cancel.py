@@ -56,6 +56,13 @@ class _SlowProvider:
         return Decimal("0")
 
 
+class _StubAuth:
+    """Minimal WSAuth — ``mount_websocket_route`` has no allow-all default."""
+
+    async def authenticate(self, ws: WebSocket) -> bool:
+        return True
+
+
 def _make_app(provider) -> FastAPI:
     app = FastAPI()
 
@@ -76,7 +83,13 @@ def _make_app(provider) -> FastAPI:
         )
 
     mount_websocket_route(
-        app, path="/ws/agent", session_factory=session_factory, origin_allowlist=["*"]
+        app,
+        path="/ws/agent",
+        session_factory=session_factory,
+        # TestClient sends no Origin header; "" is the deliberate allowlist
+        # entry for non-browser clients ("*" is rejected outside dev mode).
+        origin_allowlist=[""],
+        auth=_StubAuth(),
     )
     return app
 

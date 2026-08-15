@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from agentkit._ids import EventId, SessionId, TurnId, new_id
 from agentkit._messages import Message
+from agentkit.guards.taint import TaintSource
 from agentkit.store.memory import MemoryScope, MemoryStore
 
 if TYPE_CHECKING:
@@ -50,6 +51,18 @@ class TurnContext:
     finalize_args: dict[str, Any] | None = None  # full tool-call arguments from the finalize call
     metadata: dict[str, Any] = field(default_factory=dict)  # type: ignore[reportUnknownVariableType]
     clock: Clock = field(default_factory=SystemClock)
+
+    # Set once a tool result marked ``Provenance.UNTRUSTED`` enters this turn
+    # (the dispatcher does it). Latches: a turn never becomes untainted again,
+    # and a fresh turn starts clean. Read by the taint guard, which denies
+    # every above-READ tool for the rest of the turn — see agentkit.guards.taint.
+    tainted: bool = False
+
+    # One entry per untrusted tool result this turn ingested, in order. Written
+    # by the same guard that sets ``tainted``; carried onto ApprovalNeeded so an
+    # approval card can name what the model read before it proposed the write,
+    # instead of showing a bare "tainted" badge.
+    taint_sources: list[TaintSource] = field(default_factory=list)  # type: ignore[reportUnknownVariableType]
 
     # Memory + event delivery + approval queue (filled in by Loop, not constructed manually).
     memory_store: MemoryStore | None = None
@@ -158,6 +171,14 @@ def to_checkpoint_payload(ctx: TurnContext) -> bytes:
             if k != "owner"  # rebuilt from session
         },
         "event_sequence": ctx.event_sequence,
+        # Taint must survive an approval suspend/resume: the resumed turn is
+        # the same turn, and dropping the flag would re-enable exactly the
+        # writes the guard denied before the suspend.
+        "tainted": ctx.tainted,
+        # Same reason as ``tainted``: the resumed turn is the same turn, and a
+        # second ApprovalNeeded raised after the resume must still say what
+        # tainted it.
+        "taint_sources": [s.model_dump(mode="json") for s in ctx.taint_sources],
     }
     return json.dumps(payload, default=str).encode("utf-8")
 

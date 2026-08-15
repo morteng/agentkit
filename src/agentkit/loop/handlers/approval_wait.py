@@ -11,7 +11,9 @@ from typing import TYPE_CHECKING, Any
 
 from agentkit._ids import EventId, new_id
 from agentkit.events import ApprovalNeeded
+from agentkit.events.approval import UNKNOWN_CLASSIFICATION
 from agentkit.events.lifecycle import TurnEndReason
+from agentkit.guards.taint import taint_sources
 from agentkit.loop.context import TurnContext
 from agentkit.loop.phase import Phase
 
@@ -29,9 +31,15 @@ async def handle_approval_wait(ctx: TurnContext, deps: dict[str, Any]) -> Phase:
     ctx.metadata["approval_timeout_at"] = timeout_at.isoformat()
 
     specs_by_name = {s.name: s for s in registry.list_specs()}
+    # Same list on every card of this suspend: taint is a property of the turn,
+    # not of the individual call.
+    ingested = taint_sources(ctx)
     for call in pending:
         spec = specs_by_name.get(call["name"])
-        risk_value = spec.risk.value if spec else "unknown"
+        risk_value = spec.risk.value if spec else UNKNOWN_CLASSIFICATION
+        # ``.value``, not the StrEnum member: the wire carries "external_irreversible",
+        # never "SideEffects.EXTERNAL_IRREVERSIBLE".
+        side_effects_value = spec.side_effects.value if spec else UNKNOWN_CLASSIFICATION
         ev = ApprovalNeeded(
             event_id=new_id(EventId),
             session_id=ctx.session_id,
@@ -42,6 +50,8 @@ async def handle_approval_wait(ctx: TurnContext, deps: dict[str, Any]) -> Phase:
             tool_name=call["name"],
             arguments=call["arguments"],
             risk=risk_value,
+            side_effects=side_effects_value,
+            taint=ingested,
             timeout_at=timeout_at,
         )
         if queue is not None:

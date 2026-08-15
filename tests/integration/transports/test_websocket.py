@@ -13,6 +13,19 @@ from agentkit.transports.websocket import mount_websocket_route
 
 pytestmark = pytest.mark.integration
 
+#: ``TestClient.websocket_connect`` sends no ``Origin`` header, like any
+#: non-browser client, so the handshake presents ``""``. Allowlisting it is the
+#: deliberate way to admit non-browser clients — see ``mount_websocket_route``,
+#: which rejects ``"*"`` outside dev mode.
+NO_ORIGIN = [""]
+
+
+class _StubAuth:
+    """Minimal WSAuth for tests. ``auth=`` is required, so every mount needs one."""
+
+    async def authenticate(self, ws: WebSocket) -> bool:
+        return True
+
 
 def _make_app() -> FastAPI:
     app = FastAPI()
@@ -37,7 +50,11 @@ def _make_app() -> FastAPI:
         )
 
     mount_websocket_route(
-        app, path="/ws/agent", session_factory=session_factory, origin_allowlist=["*"]
+        app,
+        path="/ws/agent",
+        session_factory=session_factory,
+        origin_allowlist=NO_ORIGIN,
+        auth=_StubAuth(),
     )
     return app
 

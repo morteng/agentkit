@@ -5,6 +5,11 @@ way out and passes provider events through unchanged on the way back — text
 deltas and tool-call args carry placeholders by design (the consumer's SSE tap
 rehydrates for display; tools get placeholders via the DENY default). Only
 ``ErrorEvent.message`` is scrubbed, so PII in errors never reaches logs/ledger.
+
+Being the choke-point, it is also where the policy's two refusals live:
+``blocked_models`` (checked before anything is built) and the ZDR route
+failure (recognised in the upstream error stream). Both are raised, never
+degraded into a quieter outcome.
 """
 
 from collections.abc import AsyncIterator, Callable
@@ -13,7 +18,7 @@ from decimal import Decimal
 from agentkit._messages import Message, Usage
 from agentkit.pii.audit import emit_audit
 from agentkit.pii.firewall import Firewall
-from agentkit.pii.policy import ZdrRouteUnavailable
+from agentkit.pii.policy import BlockedModelError, ZdrRouteUnavailable
 from agentkit.pii.protocols import TokenMap
 from agentkit.providers.base import (
     ErrorEvent,
@@ -87,6 +92,15 @@ class ScrubbingProvider(Provider):
                 yield event
             return
 
+        # ACTIVE — this request carries PII. Refuse a forbidden model before
+        # anything is built or sent; the policy field was previously inert.
+        policy = self._firewall.policy
+        if request.model in policy.blocked_models:
+            raise BlockedModelError(
+                f"model {request.model!r} is in the workspace's blocked_models — "
+                "refusing to send a PII-carrying request to it"
+            )
+
         scrubbed = self._firewall.scrub_request(request, tmap)
         routing = self._firewall.routing_prefs()
         if routing is not None:
@@ -94,7 +108,7 @@ class ScrubbingProvider(Provider):
 
         emit_audit(self._firewall.build_audit(scrubbed))
 
-        require_zdr = self._firewall.policy.require_zdr
+        require_zdr = policy.require_zdr
         async for event in self._inner.stream(scrubbed):
             if isinstance(event, ErrorEvent):
                 if require_zdr and _looks_like_route_failure(event):

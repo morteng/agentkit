@@ -8,6 +8,14 @@
   "risk": "destructive",
   "sequence": 1,
   "session_id": "sess_canonical",
+  "side_effects": "external_irreversible",
+  "taint": [
+    {
+      "call_id": "call_web_fetch",
+      "kind": "untrusted",
+      "tool_name": "web.fetch"
+    }
+  ],
   "timeout_at": "2026-01-01T00:05:00Z",
   "tool_name": "REDACTED.delete_content",
   "ts": "2026-01-01T00:00:00Z",

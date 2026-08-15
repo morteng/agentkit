@@ -2,11 +2,20 @@
 
 from collections.abc import Iterable
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, Field
 
+from agentkit._content import Provenance
 from agentkit.pii.types import RehydratePolicy
+
+DEFAULT_TOOL_TIMEOUT_SECONDS = 60.0
+"""Fallback wall-clock budget for a single tool invocation.
+
+Applied by :meth:`agentkit.tools.registry.ToolRegistry.invoke` when a spec
+declares no usable ``timeout_seconds`` (``None`` or non-positive). A hung MCP
+server must never hang the turn.
+"""
 
 
 class RiskLevel(StrEnum):
@@ -86,6 +95,15 @@ class ToolResult(BaseModel):
     error: ToolError | None = None
     duration_ms: int = 0
     cached: bool = False
+    provenance: Provenance = Provenance.SYSTEM
+    """Trust level of the content this result carries.
+
+    Defaults to ``SYSTEM``, so a tool written before provenance existed keeps
+    its previous (trusted) treatment. A tool that hands the model third-party
+    text — web fetch, inbox read, another tenant's records — must set
+    ``Provenance.UNTRUSTED``: that is what taints the turn and disables write
+    actions for the rest of it. See :mod:`agentkit.guards.taint`.
+    """
 
 
 def unknown_tool_message(name: str, known_names: Iterable[str] | None = None) -> str:
@@ -120,3 +138,103 @@ def unknown_tool_message(name: str, known_names: Iterable[str] | None = None) ->
         if len(matches) == 1:
             return f"unknown tool: {name}. Did you mean {matches[0]}?"
     return f"unknown tool: {name}"
+
+
+# Mapping from JSON Schema primitive type name to the Python types that
+# satisfy it. ``integer``/``number`` are handled specially so ``True`` — an
+# ``int`` subclass in Python — does not pass as a number.
+_JSON_TYPE_CHECKS: dict[str, tuple[type, ...]] = {
+    "string": (str,),
+    "integer": (int,),
+    "number": (int, float),
+    "boolean": (bool,),
+    "array": (list,),
+    "object": (dict,),
+    "null": (type(None),),
+}
+
+
+def _type_matches(json_type: str, value: Any) -> bool:
+    expected = _JSON_TYPE_CHECKS.get(json_type)
+    if expected is None:
+        return True  # unknown/extension type keyword — do not second-guess it
+    if json_type in ("integer", "number") and isinstance(value, bool):
+        return False
+    return isinstance(value, expected)
+
+
+def validate_tool_arguments(schema: dict[str, Any] | None, arguments: dict[str, Any]) -> list[str]:
+    """Structurally validate model-produced ``arguments`` against a tool schema.
+
+    Deliberately *not* a JSON Schema implementation: ``jsonschema`` is not a
+    dependency of this library and adding a runtime dependency for a
+    pre-dispatch sanity check is not worth it. What is checked is the subset
+    that catches the mistakes models actually make and that no reasonable
+    schema disagrees about:
+
+    * every ``required`` property is present;
+    * no unexpected top-level keys when ``additionalProperties`` is ``false``;
+    * declared top-level ``type`` keywords match the value's Python type
+      (including ``type`` given as a list of alternatives).
+
+    Nested objects, ``enum``, ``format``, and the combinators are left to the
+    tool itself — a conservative check must never reject a call a real
+    validator would accept. Returns the list of problems, empty when the
+    arguments are acceptable.
+    """
+    if schema is None:
+        return []
+    declared_type = schema.get("type")
+    if declared_type is not None and declared_type != "object":
+        return []  # not an object schema — nothing structural to say
+
+    problems: list[str] = []
+
+    raw_required = schema.get("required")
+    if isinstance(raw_required, list):
+        required = cast("list[Any]", raw_required)
+        missing = [str(k) for k in required if str(k) not in arguments]
+        if missing:
+            problems.append(f"missing required argument(s): {', '.join(sorted(missing))}")
+
+    raw_properties = schema.get("properties")
+    properties: dict[str, Any] = (
+        cast("dict[str, Any]", raw_properties) if isinstance(raw_properties, dict) else {}
+    )
+
+    if schema.get("additionalProperties") is False and properties:
+        unexpected = [k for k in arguments if k not in properties]
+        if unexpected:
+            problems.append(
+                f"unexpected argument(s): {', '.join(sorted(unexpected))}. "
+                f"Allowed: {', '.join(sorted(properties))}"
+            )
+
+    for key, value in arguments.items():
+        prop = properties.get(key)
+        if not isinstance(prop, dict):
+            continue
+        expected = cast("dict[str, Any]", prop).get("type")
+        if isinstance(expected, str):
+            if not _type_matches(expected, value):
+                problems.append(
+                    f"argument {key!r} must be of type {expected}, got {type(value).__name__}"
+                )
+        elif isinstance(expected, list) and expected:
+            alternatives = [str(t) for t in cast("list[Any]", expected)]
+            if not any(_type_matches(t, value) for t in alternatives):
+                problems.append(
+                    f"argument {key!r} must be one of type {', '.join(alternatives)}, "
+                    f"got {type(value).__name__}"
+                )
+
+    return problems
+
+
+def invalid_arguments_message(name: str, problems: Iterable[str]) -> str:
+    """Model-readable text for a call whose arguments failed validation."""
+    joined = "; ".join(problems)
+    return (
+        f"invalid arguments for {name}: {joined}. "
+        f"The call was not executed — retry with arguments matching the tool's schema."
+    )

@@ -7,10 +7,11 @@ this parser maps each event variant onto agentkit's normalised type.
 import json
 import logging
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, cast
 
 from agentkit._messages import Usage
 from agentkit.providers.base import (
+    ErrorEvent,
     MessageComplete,
     MessageStart,
     ProviderEvent,
@@ -20,6 +21,10 @@ from agentkit.providers.base import (
     ToolCallDelta,
     ToolCallStart,
     UsageEvent,
+)
+from agentkit.providers.tool_call_errors import (
+    INVALID_TOOL_ARGUMENTS_CODE,
+    invalid_arguments_message,
 )
 
 logger = logging.getLogger(__name__)
@@ -127,29 +132,63 @@ def _handle_block_stop(
     index: int,
     pending_tool_args: dict[int, str],
     pending_tool_meta: dict[int, dict[str, Any]],
-) -> ToolCallComplete | None:
-    """Build a ToolCallComplete event when a tool-use block closes, or None."""
+) -> ProviderEvent | None:
+    """Resolve a closing tool-use block into exactly one terminal event.
+
+    Either a dispatchable :class:`ToolCallComplete` or an :class:`ErrorEvent`
+    explaining why the call could not be dispatched — never a guess. This used
+    to emit the call with ``arguments={}`` on unparseable JSON, which is the
+    same defect the OpenRouter parser had; see
+    :mod:`agentkit.providers.tool_call_errors` for why an empty argument set is
+    the most dangerous possible reading of a corrupted call.
+
+    Unlike the OpenRouter path there is no ``json_repair`` pass. The failure
+    mode here is truncation (the SDK closes open blocks on ``max_tokens``), and
+    repairing a *truncated* argument object invents a complete-looking call out
+    of a half-streamed one — the guess this change exists to stop.
+    """
     if index not in pending_tool_meta:
         return None
     meta = pending_tool_meta[index]
     args_raw = pending_tool_args.get(index, "") or "{}"
     try:
-        args: dict[str, Any] = json.loads(args_raw)
+        # `object`, not `dict[str, Any]`. The model controls this string, so the
+        # annotation must describe what json.loads can actually return — and the
+        # isinstance check below is the thing that makes it a dict. Annotating it
+        # as a dict up front makes that check look redundant to a type checker
+        # while leaving the runtime hazard exactly where it was.
+        args: object = json.loads(args_raw)
     except json.JSONDecodeError:
-        # Truncated tool JSON (the SDK closes open blocks on max_tokens). Where
-        # the OpenRouter parser DROPS a call it cannot trust, this one emits it
-        # with empty arguments — a known divergence, deliberately left unchanged
-        # until logs say whether it fires. Never log ``args_raw`` itself: it can
-        # carry user text. Only its length.
+        # Never log ``args_raw`` itself: it can carry user text. Only its length.
         logger.warning(
-            "anthropic.tool_args_unparseable_defaulted_empty",
+            "anthropic.tool_args_unparseable_rejected",
             extra={"tool_name": meta["name"], "args_buf_len": len(args_raw)},
         )
-        args = {}
+        return ErrorEvent(
+            code=INVALID_TOOL_ARGUMENTS_CODE,
+            message=invalid_arguments_message(tool_name=meta["name"], call_id=meta["call_id"]),
+            recoverable=True,
+        )
+    if not isinstance(args, dict):
+        # Valid JSON that is not an argument object (``[1,2]``, ``null``, ``4``).
+        # ``json.loads`` accepts these; a tool handler cannot use them.
+        logger.warning(
+            "anthropic.tool_args_not_an_object",
+            extra={"tool_name": meta["name"], "args_buf_len": len(args_raw)},
+        )
+        return ErrorEvent(
+            code=INVALID_TOOL_ARGUMENTS_CODE,
+            message=invalid_arguments_message(tool_name=meta["name"], call_id=meta["call_id"]),
+            recoverable=True,
+        )
     return ToolCallComplete(
         call_id=meta["call_id"],
         tool_name=meta["name"],
-        arguments=args,
+        # The isinstance above narrows to `dict`, but JSON gives no key/value
+        # types, so this is where the claim "the keys are strings" is made. It
+        # holds because JSON object keys are strings by grammar — not because
+        # anything here checked.
+        arguments=cast("dict[str, Any]", args),
     )
 
 

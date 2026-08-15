@@ -6,6 +6,290 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
+## [0.22.0] - 2026-08-15
+
+Security-hardening release. Several defaults changed from "convenient" to
+"fail closed", two subsystems that did not do what their names promised were
+deleted rather than patched, and the audit's headline control — provenance and
+taint tracking — landed. **Read the BREAKING section before upgrading**: this
+release will refuse things your deployment currently allows, and that is the
+point.
+
+### Added
+
+- **Provenance and taint tracking** — the anti-prompt-injection control.
+  `Provenance` (`SYSTEM` | `PRINCIPAL` | `UNTRUSTED`) on `ToolResult` and
+  `ToolResultBlock`, defaulting to `SYSTEM` so existing tools are unaffected. A
+  result marked `UNTRUSTED` taints the turn (`TurnContext.tainted`, latching),
+  and from that point every tool above `READ` is denied for the rest of the
+  turn: the model has read third-party text, so a write it proposes can no
+  longer be attributed to the principal. Denial is a normal
+  `ToolResult(status="denied", error.code="tainted_turn")` phrased for the
+  model to relay — never a silent no-op, never an exception. The flag survives
+  an approval suspend/resume through the checkpoint and propagates to subagent
+  children. Enforced in `ToolRegistry.invoke`, on by default, fail-closed
+  (unknown risk counts as a write; a policy that raises denies). Configure via
+  `ToolRegistry(taint_policy=RiskBasedTaintPolicy(max_risk_when_tainted=...))`
+  or opt out with `NullTaintPolicy()`. Nothing infers provenance: a tool must
+  mark its own results, and no in-tree builtin ingests third-party content
+  yet, so the guard is inert until your tools opt in. `ApprovalNeeded.taint`
+  lists what tainted the turn so an approval card can name it. New public
+  surface: `agentkit.Provenance`, `agentkit.guards.{TaintPolicy,
+  RiskBasedTaintPolicy, NullTaintPolicy, TaintSource, is_tainted, mark_taint,
+  taint_sources, TAINT_DENIAL_MESSAGE, TAINT_DENIAL_CODE}`.
+- **Execution-time authorization gate.** `ToolRegistry` accepts an
+  `authorizer` (constructor or `set_authorizer`) consulted before the handler
+  runs; denial returns `status="denied"`, `error.code="not_authorized"`.
+  `ToolPlaneAuthorizer` re-runs the ToolPlane's own `_decide` at invoke time,
+  so `min_role` / `mcp_clients` / capability gates are *enforced* rather than
+  merely un-advertised. `SubagentToolAuthorizer` + `chain_authorizers` express
+  the subagent allowlist at the same choke point. `AgentSession` wires both
+  automatically (see BREAKING #6). New `ToolRegistry.authorizer` property so a
+  caller can compose with an existing gate instead of replacing it.
+- **`RiskBasedApprovalGate.strict()`** — one-line security-sensitive preset
+  (`config.guards.approval = RiskBasedApprovalGate.strict()`). Only `READ`
+  auto-approves, and a third-party spec's `ApprovalPolicy.NEVER` is honoured
+  only for `kit.*` tools (`spec_never_prefixes`), because a server declaring
+  "no approval needed" about itself is not evidence. New
+  `STRICT_APPROVAL_POLICY`, `KIT_NAMESPACE_PREFIXES`.
+- **`SecretDetector` / `SecretPolicy`** — high-entropy credential detection for
+  the PII firewall: PEM private-key blocks, JWTs, vendor-prefixed keys (`sk-`,
+  `ghp_`, `AKIA`, `AIza`, …), plus an entropy path over base64url and hex runs.
+  Includes a field-name rule (a value under `password` / `api_key` /
+  `refresh_token` is redacted regardless of entropy — what catches
+  human-chosen passwords). Default action `NEVER_SEND`. Every threshold is a
+  `SecretPolicy` field; digest-shaped hex is exempt by default (a 40-char hex
+  string is a git SHA far more often than a key) — flip with
+  `exempt_digest_shaped_hex=False`.
+- **`CompositeDetector`** (`with_defaults()`, `default_detector()`) closes the
+  "register my patterns == silently drop the built-in ones" hole, and
+  `FieldContextDetector` is a runtime-checkable optional extension
+  (`detect_in_field(text, field)`) so detectors can see the enclosing JSON key.
+  `merge_spans` gives one deterministic overlap resolution.
+- **`ApprovalResolved` event** — one terminal event for every approval outcome,
+  including the **timeout path**, which previously emitted nothing at all and
+  left a client unable to distinguish an expired approval from a hung turn.
+  Carries `decision`, `resolved_by` (owner, or `"system"`), `expired`.
+  `ApprovalNeeded` also gained `side_effects`, because reversibility is a
+  separate axis from risk and every consumer was rebuilding that map by hand.
+- **Per-principal turn rate limiting**, on by default at 60 turns/minute
+  (`GuardConfig.rate_limit_turns_per_minute`, `None` to disable). Keyed on the
+  runtime-stamped owner via the new `verified_principal()`, not on anything the
+  model can influence, so a burst funnelled through spawned subagents counts
+  against the principal that started it.
+- `ToolSpec.timeout_seconds` is now **enforced** (`DEFAULT_TOOL_TIMEOUT_SECONDS
+  = 60.0` when a spec declares none); expiry cancels the handler and returns
+  `status="timeout"`. Structural argument validation before dispatch
+  (`validate_tool_arguments`) returns `error.code="invalid_arguments"` rather
+  than dispatching a call the schema already rejects; disable with
+  `ToolRegistry(validate_arguments=False)`.
+- `AgentSession(history_limit=...)` + `DEFAULT_HISTORY_LIMIT`, plus
+  `SYNTHETIC_TOOL_RESULT_ANNOTATION` for filtering synthesized tool results.
+- `Loop(publish_phase_changed=...)` (wired from
+  `AgentConfig.events.publish_phase_changed`), `LoopConfig.max_claim_corrections`
+  and `LoopConfig.streaming_chunk_timeout_seconds` are now actually threaded
+  into the loop by `AgentSession`.
+- `StdioMCPClient(classifier=…, require_classification=…)` for vouching for
+  external MCP tools; `RedisEventBus(buffer_ttl_seconds=…)`;
+  `WSApprovalAuthority` / `SameSocketApprovalAuthority`; `InsecureAllowAllAuth`
+  / `InsecureTransportWarning`; `validate_memory_key` / `MAX_MEMORY_KEY_LENGTH`.
+
+### Changed
+
+- `TurnEnded.metrics` is populated for real (tokens from `ctx.metadata["usages"]`,
+  cost from `Provider.estimate_cost`, duration, tool-call count, iterations)
+  instead of always being an empty `TurnMetrics()`.
+- Every path into `Phase.ERRORED` now logs with context, stashes
+  `ctx.metadata["turn_error"]`, and emits an `Errored` event. Three failure
+  modes previously ended a turn in silence.
+- `agentkit.providers.tool_call_errors` gives both stream parsers one answer for
+  an undeliverable tool call. The OpenRouter constants
+  (`INVALID_TOOL_ARGUMENTS_CODE`, `INCOMPLETE_TOOL_CALL_CODE`) keep working from
+  their old location.
+- `kit.finalize`'s declared schema now matches its two real argument shapes
+  (bare `{"reason"}` or the full `finalize_response` envelope) and requires
+  nothing. It previously advertised `reason` as required, which was true of
+  neither the handler nor any caller — invisible until argument validation
+  started enforcing declarations. `TurnEnded.summary` now falls back to the
+  envelope's `summary`, so envelope-shaped calls stop ending turns with a null
+  summary.
+- The `examples/with_mcp_tools` demo passes a `classifier`; without one it would
+  now stop and wait for an approval nobody is there to grant.
+
+### Fixed
+
+- **Resumed turns were never persisted.** Tool results and the final reply
+  produced after `resume_with_approval` were dropped on the floor. Also: a
+  cancelled or abandoned turn now closes its dangling `tool_use` blocks with a
+  synthetic `cancelled` result, so turn N+1 does not load a transcript that
+  providers hard-reject; legacy transcripts are repaired in memory on load.
+- **A bad `call_id` no longer destroys the checkpoint.** Call ids are validated
+  (duplicates in a batch included) *before* the delete, so a rejected resume
+  stays resumable. Approvals left unresolved by a partial resume are explicitly
+  auto-denied with a real `ApprovalDenied` event instead of vanishing.
+- **Silent history truncation.** `list_messages` was called with an implicit
+  limit; the cut is now explicit, tool-pair-safe, logged, and surfaced on
+  `ctx.metadata["history_load"]`.
+- **`ToolPlane` leaked resolution state across concurrent sessions** via
+  instance attributes. `resolve_detailed()` is pure; `plane.rationale` /
+  `.last_discoverable` are now per-execution-context.
+- **Subagent context injection.** A spawn's `context` could overwrite
+  `subagent_depth`, `owner`, `allowed_tools` and other runtime-stamped keys —
+  i.e. a model could deepen its own recursion budget or widen its own tool set.
+  Reserved keys now hard-reject with `SubagentContextRejected`, and trusted
+  values are stamped after the merge.
+- **A subagent's tool allowlist is now enforced**, not advertised: children get
+  a default-deny `RestrictedToolRegistry` view, a dispatcher rebuilt against it,
+  and their own nested dispatcher so a grandchild cannot regain what the child
+  lost. Approval inside a subagent is auto-denied (it could never be resolved)
+  rather than silently dropped, and no orphan checkpoint is writable.
+- **Malformed streamed tool calls are no longer executed on guessed arguments.**
+  Both parsers now emit a recoverable `ErrorEvent` instead — OpenRouter used to
+  drop the call silently, Anthropic used to dispatch it with `arguments={}`. For
+  a tool like "delete everything matching filter X", an empty filter is the most
+  destructive possible reading of a corrupted call.
+- **Redis key injection.** Every model- or request-derived key segment is
+  percent-encoded; the memory key index moved to the reserved `%index` suffix,
+  which no encoded user key can produce. `RedisSessionStore.append_message` is a
+  single MULTI (a message could exist in the list while the document had never
+  heard of it), and `message_count` derives from `LLEN` instead of a
+  read-modify-write that lost concurrent increments. `touch()` refreshes the
+  messages TTL, the owner index carries a TTL, and `list_for_owner` prunes
+  entries whose document is gone.
+- **`PiiPolicy.blocked_models` was read by nothing.** Now enforced on
+  PII-carrying requests (`BlockedModelError`). `ThinkingBlock.text` is scrubbed
+  (unsigned blocks only — rewriting a signed one invalidates it). Overlapping
+  detector spans resolve deterministically instead of corrupting the output.
+- The success-claim guard could loop forever; corrections are now counted
+  against `max_claim_corrections`, delivered through the one path the
+  MessageBuilder reads, and the guard stands down when the budget is spent.
+  Each chunk await is bounded by `streaming_chunk_timeout_seconds`, and streams
+  are closed on every exit path.
+- A tool handler that raises, hangs, or is cancelled can no longer kill the turn
+  or its sibling calls; each failure maps to the correct positional result.
+- `RedisEventBus` buffer keys had no TTL — a replay buffer for a dead session
+  lived forever.
+- Model-authored memory keys are validated at the tool boundary (a readable
+  `invalid_memory_key` error) and again in the store.
+
+### BREAKING
+
+Each item says what to change. Where the old behaviour is still available, the
+opt-out is named — read why before reaching for it.
+
+1. **`mount_websocket_route(auth=…)` is now required** (no default). A missing,
+   `None`, or malformed authenticator raises `TypeError` at *mount* time.
+   Migration: implement `WSAuth` (`async def authenticate(ws) -> bool`) against
+   your own token store. `InsecureAllowAllAuth()` restores the old behaviour
+   and warns on construction — but the old behaviour was "anyone who can reach
+   the port gets the session's full tool surface, privileged tools included",
+   so use it for local development only. Promote the warning to an error in CI
+   with `warnings.simplefilter("error", InsecureTransportWarning)`. The private
+   `_AllowAllAuth` is gone.
+2. **`origin_allowlist=["*"]` raises `ValueError`** unless you also pass
+   `dev_mode=True`. Migration: list real origins. Non-browser clients send no
+   `Origin` header at all — allowlist `""` for those instead of the wildcard.
+3. **External stdio MCP tools now require user approval by default.** An
+   unclassified tool is treated as `HIGH_WRITE` + `ApprovalPolicy.ALWAYS` +
+   `EXTERNAL_IRREVERSIBLE`, because MCP carries nothing that maps onto a risk
+   model and the old default (`LOW_WRITE`, silently auto-approved) meant any
+   MCP server could hand you a destructive tool that never prompted. Migration:
+   pass `StdioMCPClient(classifier=…)` to vouch for the tools you actually know
+   (return `None` for the rest and they stay fail-closed), or add
+   `RiskBasedApprovalGate(policy_overrides={"srv.tool": AUTO_APPROVE})`.
+   `ALWAYS` is deliberate — `BY_RISK` would be re-opened by any deployment that
+   remaps `HIGH_WRITE`.
+4. **`ToolRegistry.invoke` no longer executes unconditionally.** A registered
+   tool can come back `denied` (taint or authorizer), `error`
+   (`invalid_arguments`), or `timeout`. Migration: handle those statuses — they
+   are ordinary `ToolResult`s, not exceptions. Per-gate opt-outs:
+   `taint_policy=NullTaintPolicy()`, `validate_arguments=False`,
+   `default_timeout_seconds=…`.
+5. **A subagent's tool set is genuinely restricted.** `tools=[]` now means
+   "finalize only", and a child that reaches for a parent tool it was not
+   granted gets an unknown/denied result. A spawn `context` containing a
+   reserved key (`subagent_depth`, `owner`, `allowed_tools`, …) raises
+   `SubagentContextRejected` where it previously merged. Migration: list the
+   tools each subagent actually needs.
+6. **`AgentSession` installs an execution-time authorizer on your registry.**
+   If `config.tool_selector` is a `ToolPlane`, a tool that resolves to `hidden`
+   is now *refused at invoke*, not merely left out of the advertised catalog —
+   a model that names it from an earlier turn or an injected instruction no
+   longer reaches the handler. `SubagentToolAuthorizer` is chained in and is
+   inert outside subagent contexts. Any authorizer you installed yourself is
+   preserved and runs first. Migration: if a tool must stay callable while
+   hidden, adjust `deny_tiers` or the plane's decision; note that the registry
+   is mutated, so sharing one registry across sessions with different planes
+   means the newest session's plane wins.
+7. **Rate limiting is on by default** at 60 turns/minute per principal. Under
+   the previous release the knob existed but no wiring consulted it. Migration:
+   `AgentConfig().guards.rate_limit_turns_per_minute = None` to disable, or
+   raise the ceiling. In-process state — N workers admit up to N× the limit;
+   swap in a Redis-backed `IntentCheck` for a real distributed limit. A
+   consumer-supplied `guards.intent` gate now runs *after* the limiter instead
+   of replacing it.
+8. **`agentkit.codeexec` is removed** (`execute`, `SAFE_MODULES`, `ExecLimits`,
+   `ExecutionResult`, `Code*Error`). Its AST allowlist did not sandbox: the
+   escape `"{0.ping.__globals__[API_TOKEN]}".format(client)` returns the host
+   module's secret, and `str.format` traversal happens at runtime inside a
+   string where an AST allowlist cannot see it. Removing `format` would not
+   close the class of bug (`format_map`, `%`-formatting, any method on any
+   injected object). Migration: run model-authored code in a real isolate
+   (subprocess with seccomp, container, WASM) or not at all. There is no
+   in-library replacement, deliberately.
+9. **`agentkit.tools.cache` is removed** (`ToolResultCache`, `cache_key`). It
+   had no consumer, and its key was a global `sha256(name, args)` with no
+   session or tenant component — wiring it as-is would have served one user's
+   tool results to another. `ToolSpec.cache_ttl_seconds` remains as declarative
+   metadata with no in-library consumer.
+10. **`AgentConfig.loop.builtin_tool_note_enabled` is removed.** It could never
+    work: the consumer owns the `ToolRegistry`, so a loop-config flag cannot
+    register a tool. Migration:
+    `registry.register_builtin(NOTE_SPEC, note_handler)`. Pydantic
+    `extra="ignore"` means an existing env var or kwarg will not raise — it
+    will simply be ignored, so check for it rather than relying on a crash.
+11. **Redis key format changed** and existing data is not migrated. All
+    model/request-derived segments are percent-encoded, so owner index keys move
+    whenever an owner id contains a reserved character — and `OwnerId("u:1")` is
+    the house style, meaning `list_for_owner` returns empty for those owners
+    until sessions are re-indexed. Session and message documents remain
+    reachable by id (ULIDs escape to themselves). Memory scope indexes move from
+    `…:_index` to `…:%index`, and any memory key containing `:` `%` `/` moves.
+    Migration: run a key-migration script, or accept a cold start.
+12. **`RedisEventBus.replay_buffer` semantics changed.** The default
+    (`since_sequence=0`) now returns the whole buffer instead of dropping every
+    turn's `sequence == 0` event. The cursor is now `(since_turn_id,
+    since_sequence)` — a sequence alone is ambiguous once a second turn restarts
+    numbering. An evicted cursor replays everything rather than silently
+    gapping. Signature is source-compatible.
+13. **`Firewall.routing_prefs()` no longer returns `None`** when
+    `require_zdr=False` and `eu_only=False`; it returns
+    `RoutingPreferences(zdr=False, data_collection="deny", allow_fallbacks=True)`.
+    Sending no preference does not mean "no preference" on the wire — it takes
+    the provider's default, and provider defaults permit retention and training.
+    OpenRouter payloads that previously carried no `provider` block now carry
+    one. Migration: `PiiPolicy(default_data_collection="unset")` restores the
+    silent payload.
+14. **`PiiPolicy.blocked_models` is enforced** and raises `BlockedModelError`.
+    Anyone who populated it was previously unprotected; anyone who populated it
+    *and* depended on it not firing will now get an exception.
+15. **Exiting `async with session.run(...)` early cancels the turn.** It
+    previously kept running detached until GC. Related: cancelled, errored and
+    abandoned turns now append synthetic `MessageRole.TOOL` messages to the
+    store — filter on `SYNTHETIC_TOOL_RESULT_ANNOTATION` if your UI renders every
+    stored message. `resume_with_approval` on a multi-pending turn emits extra
+    `ApprovalDenied` events for the calls it did not rule on, so consumers that
+    count events will see more.
+16. **Wire shape changed for `approval_needed`**: two additive fields
+    (`side_effects`, `taint`). `ToolResult` / `ToolResultBlock` gained
+    `provenance`, which appears in `model_dump()`. A new `approval_resolved`
+    event joins the `Event` union — exhaustive `match` statements over it need a
+    new arm.
+17. Private-but-referenced: `AgentSession._resumed_loop_stream` is now
+    `_resumed_turn_runner` and returns a `_TurnRunner` rather than an
+    `AsyncIterator[Event]`. The 0.14.0 entry below still names the old helper;
+    it is left as written, since a changelog records what shipped then.
+
 ## [0.21.1] - 2026-08-11
 
 ### Fixed

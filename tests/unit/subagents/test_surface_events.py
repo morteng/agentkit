@@ -23,7 +23,11 @@ from agentkit.events import (
 )
 from agentkit.loop.context import FixedClock, TurnContext
 from agentkit.loop.phase import Phase
-from agentkit.subagents.dispatcher import _surface_subagent_events
+from agentkit.subagents.dispatcher import (
+    _child_event_stream,
+    _pump_loop_into_queue,
+    _surface_subagent_events,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -202,3 +206,74 @@ async def test_no_op_when_only_whitespace_buffered() -> None:
 
     progress = await _drain_progress(queue)
     assert progress == []
+
+
+# ---- the merged child stream -------------------------------------------------
+#
+# ``Loop.run()`` yields only lifecycle events (TurnStarted / PhaseChanged /
+# TurnEnded); TextDelta and ToolCallStarted are pushed onto ``ctx.event_queue``
+# by the streaming handler. Filtering ``loop.run()`` alone — which the
+# dispatcher used to do — could therefore never surface anything at all. The
+# dispatcher now pumps the loop's events onto the *same* queue the handlers
+# write to, exactly as ``AgentSession._drain_loop_into_queue`` does.
+
+
+class _LifecycleOnlyLoop:
+    """Stands in for ``Loop``: emits lifecycle events, and pushes handler-style
+    events onto the shared queue the way a real phase handler would."""
+
+    def __init__(self, queue: asyncio.Queue[Any], handler_events: list[BaseEvent]) -> None:
+        self._queue = queue
+        self._handler_events = handler_events
+
+    async def run(self) -> AsyncIterator[BaseEvent]:
+        yield _phase_changed()
+        for ev in self._handler_events:
+            await self._queue.put(ev)
+        yield _phase_changed()
+
+
+def _phase_changed() -> PhaseChanged:
+    return PhaseChanged(
+        event_id=new_id(EventId),
+        session_id=SessionId("s"),
+        turn_id=TurnId("t"),
+        ts=datetime.now(UTC),
+        sequence=0,
+        from_=Phase.STREAMING,
+        to=Phase.FINALIZE_CHECK,
+        duration_ms=0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_merged_stream_carries_handler_events_not_just_lifecycle() -> None:
+    parent, parent_queue = _parent_with_queue()
+    child_queue: asyncio.Queue[Any] = asyncio.Queue()
+    loop = _LifecycleOnlyLoop(child_queue, [_text_delta("hello from the child")])
+
+    pump = asyncio.create_task(_pump_loop_into_queue(loop, child_queue))  # type: ignore[arg-type]
+    await _surface_subagent_events(parent, _child_event_stream(child_queue))
+    await pump
+
+    progress = await _drain_progress(parent_queue)
+    assert [p.message for p in progress] == ["subagent: hello from the child"]
+
+
+@pytest.mark.asyncio
+async def test_merged_stream_terminates_when_the_loop_raises() -> None:
+    """A loop that dies before TurnEnded must not hang the consumer forever."""
+    parent, _parent_queue = _parent_with_queue()
+    child_queue: asyncio.Queue[Any] = asyncio.Queue()
+
+    class _ExplodingLoop:
+        async def run(self) -> AsyncIterator[BaseEvent]:
+            yield _phase_changed()
+            raise RuntimeError("child loop died")
+
+    pump = asyncio.create_task(_pump_loop_into_queue(_ExplodingLoop(), child_queue))  # type: ignore[arg-type]
+    await asyncio.wait_for(
+        _surface_subagent_events(parent, _child_event_stream(child_queue)), timeout=2.0
+    )
+    with pytest.raises(RuntimeError, match="child loop died"):
+        await pump

@@ -8,6 +8,7 @@ from agentkit.events import (
     ApprovalDenied,
     ApprovalGranted,
     ApprovalNeeded,
+    ApprovalResolved,
     ErrorCode,
     Errored,
     MessageCompleted,
@@ -69,6 +70,9 @@ def test_all_event_types_round_trip():
         ),
         ApprovalGranted(**_common(10), call_id="c1"),
         ApprovalDenied(**_common(11), call_id="c1"),
+        ApprovalResolved(
+            **_common(11), call_id="c1", decision="deny", resolved_by="system", expired=True
+        ),
         Errored(**_common(12), code=ErrorCode.RATE_LIMITED, message="x", recoverable=True),
         SubagentStarted(**_common(13), subagent_id="s1", parent_call_id="c1", purpose="research"),
         SubagentEvent(**_common(14), subagent_id="s1", inner={"type": "text_delta", "delta": "x"}),

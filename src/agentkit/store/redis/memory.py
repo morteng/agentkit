@@ -7,6 +7,7 @@ Stores values as JSON at scoped keys. Keeps a per-scope SET of keys so
 
 from agentkit.store.memory import MemoryHit, MemoryScope, MemoryStore, MemoryValue
 from agentkit.store.redis.client import RedisClient
+from agentkit.store.redis.keys import validate_memory_key
 from agentkit.store.redis.serialization import from_versioned_json, to_versioned_json
 
 _SCHEMA_V = 1
@@ -17,6 +18,10 @@ class RedisMemoryStore(MemoryStore):
         self._c = client
 
     async def save(self, scope: MemoryScope, key: str, value: MemoryValue) -> None:
+        # Validated at the write path too, not only in the builtin tool: any
+        # host code can call save() directly, and an empty or 10 MB key should
+        # fail loudly here rather than become a row nothing can address.
+        validate_memory_key(key)
         await self._c.redis.set(  # type: ignore[no-untyped-call]
             self._c.keys.memory(scope, key),
             to_versioned_json(value.model_dump(mode="json"), schema_version=_SCHEMA_V),

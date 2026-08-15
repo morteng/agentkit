@@ -4,7 +4,12 @@ from typing import Annotated
 
 from pydantic import Field, TypeAdapter
 
-from agentkit.events.approval import ApprovalDenied, ApprovalGranted, ApprovalNeeded
+from agentkit.events.approval import (
+    ApprovalDenied,
+    ApprovalGranted,
+    ApprovalNeeded,
+    ApprovalResolved,
+)
 from agentkit.events.base import BaseEvent
 from agentkit.events.lifecycle import (
     ErrorCode,
@@ -38,6 +43,7 @@ Event = Annotated[
     | ApprovalNeeded
     | ApprovalGranted
     | ApprovalDenied
+    | ApprovalResolved
     | TurnStarted
     | TurnEnded
     | Errored
@@ -56,6 +62,7 @@ __all__ = [
     "ApprovalDenied",
     "ApprovalGranted",
     "ApprovalNeeded",
+    "ApprovalResolved",
     "BaseEvent",
     "ErrorCode",
     "Errored",

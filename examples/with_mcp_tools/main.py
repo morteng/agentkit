@@ -2,6 +2,13 @@
 
 Spawns examples/with_mcp_tools/echo_server.py as a subprocess MCP server
 and lets the agent call its ``reverse`` tool.
+
+Also shows the ``classifier`` hook, which this demo now *needs*. MCP carries no
+risk information, so an unclassified tool defaults to ``HIGH_WRITE`` with
+``ApprovalPolicy.ALWAYS`` — without a classifier this example would stop and
+wait for an approval nobody is there to grant. Vouching for a tool is the
+operator's job, and it is deliberately explicit: you are asserting that you
+know what ``echo.reverse`` does.
 """
 
 import asyncio
@@ -18,6 +25,25 @@ from agentkit.providers.base import SystemBlock
 from agentkit.store.fakes import FakeCheckpointStore, FakeMemoryStore, FakeSessionStore
 from agentkit.tools.builtin import DEFAULT_BUILTINS
 from agentkit.tools.registry import ToolRegistry
+from agentkit.tools.spec import ApprovalPolicy, RiskLevel, SideEffects, ToolSpec
+
+
+def classify_echo_tools(spec: ToolSpec) -> ToolSpec | None:
+    """Vouch for the echo server's tools; leave anything else unclassified.
+
+    Returning ``None`` means "I don't know this tool" — it keeps the
+    fail-closed default (always ask the user) rather than waving it through.
+    The returned spec must keep the same ``name``.
+    """
+    if spec.name.endswith(".reverse"):
+        return spec.model_copy(
+            update={
+                "risk": RiskLevel.READ,
+                "side_effects": SideEffects.NONE,
+                "requires_approval": ApprovalPolicy.NEVER,
+            }
+        )
+    return None
 
 
 async def main() -> None:
@@ -39,6 +65,7 @@ async def main() -> None:
     echo = StdioMCPClient(
         name="echo",
         command=[sys.executable, "examples/with_mcp_tools/echo_server.py"],
+        classifier=classify_echo_tools,
     )
     registry.register_mcp_server("echo", echo)
 

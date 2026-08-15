@@ -1,0 +1,14 @@
+{
+  "call_id": "call_canonical",
+  "decision": "deny",
+  "edited_args": null,
+  "event_id": "ev_canonical",
+  "expired": true,
+  "reason": "approval window closed",
+  "resolved_by": "system",
+  "sequence": 1,
+  "session_id": "sess_canonical",
+  "ts": "2026-01-01T00:00:00Z",
+  "turn_id": "turn_canonical",
+  "type": "approval_resolved"
+}

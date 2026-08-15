@@ -8,6 +8,7 @@ from typing import Any
 from agentkit._messages import Usage
 from agentkit._stream_trace import is_tracing, trace_delta
 from agentkit.providers.base import (
+    ErrorEvent,
     MessageComplete,
     MessageStart,
     ProviderEvent,
@@ -21,8 +22,26 @@ from agentkit.providers.base import (
 from agentkit.providers.openrouter.model_quirks import parse_finish_reason
 from agentkit.providers.openrouter.tool_name_codec import ToolNameCodec
 from agentkit.providers.openrouter.tool_translator import parse_tool_args_with_repair
+from agentkit.providers.tool_call_errors import (
+    INCOMPLETE_TOOL_CALL_CODE,
+    INVALID_TOOL_ARGUMENTS_CODE,
+)
+from agentkit.providers.tool_call_errors import (
+    UNNAMED_TOOL as _UNNAMED_TOOL,
+)
+from agentkit.providers.tool_call_errors import (
+    incomplete_call_message as _incomplete_call_message,
+)
+from agentkit.providers.tool_call_errors import (
+    invalid_arguments_message as _invalid_arguments_message,
+)
 
 logger = logging.getLogger(__name__)
+
+# Re-exported here because these names shipped from this module: the codes and
+# the model-facing wording now live in agentkit.providers.tool_call_errors so
+# the Anthropic parser resolves the same two failures the same way.
+__all__ = ["INCOMPLETE_TOOL_CALL_CODE", "INVALID_TOOL_ARGUMENTS_CODE", "parse_openrouter_stream"]
 
 
 def _decode_name(name: str | None, name_codec: ToolNameCodec | None) -> str | None:
@@ -30,6 +49,19 @@ def _decode_name(name: str | None, name_codec: ToolNameCodec | None) -> str | No
     if name is None:
         return None
     return name_codec.decode(name) if name_codec is not None else name
+
+
+def _fallback_call_id(slot: dict[str, Any], idx: int) -> str:
+    """The one call id every event for a slot must agree on.
+
+    The provider is supposed to send an ``id`` with the first tool-call delta;
+    when it does not, the slot index is the only stable handle we have. Start,
+    delta and complete used to synthesise this differently (``call_{idx}`` vs
+    ``""``), which made an id-less call look like two different calls to
+    StreamMux's start/complete accounting. One helper, one answer.
+    """
+    call_id = slot["id"]
+    return str(call_id) if call_id else f"call_{idx}"
 
 
 def parse_tool_call_arguments(args_str: str) -> dict[str, Any] | None:
@@ -58,6 +90,15 @@ async def parse_openrouter_stream(  # noqa: PLR0912 — chunk-type dispatch + tr
 
     OpenAI streams ``ChatCompletionChunk`` objects with ``choices[0].delta``
     containing one of: text content, tool_calls (partial), or finish_reason.
+
+    Tool calls fail closed. A call is emitted as ``ToolCallComplete`` only when
+    the stream said it finished (``finish_reason == "tool_calls"``) *and* its
+    arguments parsed into an object. Every other outcome — truncated stream,
+    missing function name, irreparable argument JSON — yields an
+    :class:`ErrorEvent` (:data:`INCOMPLETE_TOOL_CALL_CODE` /
+    :data:`INVALID_TOOL_ARGUMENTS_CODE`) whose ``message`` is written for the
+    model to read, and no dispatchable event at all. Arguments are never
+    guessed: ``{}`` is a plausible-looking argument set for a destructive tool.
 
     Args:
         chunks: Async iterator of ChatCompletionChunk objects from the OpenAI SDK.
@@ -135,7 +176,9 @@ async def parse_openrouter_stream(  # noqa: PLR0912 — chunk-type dispatch + tr
     # End of stream — flush completed tool calls only if finish_reason confirms completion.
     # Tool calls only "complete" when the stream's finish_reason is "tool_calls".
     # If a stream terminates abnormally (None/"length"/"stop" with pending tools),
-    # we drop the partial tool calls rather than risk executing with empty args.
+    # we drop the partial tool calls rather than risk executing with empty args,
+    # and emit one ErrorEvent per dropped call so the model is told the action
+    # did not happen instead of inferring that it silently succeeded.
     if finish_reason_raw == "tool_calls":
         for ev in _flush_pending_tools(pending_tools, name_codec=name_codec):
             yield ev
@@ -162,6 +205,21 @@ async def parse_openrouter_stream(  # noqa: PLR0912 — chunk-type dispatch + tr
                 "session_id": session_id,
             },
         )
+        # A log is for us; the ErrorEvent is for the model. A dropped call that
+        # produces no event at all reads, from the model's side, as an action it
+        # requested simply evaporating — so it narrates the effect as done and
+        # moves on. One event per dropped slot, each naming the call so a
+        # consumer can pair it with the ToolCallStart it already forwarded.
+        for idx, slot in pending_tools.items():
+            yield ErrorEvent(
+                code=INCOMPLETE_TOOL_CALL_CODE,
+                message=_incomplete_call_message(
+                    tool_name=_decode_name(slot["name"], name_codec) or _UNNAMED_TOOL,
+                    call_id=_fallback_call_id(slot, idx),
+                    finish_reason=finish_reason_raw,
+                ),
+                recoverable=True,
+            )
 
     if final_usage is not None:
         yield UsageEvent(usage=final_usage, model=model, provider_name="openrouter")
@@ -186,11 +244,11 @@ def _process_tool_call_deltas(
         if fn.name and slot["name"] is None:
             slot["name"] = fn.name
             tool_name = name_codec.decode(fn.name) if name_codec is not None else fn.name
-            yield ToolCallStart(call_id=slot["id"] or f"call_{idx}", tool_name=tool_name)
+            yield ToolCallStart(call_id=_fallback_call_id(slot, idx), tool_name=tool_name)
         if fn.arguments:
             slot["args_buf"] += fn.arguments
             yield ToolCallDelta(
-                call_id=slot["id"] or f"call_{idx}",
+                call_id=_fallback_call_id(slot, idx),
                 arguments_delta=fn.arguments,
             )
 
@@ -200,8 +258,14 @@ def _flush_pending_tools(
     *,
     name_codec: ToolNameCodec | None = None,
 ) -> Generator[ProviderEvent, None, None]:
-    """Yield ToolCallComplete events for all accumulated tool calls."""
-    for slot in pending_tools.values():
+    """Yield exactly one terminal event per accumulated tool call.
+
+    A slot resolves to either a dispatchable ``ToolCallComplete`` or an
+    ``ErrorEvent`` saying why it could not be dispatched. Nothing in between,
+    and nothing guessed.
+    """
+    for idx, slot in pending_tools.items():
+        call_id = _fallback_call_id(slot, idx)
         if slot["name"] is None:
             # Arguments may have arrived without the function-name delta ever
             # landing — a protocol violation somewhere in OpenRouter's backend
@@ -218,26 +282,44 @@ def _flush_pending_tools(
                     "args_buf_nonempty": bool(slot["args_buf"]),
                 },
             )
+            yield ErrorEvent(
+                code=INCOMPLETE_TOOL_CALL_CODE,
+                message=_incomplete_call_message(
+                    tool_name=_UNNAMED_TOOL, call_id=call_id, finish_reason="tool_calls"
+                ),
+                recoverable=True,
+            )
             continue
+        tool_name: str = name_codec.decode(slot["name"]) if name_codec is not None else slot["name"]
         try:
             parsed: Any = parse_tool_call_arguments(slot["args_buf"] or "")
-            args: dict[str, Any] = dict(parsed) if isinstance(parsed, dict) else {}  # type: ignore[reportUnknownArgumentType]
         except json.JSONDecodeError:
-            # Unparseable even after json_repair. Current contract: emit with
-            # empty args rather than drop. Logged because an executed call with
-            # {} is a real action on a corrupted intent.
+            parsed = None
+        if not isinstance(parsed, dict):
+            # Unparseable even after json_repair (or parsed to something that is
+            # not an argument object at all). It is tempting to emit the call
+            # with ``arguments={}`` and let the tool sort it out — do not. For a
+            # tool like "delete everything matching filter X" an empty filter is
+            # the single most destructive reading of a corrupted intent, and the
+            # model never learns its JSON was broken. Refuse the dispatch and
+            # hand the model a retryable explanation instead.
             logger.warning(
-                "openrouter.tool_args_unparseable_defaulted_empty",
+                "openrouter.tool_args_unparseable_rejected",
                 extra={
-                    "tool_name": _decode_name(slot["name"], name_codec),
+                    "tool_name": tool_name,
                     "args_buf_len": len(slot["args_buf"]),
                 },
             )
-            args = {}
+            yield ErrorEvent(
+                code=INVALID_TOOL_ARGUMENTS_CODE,
+                message=_invalid_arguments_message(tool_name=tool_name, call_id=call_id),
+                recoverable=True,
+            )
+            continue
         yield ToolCallComplete(
-            call_id=slot["id"] or "",
-            tool_name=(name_codec.decode(slot["name"]) if name_codec is not None else slot["name"]),
-            arguments=args,
+            call_id=call_id,
+            tool_name=tool_name,
+            arguments=dict(parsed),  # type: ignore[reportUnknownArgumentType]
         )
 
 

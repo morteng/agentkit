@@ -1,7 +1,7 @@
 """FastAPI WebSocket bridge — optional convenience for consumers.
 
 Translates inbound JSON ``ClientCommand``s to AgentSession calls and outbound
-events to JSON frames. Origin check + auth pluggable.
+events to JSON frames.
 
 Concurrency model
 -----------------
@@ -10,17 +10,80 @@ poll for a single inbound message in parallel. A ``cancel`` arriving during
 the turn aborts the streaming task; any other message during a turn is
 buffered as the next command. Outside a turn the route awaits ``receive_json``
 in a tight loop.
+
+The AgentSession is **initialized eagerly, in the route task**, before any
+``create_task``. That is a correctness requirement, not a style choice:
+``AgentSession.initialize`` starts the registry's MCP clients, and a stdio MCP
+client opens anyio task-scoped resources (a subprocess + its cancel scope).
+Starting one inside the per-turn stream task and closing it from the route
+task's ``finally`` crosses task boundaries and raises
+``RuntimeError: Attempted to exit cancel scope in a different task``. Owning
+both ends here keeps start and stop in one task.
+
+Security
+--------
+**Authentication is mandatory.** ``auth`` is a required keyword argument with
+no default. There is no implicit allow-all: a bridge whose consumer forgot to
+pass an authenticator used to hand every peer that could reach the port the
+session's entire tool surface, privileged tools included. If you genuinely
+want an open socket — a local demo, a test — pass
+:class:`InsecureAllowAllAuth` explicitly; it warns on construction so the
+choice shows up in logs and in review.
+
+**Origins.** ``"*"`` in ``origin_allowlist`` disables the origin check and is
+rejected unless ``dev_mode=True`` is also passed (which itself warns). Note
+that a client sending no ``Origin`` header at all (most non-browser clients)
+presents ``""``; add ``""`` to the allowlist deliberately if you want to
+admit those, rather than reaching for ``"*"``.
+
+**Approval hazard — read this before shipping.** ``respond_to_approval``
+arrives on the *same* channel that drives the model. Whoever can send
+``send_message`` can therefore also grant the approvals that message
+provoked, so the human-in-the-loop gate protects against a confused model,
+not against a compromised or coerced client. If the driving channel is
+scriptable (a browser tab reachable by XSS, an automation key, a relay that
+forwards model-adjacent content), treat every approval on it as
+self-granted.
+
+Bind approvals to a different principal by passing ``approval_authority``:
+every ``respond_to_approval`` frame is checked by
+:meth:`WSApprovalAuthority.authorize_approval` before it reaches the session,
+so a consumer can require a second factor carried in the frame (a signed
+one-time approval token minted by an out-of-band approver UI), a different
+header/cookie identity than the one ``auth`` accepted, or an operator role
+the driving principal does not hold. The default,
+:class:`SameSocketApprovalAuthority`, preserves the historical behaviour and
+is named so that accepting it is visible.
 """
 
 import asyncio
 import contextlib
+import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
+from agentkit._logging import get_logger
 from agentkit.events import Event, TurnEnded
+from agentkit.history import DEFAULT_HISTORY_PAGE_LIMIT, history_frame, load_history_page
 from agentkit.session import AgentSession
+
+log = get_logger(__name__)
+
+#: Wildcard entry that disables the origin check. Only honoured under
+#: ``dev_mode=True`` — see :func:`mount_websocket_route`.
+ANY_ORIGIN = "*"
+
+
+class InsecureTransportWarning(UserWarning):
+    """Warns that the WebSocket bridge is mounted without a real security control.
+
+    Its own category (rather than a bare ``UserWarning``) so deployments can
+    turn it into an error — ``warnings.simplefilter("error",
+    InsecureTransportWarning)`` — and fail the build if a demo-grade
+    configuration ever reaches production.
+    """
 
 
 async def _drain_stream_into_ws(
@@ -118,13 +181,218 @@ class _suppress_cancel:
         return exc_type is asyncio.CancelledError
 
 
+@runtime_checkable
 class WSAuth(Protocol):
+    """Decides whether a peer may open the agent socket at all.
+
+    Called once per connection, before ``accept()``. Return ``False`` to
+    close with code 4001. Read whatever the handshake carried —
+    ``ws.headers``, ``ws.cookies``, ``ws.query_params`` — and resolve it to a
+    principal your ``session_factory`` will agree with; the two must not
+    disagree about who is connected.
+    """
+
     async def authenticate(self, ws: WebSocket) -> bool: ...
 
 
-class _AllowAllAuth:
+@runtime_checkable
+class WSApprovalAuthority(Protocol):
+    """Decides whether *this* socket may answer an approval prompt.
+
+    Consulted for every ``respond_to_approval`` frame, after :class:`WSAuth`
+    has already admitted the connection. Returning ``False`` rejects the frame
+    with an ``approval_not_authorized`` error and leaves the suspended turn
+    intact, so a legitimate approver can still resolve it.
+
+    ``command`` is the raw inbound frame, so an implementation can require an
+    out-of-band credential inside it (e.g. a one-time approval token minted by
+    a separate approver UI and bound to ``command["call_id"]``).
+    """
+
+    async def authorize_approval(self, ws: WebSocket, command: dict[str, Any]) -> bool: ...
+
+
+class InsecureAllowAllAuth:
+    """Authenticator that admits **every** peer. Not for production.
+
+    Any process that can reach the port gets a full agent session — which
+    means the session's whole tool surface, privileged tools included. This
+    class exists so that choosing an open socket is an explicit, greppable,
+    reviewable line of code instead of an omission; it is deliberately not the
+    default and never will be.
+
+    Constructing it emits an :class:`InsecureTransportWarning`.
+    """
+
+    def __init__(self) -> None:
+        warnings.warn(
+            "InsecureAllowAllAuth admits every peer without authentication. "
+            "Anyone who can reach this WebSocket gets the session's full tool "
+            "surface. Use it for local development and tests only.",
+            InsecureTransportWarning,
+            stacklevel=2,
+        )
+        log.warning(
+            "insecure_ws_auth_selected",
+            auth="InsecureAllowAllAuth",
+            hint="every peer is admitted without authentication",
+        )
+
     async def authenticate(self, ws: WebSocket) -> bool:
         return True
+
+
+class SameSocketApprovalAuthority:
+    """Default approval authority: the driving socket may grant its own approvals.
+
+    This is the historical behaviour and it is a real hazard — see the module
+    docstring. Whoever can send ``send_message`` on this socket can also
+    approve the HIGH_WRITE/DESTRUCTIVE calls that message produced, so the
+    approval gate defends against a confused model and not against a
+    compromised client. Pass a different :class:`WSApprovalAuthority` to bind
+    approvals to a second principal.
+    """
+
+    async def authorize_approval(self, ws: WebSocket, command: dict[str, Any]) -> bool:
+        return True
+
+
+def _validate_auth(auth: WSAuth) -> WSAuth:
+    """Reject a missing/unusable authenticator at mount time, not at connect time."""
+    if auth is None:  # type: ignore[reportUnnecessaryComparison]
+        raise TypeError(
+            "mount_websocket_route() requires an explicit auth= authenticator. "
+            "There is no allow-all default: an unauthenticated agent socket "
+            "exposes the session's entire tool surface to any peer that can "
+            "reach the port. Pass your own WSAuth implementation, or "
+            "InsecureAllowAllAuth() if you really want an open socket."
+        )
+    if not callable(getattr(auth, "authenticate", None)):
+        raise TypeError(
+            f"auth= must implement WSAuth.authenticate(ws) -> bool; got {type(auth).__name__}"
+        )
+    return auth
+
+
+def _validate_origin_allowlist(origin_allowlist: list[str], *, dev_mode: bool) -> None:
+    """Reject the wildcard origin outside dev mode; warn about it inside it."""
+    if ANY_ORIGIN not in origin_allowlist:
+        return
+    if not dev_mode:
+        raise ValueError(
+            'origin_allowlist contains "*", which disables the origin check and '
+            "lets any web page a victim visits drive this agent from their "
+            "browser (their cookies and headers ride along). List the exact "
+            "origins you serve. If this really is a local demo, pass "
+            "dev_mode=True to acknowledge it. To admit non-browser clients "
+            'that send no Origin header, allowlist "" instead.'
+        )
+    warnings.warn(
+        'origin_allowlist contains "*" — the WebSocket origin check is disabled. '
+        "Every browser origin can drive this agent. Development only.",
+        InsecureTransportWarning,
+        stacklevel=3,
+    )
+    log.warning(
+        "insecure_ws_origin_policy",
+        origin_allowlist=list(origin_allowlist),
+        dev_mode=dev_mode,
+        hint="wildcard origin accepted because dev_mode=True",
+    )
+
+
+async def _send_error(ws: WebSocket, code: str, message: str) -> None:
+    await ws.send_json({"type": "errored", "code": code, "message": message})
+
+
+async def _handshake(ws: WebSocket, *, origin_allowlist: list[str], auth_impl: WSAuth) -> bool:
+    """Origin check, then auth, then ``accept()``. False means already closed."""
+    origin = ws.headers.get("origin", "")
+    if ANY_ORIGIN not in origin_allowlist and origin not in origin_allowlist:
+        await ws.close(code=4003)
+        return False
+    if not await auth_impl.authenticate(ws):
+        await ws.close(code=4001)
+        return False
+    await ws.accept()
+    return True
+
+
+async def _open_session(
+    ws: WebSocket,
+    *,
+    session_factory: Callable[[WebSocket], Awaitable[AgentSession]],
+    path: str,
+) -> AgentSession | None:
+    """Build the session and initialize it **in the caller's task**.
+
+    Eager initialization is the fix for the cancel-scope violation described
+    in the module docstring: ``AgentSession.initialize`` starts MCP clients,
+    whose anyio scopes must be exited by the task that entered them. Doing it
+    here means the route task owns both ends, and no per-turn stream task ever
+    starts a client the route task will later shut down.
+
+    Returns ``None`` (socket already closed) when either step fails.
+    """
+    try:
+        session = await session_factory(ws)
+    except Exception:
+        log.exception("ws_session_factory_failed", path=path)
+        await ws.close(code=1011, reason="session factory failed")
+        return None
+    try:
+        await session.initialize()
+    except Exception:
+        log.exception("ws_session_initialize_failed", path=path)
+        with contextlib.suppress(Exception):
+            await session.shutdown()
+        await ws.close(code=1011, reason="session initialization failed")
+        return None
+    return session
+
+
+async def _replay_history(ws: WebSocket, session: AgentSession, *, limit: int, path: str) -> None:
+    """Send one ``history`` frame with the session's stored transcript.
+
+    Opt-in, and best-effort by design. A reconnecting client that cannot get
+    its history back should still get a working socket: the replay is context,
+    the live stream is the product. So a missing store or a failing read is
+    logged and skipped rather than closing the connection.
+
+    The frame is the REST body of the same page plus a ``type`` — see
+    :mod:`agentkit.history`. It is not a :class:`~agentkit.events.base.BaseEvent`
+    and carries no ``event_id``/``turn_id``/``sequence``: it belongs to no turn.
+    """
+    store = session.config.stores.session
+    if store is None:
+        log.warning(
+            "ws_history_replay_skipped",
+            path=path,
+            session_id=str(session.id),
+            hint="replay_history=True but config.stores.session is None",
+        )
+        return
+    try:
+        page = await load_history_page(store, session.id, limit=limit)
+    except Exception:
+        log.exception("ws_history_replay_failed", path=path, session_id=str(session.id))
+        return
+    await ws.send_json(history_frame(page))
+
+
+async def _close_session(session: AgentSession, ws: WebSocket, *, path: str) -> None:
+    """Shut the session down in the route task, then close the socket.
+
+    Shutdown is suppressed-and-logged so a failing MCP teardown cannot stop
+    the close frame from going out.
+    """
+    try:
+        await session.shutdown()
+    except Exception:
+        log.exception("ws_session_shutdown_failed", path=path)
+    # Already closed by the client / framework? That's fine.
+    with contextlib.suppress(RuntimeError):
+        await ws.close(code=1000)
 
 
 def mount_websocket_route(
@@ -133,79 +401,110 @@ def mount_websocket_route(
     path: str = "/ws/agent",
     session_factory: Callable[[WebSocket], Awaitable[AgentSession]],
     origin_allowlist: list[str],
-    auth: WSAuth | None = None,
+    auth: WSAuth,
+    approval_authority: WSApprovalAuthority | None = None,
     heartbeat_interval: float = 30.0,
+    replay_history: bool = False,
+    replay_limit: int = DEFAULT_HISTORY_PAGE_LIMIT,
+    dev_mode: bool = False,
 ) -> None:
-    auth_impl: WSAuth = auth or _AllowAllAuth()
+    """Mount the agent WebSocket endpoint on ``app``.
+
+    ``auth`` is **required** — see the module docstring. ``origin_allowlist``
+    is matched exactly against the handshake's ``Origin`` header; ``"*"``
+    raises unless ``dev_mode=True``.
+
+    ``approval_authority`` gates ``respond_to_approval`` frames independently
+    of ``auth``, so approvals can be bound to a different principal than the
+    one driving the model. Defaults to
+    :class:`SameSocketApprovalAuthority` — same principal, documented hazard.
+
+    ``replay_history=True`` sends one ``history`` frame right after the socket
+    opens, carrying the newest ``replay_limit`` stored messages projected to
+    the slim shapes in :mod:`agentkit.history`. Off by default: it is a second
+    delivery of content the client may already have, and only the consumer
+    knows whether its client dedupes. A consumer that would rather fetch the
+    same page over HTTP calls :func:`~agentkit.history.load_history_page` from
+    its own route — same shapes, so the client parses one thing either way.
+
+    Raises ``TypeError`` for a missing or malformed ``auth`` and
+    ``ValueError`` for a wildcard origin outside dev mode; both at mount time,
+    so a misconfiguration fails at import/startup rather than on the first
+    connection.
+    """
+    _ = heartbeat_interval  # reserved: ping/pong keepalive is not wired up yet
+    auth_impl: WSAuth = _validate_auth(auth)
+    _validate_origin_allowlist(origin_allowlist, dev_mode=dev_mode)
+    approval_impl: WSApprovalAuthority = approval_authority or SameSocketApprovalAuthority()
+
+    async def _dispatch(
+        ws: WebSocket, session: AgentSession, cmd: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Run one inbound command. Returns a command deferred during a turn."""
+        ctype = cmd.get("type")
+        if ctype == "send_message":
+            text = str(cmd.get("text", ""))
+
+            async def _run(cancel_evt: asyncio.Event) -> None:
+                async with session.run(text) as stream:
+                    await _drain_stream_into_ws(ws, stream, cancel_evt)
+
+            return await _stream_with_cancel_watch(ws, _run)
+
+        if ctype == "respond_to_approval":
+            if not await approval_impl.authorize_approval(ws, cmd):
+                log.warning(
+                    "ws_approval_not_authorized",
+                    path=path,
+                    call_id=cmd.get("call_id"),
+                    turn_id=cmd.get("turn_id"),
+                )
+                await _send_error(
+                    ws,
+                    "approval_not_authorized",
+                    "this connection is not permitted to answer approval prompts",
+                )
+                return None
+
+            async def _resume(cancel_evt: asyncio.Event) -> None:
+                async with session.resume_with_approval(
+                    cmd["turn_id"],
+                    cmd["call_id"],
+                    decision=str(cmd.get("decision", "deny")),
+                    edited_args=cmd.get("edited_args"),
+                    reason=cmd.get("reason"),
+                ) as stream:
+                    await _drain_stream_into_ws(ws, stream, cancel_evt)
+
+            return await _stream_with_cancel_watch(ws, _resume)
+
+        if ctype == "cancel":
+            # No active turn — nothing to cancel. Acknowledge and continue.
+            await ws.send_json({"type": "cancelled", "reason": "no_active_turn"})
+            return None
+
+        await _send_error(ws, "invalid_command", f"unknown command: {ctype}")
+        return None
 
     @app.websocket(path)
     async def _ws_route(ws: WebSocket) -> None:  # pyright: ignore[reportUnusedFunction]
-        # Origin check before auth.
-        origin = ws.headers.get("origin", "")
-        if "*" not in origin_allowlist and origin not in origin_allowlist:
-            await ws.close(code=4003)
+        if not await _handshake(ws, origin_allowlist=origin_allowlist, auth_impl=auth_impl):
             return
-        if not await auth_impl.authenticate(ws):
-            await ws.close(code=4001)
+        session = await _open_session(ws, session_factory=session_factory, path=path)
+        if session is None:
             return
-        await ws.accept()
-
-        try:
-            session = await session_factory(ws)
-        except Exception:
-            await ws.close(code=1011, reason="session factory failed")
-            return
-
         pending_cmd: dict[str, Any] | None = None
         try:
+            # Inside the try: a client that vanishes mid-replay must still take
+            # the ``finally`` path that shuts the session down.
+            if replay_history:
+                await _replay_history(ws, session, limit=replay_limit, path=path)
             while True:
                 cmd: dict[str, Any] = (
                     pending_cmd if pending_cmd is not None else await ws.receive_json()
                 )
-                pending_cmd = None
-                ctype = cmd.get("type")
-                if ctype == "send_message":
-                    text = str(cmd.get("text", ""))
-
-                    async def _run(cancel_evt: asyncio.Event, _t: str = text) -> None:
-                        async with session.run(_t) as stream:
-                            await _drain_stream_into_ws(ws, stream, cancel_evt)
-
-                    pending_cmd = await _stream_with_cancel_watch(ws, _run)
-
-                elif ctype == "respond_to_approval":
-
-                    async def _resume(
-                        cancel_evt: asyncio.Event,
-                        _c: dict[str, Any] = cmd,
-                    ) -> None:
-                        async with session.resume_with_approval(
-                            _c["turn_id"],
-                            _c["call_id"],
-                            decision=str(_c.get("decision", "deny")),
-                            edited_args=_c.get("edited_args"),
-                            reason=_c.get("reason"),
-                        ) as stream:
-                            await _drain_stream_into_ws(ws, stream, cancel_evt)
-
-                    pending_cmd = await _stream_with_cancel_watch(ws, _resume)
-
-                elif ctype == "cancel":
-                    # No active turn — nothing to cancel. Acknowledge and continue.
-                    await ws.send_json({"type": "cancelled", "reason": "no_active_turn"})
-
-                else:
-                    await ws.send_json(
-                        {
-                            "type": "errored",
-                            "code": "invalid_command",
-                            "message": f"unknown command: {ctype}",
-                        }
-                    )
+                pending_cmd = await _dispatch(ws, session, cmd)
         except WebSocketDisconnect:
             pass
         finally:
-            await session.shutdown()
-            # Already closed by the client / framework? That's fine.
-            with contextlib.suppress(RuntimeError):
-                await ws.close(code=1000)
+            await _close_session(session, ws, path=path)

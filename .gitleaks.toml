@@ -1,0 +1,37 @@
+# gitleaks configuration for agentkit.
+#
+# Extends the upstream default ruleset rather than replacing it — everything
+# gitleaks normally catches is still caught.
+
+[extend]
+useDefault = true
+
+[[rules]]
+# Placeholder so the allowlist below has a stable home; the real work is the
+# global allowlist. (gitleaks requires at least one table when [[rules]] is
+# present, so this file only carries allowlists.)
+id = "agentkit-noop"
+description = "unused placeholder rule"
+regex = '''\$\^agentkit-never-matches\$'''
+
+[allowlist]
+description = """
+Test fixtures for the secret DETECTOR must contain secret-shaped strings.
+
+agentkit ships a PII/secret firewall whose whole job is recognising AWS access
+keys, GitHub PATs, Stripe live keys, Slack bot tokens, GCP API keys and PEM
+headers. Its test suite cannot verify that without containing one of each. A
+scanner flagging them is the scanner working correctly on data that exists to
+be flagged — so the exemption is scoped to exactly these two files, by path,
+and to nothing else in the repository.
+
+Every value in them is synthetic and none authenticates to anything. If you add
+a fixture here, keep that true: use an obviously fake body (AKIAIOSFODNN7EXAMPLE
+and friends), never a rotated-but-real credential. A revoked key is still a
+disclosure of what your key material looks like, and the detector cannot tell
+the difference anyway.
+"""
+paths = [
+  '''tests/unit/pii/test_secret_detector\.py''',
+  '''tests/unit/pii/test_composite_detector\.py''',
+]
