@@ -16,6 +16,17 @@ class TurnEndReason(StrEnum):
     ERROR = "error"
     CANCELLED = "cancelled"
     MAX_ITERATIONS = "max_iterations"
+    #: The turn ended without the model producing a final answer — it never
+    #: called ``finalize_response``, and the re-prompt budget for asking it to
+    #: is spent. Distinct from COMPLETED, which asserts the model finished.
+    #:
+    #: Before this existed the two were indistinguishable on the wire, and a
+    #: consumer had no way to tell a finished answer from a turn that stopped
+    #: mid-thought. REDACTED shipped exactly that: on 2026-08-15 a turn ended
+    #: this way and the UI ran its normal completion path, leaving the user
+    #: looking at a conversation that stops after a row of tool calls with no
+    #: reply and no indication anything had gone wrong.
+    NO_RESPONSE = "no_response"
 
 
 class ErrorCode(StrEnum):

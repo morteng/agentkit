@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Any
 
 from agentkit._content import ContentBlock, TextBlock, ToolResultBlock
 from agentkit._ids import EventId, MessageId, new_id
+from agentkit._logging import get_logger
 from agentkit._messages import Message, MessageRole
 from agentkit.events import ToolCallResult
 from agentkit.events.lifecycle import TurnEndReason
@@ -12,6 +13,8 @@ from agentkit.loop.phase import Phase
 
 if TYPE_CHECKING:
     from agentkit.tools.spec import ToolResult
+
+log = get_logger(__name__)
 
 
 async def handle_tool_results(ctx: TurnContext, deps: dict[str, Any]) -> Phase:
@@ -102,5 +105,12 @@ async def handle_tool_results(ctx: TurnContext, deps: dict[str, Any]) -> Phase:
         # reason in preference to the default COMPLETED. We don't overwrite an
         # existing suspend_reason (e.g. AWAITING_APPROVAL) — it has priority.
         ctx.metadata.setdefault("suspend_reason", TurnEndReason.MAX_ITERATIONS.value)
+        log.warning(
+            "max_iterations_reached",
+            session_id=str(ctx.session_id),
+            turn_id=str(ctx.turn_id),
+            iterations=iterations,
+            max_iterations=max_iter,
+        )
         return Phase.FINALIZE_CHECK
     return Phase.CONTEXT_BUILD

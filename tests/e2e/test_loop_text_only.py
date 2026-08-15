@@ -61,10 +61,18 @@ def _all_handlers():
 
 
 @pytest.mark.asyncio
-async def test_text_only_turn_completes():
+async def test_text_only_turn_ends_as_no_response():
     """A turn that streams text without finalizing is re-prompted once; if the
-    model still won't finalize, the loop still ends cleanly (COMPLETED) so the
-    consumer can synthesize a terminal envelope."""
+    model still won't finalize, the loop ends cleanly but reports NO_RESPONSE.
+
+    This used to assert COMPLETED, on the reasoning that the consumer would
+    synthesize a terminal envelope from the tool log. No consumer did. REDACTED
+    ran its ordinary completion path on this event, so on 2026-08-15 a turn that
+    stopped mid-thought after six tool calls rendered as a finished
+    conversation: no reply, no error, no indication anything had gone wrong.
+    COMPLETED asserts the model finished, and here it demonstrably has not —
+    the reason has to distinguish the two or a UI cannot.
+    """
     # Two scripted texts: the original answer, then the model ignoring the
     # re-prompt and streaming text again. Budget (1) is then spent.
     provider = FakeProvider().script(
@@ -97,7 +105,11 @@ async def test_text_only_turn_completes():
 
     assert types[0] == "TurnStarted"
     assert isinstance(events[-1], TurnEnded)
-    assert events[-1].reason is TurnEndReason.COMPLETED
+    assert events[-1].reason is TurnEndReason.NO_RESPONSE, (
+        "a turn the model never finalized must not be indistinguishable from "
+        "one it did; that ambiguity is what let a dead conversation render as "
+        "a finished one"
+    )
     # The turn streamed twice: once for the answer, once after the missing-
     # finalize re-prompt routed FINALIZE_CHECK -> CONTEXT_BUILD.
     streaming_exits = [
