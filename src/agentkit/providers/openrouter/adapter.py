@@ -150,6 +150,21 @@ class OpenRouterProvider(Provider):
         extra_body: dict[str, Any] = {}
         if self._reasoning is not None:
             extra_body["reasoning"] = self._reasoning
+        # ``provider`` is the same kind of passthrough and was missed. It is a
+        # real top-level field of OpenRouter's HTTP API, so the request builder
+        # is right to emit it — but the openai SDK has no ``provider``
+        # parameter and no ``**kwargs`` (verified against 3.0.0), so splatting
+        # the payload raised TypeError before the request was ever sent.
+        #
+        # It only bit requests that carried routing prefs, which is why it
+        # survived: ``Firewall.routing_prefs()`` returned None unless the turn
+        # carried PII. 0.22.0 made it never return None, so from that release
+        # *every* request through a firewall-wrapped provider raised. Moving it
+        # here produces byte-identical JSON on the wire — ``extra_body`` is
+        # merged into the request body — while going through the one channel
+        # the SDK accepts for fields it does not model.
+        if (prefs := payload.pop("provider", None)) is not None:
+            extra_body["provider"] = prefs
         try:
             chunks = await self._client.chat.completions.create(  # type: ignore[reportUnknownVariableType]
                 extra_headers=self._extra_headers or None,

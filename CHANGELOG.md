@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
+## [0.22.2] - 2026-08-15
+
+### Fixed
+
+- **Every OpenRouter request through a firewall-wrapped provider raised
+  `TypeError` before being sent.** `build_openrouter_request` emits routing
+  preferences as `payload["provider"]` — correct, since `provider` is a real
+  top-level field of OpenRouter's HTTP API — and the adapter splatted that
+  payload into `chat.completions.create()`. The openai SDK has no `provider`
+  parameter and no `**kwargs` catch-all (verified against 3.0.0), so the call
+  raised at the call site: `unexpected keyword argument 'provider'`.
+
+  The bug predates 0.22.0 but was **latent**: it only fired on requests that
+  carried routing prefs, and `Firewall.routing_prefs()` returned `None` unless
+  the turn carried PII. 0.22.0's BREAKING #13 made it never return `None`, so
+  from that release *every* request through a firewall-wrapped provider failed
+  — including from any deployment that merely sets `require_zdr=True`. If you
+  adopted 0.22.0 or 0.22.1 with the PII firewall active, your provider calls
+  have been failing outright; this is the fix.
+
+  Routing prefs now ride on `extra_body`, the same channel `reasoning` already
+  used, producing byte-identical JSON on the wire.
+
+  Why the tests missed it, which is the transferable part: this package's fake
+  client is `async def fake_create(**kwargs)`. A double that accepts any
+  keyword cannot fail on a payload the real SDK rejects, so a mock-only suite
+  can never catch a call-signature bug. The new test binds the captured kwargs
+  to the installed `AsyncCompletions.create` signature via
+  `inspect.signature(...).bind_partial`, which fails with the same `TypeError`
+  a deployment got. Both new assertions were confirmed to fail without the fix.
+
 ## [0.22.1] - 2026-08-15
 
 ### Fixed
