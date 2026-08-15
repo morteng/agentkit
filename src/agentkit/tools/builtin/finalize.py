@@ -3,30 +3,55 @@
 The handler sets a flag on the TurnContext; the loop's finalize_check phase
 then validates the claim before terminating.
 
-**Two accepted argument shapes.** ``kit.finalize`` takes either a bare
-``{"reason": "..."}`` or the full ``finalize_response`` envelope (``status``,
-``intent_kind``, ``summary``, ``actions_performed``, …). Both are real: the
-handler stores whatever it is given on ``ctx.finalize_args``, and
+**The argument shape is the ``finalize_response`` envelope** (``status``,
+``intent_kind``, ``summary``, ``actions_performed``, …). The handler stores
+whatever it is given on ``ctx.finalize_args``, and
 ``loop.handlers.finalize_check`` hands that straight to the
 :class:`~agentkit.guards.finalize.FinalizeValidator`, synthesizing
-``{"reason": ...}`` only when nothing was recorded. The declared schema says so
-— it previously advertised ``reason`` as the only property *and* as required,
-which was never true of either the handler (it uses ``args.get``) or of any
-caller in this repo. That drift was invisible until the registry started
-validating arguments before dispatch; it is fixed here rather than worked
-around, because the schema is what the model is told.
+``{"reason": ...}`` only when nothing was recorded. ``reason`` survives as an
+optional alias for ``summary`` so callers written against the pre-0.22 schema
+keep working, but it satisfies no validator rule on its own and a call carrying
+only ``reason`` is no longer schema-legal.
 
-Nothing is required, for the same reason: an ``intent_kind="answer"`` envelope
-is explicitly forbidden from carrying ``actions_performed``, so no single
-required set covers both shapes. Semantic rules live in the finalize validator,
-which can express "required *given* intent_kind" — a JSON Schema ``required``
-list cannot.
+Before 0.22 the schema advertised ``reason`` as the only property *and* as
+required, which was never true of either the handler (it uses ``args.get``) or
+of any caller in this repo. That drift was invisible until the registry started
+validating arguments before dispatch.
+
+**``status`` and ``intent_kind`` are required.** They were not until 0.22.1, and
+the omission made this tool unsatisfiable in the default configuration.
+``AgentSession`` installs :class:`StructuralFinalizeValidator` whenever
+``config.guards.finalize`` is unset, and that validator parses these arguments
+as an :class:`~agentkit.envelope.Envelope`, which requires both fields. A model
+reading the old schema saw ``reason`` listed first, described as the summary to
+write, and nothing marked required — so it sent ``{"reason": "..."}``, and the
+validator rejected it, every time. With ``max_finalize_retries=2`` that is three
+rejected finalize calls per turn: attempt, retry, retry, then
+``finalize_exhausted``. Each one costs a provider round-trip, and each one
+reaches a chat UI as an assistant turn that produces no text — the model appears
+to keep starting to speak and then saying nothing.
+
+The earlier reasoning for requiring nothing was that ``actions_performed`` is
+forbidden on an ``intent_kind="answer"`` envelope, so no single required set
+covers both shapes. That is true of ``actions_performed`` specifically, and the
+conclusion drawn from it was too broad: ``status`` and ``intent_kind`` are
+unconditional in ``Envelope`` and safe to require. ``actions_performed`` stays
+optional here for exactly the stated reason — which is why this list is written
+out rather than reusing ``FINALIZE_RESPONSE_SCHEMA["required"]``.
+
+The genuinely conditional rules — ``answer_evidence`` required given
+``intent_kind="answer"``, ``pending_confirmation`` given ``"clarify"`` — a flat
+JSON Schema ``required`` list cannot express. They live in the validator and are
+stated in the description below, which is the only channel the model reads.
 """
 
 from typing import Any
 
 from agentkit.loop.context import TurnContext
-from agentkit.tools.builtin.finalize_response import FINALIZE_RESPONSE_SCHEMA
+from agentkit.tools.builtin.finalize_response import (
+    FINALIZE_RESPONSE_DESCRIPTION,
+    FINALIZE_RESPONSE_SCHEMA,
+)
 from agentkit.tools.spec import (
     ApprovalPolicy,
     ContentBlockOut,
@@ -36,30 +61,37 @@ from agentkit.tools.spec import (
     ToolSpec,
 )
 
+_PREAMBLE = (
+    "Signal that you have completed the user's request. "
+    "Only call this once you have actually invoked the tools needed to "
+    "carry out the user's request — do NOT call it just because you have "
+    "produced a written response.\n\n"
+)
+
 FINALIZE_SPEC = ToolSpec(
     name="kit.finalize",
-    description=(
-        "Signal that you have completed the user's request. "
-        "Provide a one-sentence summary of what you accomplished — it "
-        "surfaces to the consumer on TurnEnded.summary, so write it for a "
-        "human reading an audit log, not for yourself. "
-        "Only call this once you have actually invoked the tools needed to "
-        "carry out the user's request — do NOT call it just because you have "
-        "produced a written response."
-    ),
+    # The envelope semantics are the same contract `finalize_response` states,
+    # and the validator judging this call is the same one. Concatenating that
+    # description rather than paraphrasing it keeps the two from drifting apart
+    # again — the drift is what made this tool unsatisfiable.
+    description=_PREAMBLE + FINALIZE_RESPONSE_DESCRIPTION,
     parameters={
         "type": "object",
         "properties": {
+            **FINALIZE_RESPONSE_SCHEMA["properties"],
             "reason": {
                 "type": "string",
                 "description": (
-                    "One-sentence summary of what was completed. Surfaced on "
-                    "TurnEnded.summary (the envelope's 'summary' is used when "
-                    "'reason' is absent)."
+                    "Optional alias for 'summary', kept for callers written "
+                    "against the pre-0.22 schema. Prefer 'summary'. Listed "
+                    "last deliberately: when it came first, models filled it "
+                    "and omitted the envelope fields the validator requires."
                 ),
             },
-            **FINALIZE_RESPONSE_SCHEMA["properties"],
         },
+        # Not FINALIZE_RESPONSE_SCHEMA["required"] — see the module docstring
+        # for why `actions_performed` is excluded from this one.
+        "required": ["status", "intent_kind"],
     },
     returns=None,
     risk=RiskLevel.READ,

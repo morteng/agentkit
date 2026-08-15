@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
+## [0.22.1] - 2026-08-15
+
+### Fixed
+
+- **`kit.finalize` was unsatisfiable in the default configuration.** Every turn
+  burned three provider round-trips finalizing and then gave up. Two
+  independent schema/validator disagreements, either of which caused it alone:
+  - `kit.finalize` marked nothing required and listed `reason` first, described
+    as the summary to write. `AgentSession` installs
+    `StructuralFinalizeValidator` whenever `config.guards.finalize` is unset,
+    and it parses those arguments as an `Envelope`, where `status` and
+    `intent_kind` are mandatory. A model that filled in `reason` — the field it
+    was pointed at — was rejected 100% of the time. `status` and `intent_kind`
+    are now required; `reason` is documented as a legacy alias for `summary`
+    and listed last. `actions_performed` stays optional (an
+    `intent_kind="answer"` envelope is forbidden from carrying it), which is
+    why the list is written out rather than reused from
+    `FINALIZE_RESPONSE_SCHEMA`.
+  - **`answer_evidence` was missing from `FINALIZE_RESPONSE_SCHEMA` entirely**,
+    while `validate_envelope` rejects any `intent_kind="answer"` envelope that
+    omits it. This one hit `finalize_response` consumers too, not just
+    `kit.finalize`: no amount of schema compliance could finalize an answer
+    turn. Added, with the conditional stated in its description — a flat JSON
+    Schema `required` list cannot express "mandatory given `intent_kind`".
+
+  Symptom, for anyone matching this against their own logs: with
+  `max_finalize_retries=2` the loop makes one attempt and two retries, all
+  rejected, then sets `finalize_exhausted` and ends the turn. In a streaming
+  chat UI each rejected attempt renders as an assistant turn that produces no
+  text, so the agent appears to begin speaking three times and say nothing.
+  `TurnEnded.summary` is `None` throughout.
+
+  `kit.finalize`'s description now embeds `FINALIZE_RESPONSE_DESCRIPTION`
+  verbatim instead of paraphrasing it, since the same validator judges both.
+  New `tests/unit/tools/builtin/test_finalize_schema_contract.py` asserts the
+  advertised schema and the default validator agree, in both directions —
+  testing each side against its own idea of the contract is how this stayed
+  invisible.
+
 ## [0.22.0] - 2026-08-15
 
 Security-hardening release. Several defaults changed from "convenient" to

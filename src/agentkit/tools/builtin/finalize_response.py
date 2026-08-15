@@ -29,7 +29,8 @@ FINALIZE_RESPONSE_DESCRIPTION = (
     'If intent_kind="action" you MUST have called write tools and listed '
     'them in actions_performed. Promising future action ("I\'ll start", '
     '"Setter i gang") without calling write tools in this same turn is invalid.\n\n'
-    'If intent_kind="answer" you MUST NOT list actions_performed.\n\n'
+    'If intent_kind="answer" you MUST NOT list actions_performed, and you MUST '
+    "set answer_evidence to say what the answer rests on.\n\n"
     'If intent_kind="clarify" you MUST set status="blocked" with pending_confirmation.\n\n'
     'expected_count — when the user named a number ("3 articles", "all five", '
     '"kjør alt på alle"), set this to that number so the system can verify you '
@@ -93,6 +94,16 @@ FINALIZE_RESPONSE_SCHEMA: dict[str, Any] = {
                 "Use null when no count was implied. 0 is invalid."
             ),
         },
+        "answer_evidence": {
+            "type": ["string", "null"],
+            "enum": ["tool_results", "context", "general_knowledge", None],
+            "description": (
+                "REQUIRED when intent_kind='answer'. What the answer rests on: "
+                "'tool_results' = a read tool you called this turn; 'context' = "
+                "something already in the conversation or system prompt; "
+                "'general_knowledge' = training data. Omit for other intent kinds."
+            ),
+        },
         "proposed_autonomous_scope": {
             "type": ["object", "null"],
             "description": (
@@ -100,6 +111,19 @@ FINALIZE_RESPONSE_SCHEMA: dict[str, Any] = {
             ),
         },
     },
+    # `answer_evidence` is deliberately absent from this list even though
+    # ``validate_envelope`` rejects an ``intent_kind="answer"`` envelope without
+    # it. The rule is conditional — required *given* an intent kind — and JSON
+    # Schema's flat ``required`` cannot say that; listing it unconditionally
+    # would demand it on action and clarify turns, where the validator ignores
+    # it. The conditional lives in the property description and in the tool
+    # description, which is the only place the model can read it.
+    #
+    # It was missing from ``properties`` entirely until 0.22.1, which made every
+    # answer turn unsatisfiable: the validator demanded a field the advertised
+    # schema gave the model no way to send. See tests/unit/tools/builtin/
+    # test_finalize_schema_contract.py, which asserts the schema and the default
+    # validator agree rather than trusting that they still do.
     "required": ["status", "intent_kind", "actions_performed"],
 }
 
