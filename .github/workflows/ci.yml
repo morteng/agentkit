@@ -78,3 +78,19 @@ jobs:
       # both are transitive deps with no exploitable path in agentkit. Revisit when upstream ships fixes.
       - run: uv run pip-audit --ignore-vuln PYSEC-2026-89 --ignore-vuln PYSEC-2025-183
       - run: uv run bandit -r src/agentkit -ll
+
+  gitleaks:
+    # Runs the same scan .pre-commit-config.yaml runs locally (same pinned
+    # version, same .gitleaks.toml), so a PR from a fork that never installs
+    # the pre-commit hook is still gated. See .gitleaks.toml for why the two
+    # PII-detector test fixtures are allowlisted rather than exempted wholesale.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks
+        run: |
+          curl -sL -o gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz
+          tar -xzf gitleaks.tar.gz gitleaks
+      - run: ./gitleaks detect --source . --config .gitleaks.toml -v --redact
