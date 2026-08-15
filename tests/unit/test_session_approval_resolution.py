@@ -35,7 +35,7 @@ def _session(audit_sink: AuditSink | None = None) -> AgentSession:
     config.stores.memory = FakeMemoryStore()
     config.stores.checkpoint = FakeCheckpointStore()
     return AgentSession(
-        owner=OwnerId("u:morten"),
+        owner=OwnerId("u:alice"),
         config=config,
         provider=FakeProvider().script(FakeProvider.text("hi")),
         registry=ToolRegistry(),
@@ -100,14 +100,14 @@ def test_resolution_normalises_the_decision_and_drops_irrelevant_fields():
     turn_id = new_id(TurnId)
 
     granted = session._build_resolution_event(  # pyright: ignore[reportPrivateUsage]
-        ctx, turn_id, "c1", "approve", {"category": "movies"}, "ignored on approve", "u:morten"
+        ctx, turn_id, "c1", "approve", {"category": "movies"}, "ignored on approve", "u:alice"
     )
     assert granted.decision == "approve"
     assert granted.edited_args == {"category": "movies"}
     assert granted.reason is None
 
     denied = session._build_resolution_event(  # pyright: ignore[reportPrivateUsage]
-        ctx, turn_id, "c1", "deny", {"category": "movies"}, "wrong account", "u:morten"
+        ctx, turn_id, "c1", "deny", {"category": "movies"}, "wrong account", "u:alice"
     )
     assert denied.decision == "deny"
     assert denied.edited_args is None
@@ -116,7 +116,7 @@ def test_resolution_normalises_the_decision_and_drops_irrelevant_fields():
     # The session treats anything that is not exactly "approve" as a denial;
     # the event has to report what happened, not what was asked for.
     shouty = session._build_resolution_event(  # pyright: ignore[reportPrivateUsage]
-        ctx, turn_id, "c1", "APPROVE", None, None, "u:morten"
+        ctx, turn_id, "c1", "APPROVE", None, None, "u:alice"
     )
     assert shouty.decision == "deny"
 
@@ -146,12 +146,12 @@ async def test_verdict_pair_is_the_old_event_then_the_new_one():
     queue: asyncio.Queue = asyncio.Queue()
 
     await session._emit_verdict(  # pyright: ignore[reportPrivateUsage]
-        queue, ctx, turn_id, "c1", "approve", {"category": "movies"}, None, "u:morten"
+        queue, ctx, turn_id, "c1", "approve", {"category": "movies"}, None, "u:alice"
     )
 
     events = [queue.get_nowait() for _ in range(queue.qsize())]
     assert [type(e).__name__ for e in events] == ["ApprovalGranted", "ApprovalResolved"]
-    assert events[1].resolved_by == "u:morten"
+    assert events[1].resolved_by == "u:alice"
     assert events[1].call_id == "c1"
     # Both draw from the turn's single sequence counter.
     assert [e.sequence for e in events] == [0, 1]

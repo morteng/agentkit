@@ -1,11 +1,12 @@
-"""End-to-end egress coverage for credentials — the incident this all exists for.
+"""End-to-end egress coverage for credentials.
 
-REDACTED's user-provisioning tool mints a household password with
-``secrets.token_urlsafe(16)`` and returns it inside its tool result. That
+The case these exist for: a provisioning-style tool mints a password with
+``secrets.token_urlsafe(16)`` and returns it inside its own tool result. That
 result goes back to the model, out to a third-party inference provider on the
-same turn, and into the transcript forever. The identity-shaped detectors saw
-nothing. These tests assert the value does not leave the boundary — through the
-tool result (leaking *in* to the model) and through tool arguments (leaking
+same turn, and into the transcript permanently. Identity-shaped detectors see
+nothing — a freshly minted token looks like noise, not like a person. These
+tests assert the value does not cross the boundary in either direction: through
+the tool result (leaking *in* to the model) or through tool arguments (leaking
 *out* to a tool).
 """
 

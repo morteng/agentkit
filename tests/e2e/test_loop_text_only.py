@@ -66,12 +66,12 @@ async def test_text_only_turn_ends_as_no_response():
     model still won't finalize, the loop ends cleanly but reports NO_RESPONSE.
 
     This used to assert COMPLETED, on the reasoning that the consumer would
-    synthesize a terminal envelope from the tool log. No consumer did. REDACTED
-    ran its ordinary completion path on this event, so on 2026-08-15 a turn that
-    stopped mid-thought after six tool calls rendered as a finished
-    conversation: no reply, no error, no indication anything had gone wrong.
-    COMPLETED asserts the model finished, and here it demonstrably has not —
-    the reason has to distinguish the two or a UI cannot.
+    synthesize a terminal envelope from the tool log. No consumer did — they ran
+    their ordinary completion path on the event, so a turn that stopped
+    mid-thought after a row of tool calls rendered as a finished conversation:
+    no reply, no error, no indication anything had gone wrong. COMPLETED asserts
+    the model finished, and here it demonstrably has not — the reason has to
+    distinguish the two or a UI cannot.
     """
     # Two scripted texts: the original answer, then the model ignoring the
     # re-prompt and streaming text again. Budget (1) is then spent.

@@ -13,9 +13,8 @@ between an exact enum and none at all. Handlers commonly normalise
 normalisation unreachable, so ``"Music"`` against ``enum: ["music", ...]`` became
 a refusal where it used to be a match. Survivable rather than fine: the refusal
 is ``retryable`` and lists the accepted values, so a model spends one wasted call
-and then succeeds. The first downstream consumer to hit this (REDACTED — six
-enum-valued arguments, every one with a normalising handler) worked around it by
-writing "lowercase, exactly as listed" into each enum description. Recorded here
+and then succeeds. The first downstream consumer to hit this worked around it by
+writing "lowercase, exactly as listed" into every enum description. Recorded here
 so that workaround does not become the reason nobody fixes the cause.
 """
 

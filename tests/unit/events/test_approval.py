@@ -22,8 +22,8 @@ def _common(seq: int = 0) -> dict:
 def _needed(**kwargs) -> ApprovalNeeded:
     fields = {
         "call_id": "c1",
-        "tool_name": "vaultwarden_user_delete",
-        "arguments": {"email": "REDACTED@example.test"},
+        "tool_name": "vault_user_delete",
+        "arguments": {"email": "bob@example.test"},
         "risk": "destructive",
         "timeout_at": datetime.now(UTC),
         **kwargs,
@@ -70,14 +70,14 @@ def test_approval_resolved_round_trips_through_the_union():
         **_common(3),
         call_id="c1",
         decision="approve",
-        resolved_by="u:morten",
+        resolved_by="u:alice",
         edited_args={"category": "movies"},
     )
     parsed = EVENT_ADAPTER.validate_python(ev.model_dump(mode="json"))
     assert isinstance(parsed, ApprovalResolved)
     assert parsed.type == "approval_resolved"
     assert parsed.decision == "approve"
-    assert parsed.resolved_by == "u:morten"
+    assert parsed.resolved_by == "u:alice"
     assert parsed.edited_args == {"category": "movies"}
     assert parsed.expired is False
     assert parsed.reason is None

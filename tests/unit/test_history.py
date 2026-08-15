@@ -29,7 +29,7 @@ from agentkit.history import (
 )
 from agentkit.store.fakes import FakeSessionStore
 
-_SESSION = SessionId("REDACTEDmorten")
+_SESSION = SessionId("acme:alice")
 _T0 = datetime(2026, 8, 14, 19, 22, 3, tzinfo=UTC)
 
 
@@ -105,7 +105,7 @@ def test_system_messages_never_appear():
 
 
 def _tool_exchange(*, is_error: bool = False, result_text: str = '["a","b"]') -> list[Message]:
-    use = ToolUseBlock(id="call_0b9c", name="jellyfin_search", arguments={"query": "sci-fi"})
+    use = ToolUseBlock(id="call_0b9c", name="library_search", arguments={"query": "sci-fi"})
     return [
         _msg(MessageRole.ASSISTANT, [use], at=4),
         _msg(
@@ -130,7 +130,7 @@ def test_a_tool_call_becomes_a_receipt_with_no_result_content():
     receipt = items[0]
     assert isinstance(receipt, ToolHistoryItem)
     assert receipt.id == "call_0b9c"
-    assert receipt.tool_name == "jellyfin_search"
+    assert receipt.tool_name == "library_search"
     assert receipt.status == "ok"
     assert receipt.summary == "3 results"
     assert receipt.arg_preview == {"query": "sci-fi"}
@@ -153,7 +153,7 @@ def test_a_failed_call_summarises_the_error():
 
 
 def test_a_media_result_is_counted_never_embedded():
-    use = ToolUseBlock(id="call_i", name="jellyfin_art", arguments={})
+    use = ToolUseBlock(id="call_i", name="library_art", arguments={})
     result = ToolResultBlock(
         tool_use_id="call_i",
         content=[ImageBlock(media_type="image/png", data="AAAABBBB")],
@@ -200,7 +200,7 @@ def test_argument_previews_mask_secrets_and_flatten_structure():
         id="call_a",
         name="provision",
         arguments={
-            "user": "REDACTED",
+            "user": "bob",
             "password": "hunter2",
             "opts": {"a": 1},
             "tags": [1, 2],
@@ -248,13 +248,13 @@ async def test_an_empty_session_is_an_empty_page_not_an_error():
     assert page.count == 0
     assert page.items == []
     assert page.truncated is False
-    assert page.session_id == "REDACTEDmorten"
+    assert page.session_id == "acme:alice"
 
 
 @pytest.mark.asyncio
 async def test_an_oversized_limit_is_clamped_not_rejected():
     store = FakeSessionStore()
-    await store.create(_SESSION, OwnerId("REDACTEDmorten"))
+    await store.create(_SESSION, OwnerId("acme:alice"))
     for i in range(5):
         await store.append_message(_SESSION, _user(f"m{i}"))
 
@@ -269,7 +269,7 @@ async def test_an_oversized_limit_is_clamped_not_rejected():
 @pytest.mark.asyncio
 async def test_a_full_page_says_there_is_more_above_it():
     store = FakeSessionStore()
-    await store.create(_SESSION, OwnerId("REDACTEDmorten"))
+    await store.create(_SESSION, OwnerId("acme:alice"))
     for i in range(6):
         await store.append_message(_SESSION, _user(f"m{i}"))
 
@@ -283,7 +283,7 @@ async def test_a_full_page_says_there_is_more_above_it():
 async def test_count_counts_items_not_store_messages():
     """One message can expand to a bubble plus several receipts."""
     store = FakeSessionStore()
-    await store.create(_SESSION, OwnerId("REDACTEDmorten"))
+    await store.create(_SESSION, OwnerId("acme:alice"))
     await store.append_message(
         _SESSION,
         _msg(

@@ -15,9 +15,9 @@ name, status, a server-built summary, a flattened argument preview — and never
 what it returned. There is no field for the content, so there is nothing for a
 consumer to accidentally render.
 
-The shapes match section 2 of REDACTED's ``API-CONTRACT.md`` exactly, so a
-consumer can serve :func:`load_history_page` from a REST route, replay it over
-the WebSocket transport (``replay_history=True``, see
+The REST and WebSocket shapes are identical by design, so a consumer can serve
+:func:`load_history_page` from a REST route, replay it over the WebSocket
+transport (``replay_history=True``, see
 :func:`agentkit.transports.websocket.mount_websocket_route`), or both, and the
 client parses one shape either way.
 """

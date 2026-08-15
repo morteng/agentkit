@@ -2,7 +2,8 @@
 
 Domain-blind agent runtime. Provider abstraction (Anthropic + OpenRouter with caching), 11-phase loop, MCP tool boundary, pluggable guards, Pydantic event stream.
 
-**Private project — proprietary license. See `LICENSE`.**
+Licensed under **Apache-2.0** — see [`LICENSE`](LICENSE) and
+[`NOTICE.md`](NOTICE.md).
 
 ## Installation
 

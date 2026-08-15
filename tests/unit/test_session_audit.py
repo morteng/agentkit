@@ -42,7 +42,7 @@ def _session(audit: AuditSink | None = None, *, on_config: bool = False) -> Agen
     if on_config:
         config.audit_sink = audit
     return AgentSession(
-        owner=OwnerId("REDACTEDmorten"),
+        owner=OwnerId("acme:alice"),
         config=config,
         provider=FakeProvider().script(FakeProvider.text("hi")),
         registry=ToolRegistry(),
@@ -73,7 +73,7 @@ def test_the_constructor_wins_over_the_config():
     config = AgentConfig()
     config.audit_sink = configured
     session = AgentSession(
-        owner=OwnerId("REDACTEDmorten"),
+        owner=OwnerId("acme:alice"),
         config=config,
         provider=FakeProvider().script(FakeProvider.text("hi")),
         registry=ToolRegistry(),
@@ -87,7 +87,7 @@ def test_the_constructor_wins_over_the_config():
 async def test_a_human_verdict_is_filed_as_human_activity():
     audit = _Recorder()
     session = _session(audit)
-    ctx = _ctx_with_verdict("c1", "vaultwarden_user_delete", approved=True)
+    ctx = _ctx_with_verdict("c1", "vault_user_delete", approved=True)
     turn_id = new_id(TurnId)
 
     await session._emit_verdict(  # pyright: ignore[reportPrivateUsage]
@@ -96,25 +96,25 @@ async def test_a_human_verdict_is_filed_as_human_activity():
         turn_id,
         "c1",
         "approve",
-        {"email": "REDACTED@REDACTED", "token": "secret"},
+        {"email": "bob@example.test", "token": "secret"},
         None,
-        "REDACTEDmorten",
+        "acme:alice",
     )
 
     assert len(audit.records) == 1
     record = audit.records[0]
     assert record.action == ACTION_APPROVAL_RESOLVED
-    assert record.actor == "REDACTEDmorten"
+    assert record.actor == "acme:alice"
     # A human's consent is the one row that must never look like agent activity.
     assert record.source == SOURCE_HUMAN
-    assert record.target == "vaultwarden_user_delete"
+    assert record.target == "vault_user_delete"
     assert record.call_id == "c1"
     assert record.turn_id == str(turn_id)
     assert record.detail["decision"] == "approve"
     assert record.detail["expired"] is False
     # The edit the human made is part of the consent, and is redacted like any
     # other argument projection.
-    assert record.detail["edited_args"] == {"email": "REDACTED@REDACTED", "token": "***"}
+    assert record.detail["edited_args"] == {"email": "bob@example.test", "token": "***"}
 
 
 @pytest.mark.asyncio
@@ -131,7 +131,7 @@ async def test_a_denial_records_the_reason_and_no_arguments():
         "deny",
         {"url": "magnet:?xt=x"},
         "wrong account",
-        "REDACTEDmorten",
+        "acme:alice",
     )
 
     detail = audit.records[0].detail
@@ -149,7 +149,7 @@ async def test_a_shouted_approval_is_audited_as_the_denial_it_actually_is():
     ctx = _ctx_with_verdict("c1", "torrent_add", approved=False)
 
     await session._emit_verdict(  # pyright: ignore[reportPrivateUsage]
-        asyncio.Queue(), ctx, new_id(TurnId), "c1", "APPROVE", {"a": 1}, None, "REDACTEDmorten"
+        asyncio.Queue(), ctx, new_id(TurnId), "c1", "APPROVE", {"a": 1}, None, "acme:alice"
     )
 
     assert audit.records[0].detail["decision"] == "deny"
@@ -212,7 +212,7 @@ async def test_a_broken_sink_does_not_break_the_resume():
     ctx = _ctx_with_verdict("c1", "torrent_add", approved=True)
 
     await session._emit_verdict(  # pyright: ignore[reportPrivateUsage]
-        queue, ctx, new_id(TurnId), "c1", "approve", None, None, "REDACTEDmorten"
+        queue, ctx, new_id(TurnId), "c1", "approve", None, None, "acme:alice"
     )
 
     # The verdict events still reached the consumer.

@@ -19,9 +19,9 @@ from agentkit.audit import (
 def _record(action: str = ACTION_TOOL_CALL) -> AuditRecord:
     return AuditRecord(
         ts=datetime.now(UTC),
-        actor="u:morten",
+        actor="u:alice",
         action=action,
-        target="vaultwarden_user_delete",
+        target="vault_user_delete",
     )
 
 
@@ -97,7 +97,7 @@ async def test_logging_sink_accepts_a_full_record():
     await LoggingAuditSink().record(
         AuditRecord(
             ts=datetime.now(UTC),
-            actor="u:morten",
+            actor="u:alice",
             action=ACTION_TOOL_CALL,
             target="t",
             detail={"nested": {"a": 1}},

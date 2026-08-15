@@ -37,12 +37,12 @@ class _Exploding(AuditSink):
 
 class _Ctx:
     call_id = "c1"
-    session_id = "REDACTEDmorten"
+    session_id = "acme:alice"
     turn_id = "turn-1"
     tainted = False
 
     def __init__(self) -> None:
-        self.metadata: dict[str, object] = {"owner": "u:morten"}
+        self.metadata: dict[str, object] = {"owner": "u:alice"}
 
 
 def _spec(
@@ -87,23 +87,23 @@ def _dispatcher(reg: ToolRegistry, audit: AuditSink | None) -> ToolDispatcher:
 @pytest.mark.asyncio
 async def test_the_destructive_call_writes_a_record():
     audit = _Recorder()
-    reg = _registry("vaultwarden_user_delete")
+    reg = _registry("vault_user_delete")
     await _dispatcher(reg, audit).run(
-        [ToolCall(id="c1", name="vaultwarden_user_delete", arguments={"email": "m@REDACTED"})],
+        [ToolCall(id="c1", name="vault_user_delete", arguments={"email": "alice@example.test"})],
         ctx=_Ctx(),
     )
 
     assert len(audit.records) == 1
     record = audit.records[0]
     assert record.action == ACTION_TOOL_CALL
-    assert record.target == "vaultwarden_user_delete"
-    assert record.actor == "u:morten"
+    assert record.target == "vault_user_delete"
+    assert record.actor == "u:alice"
     assert record.source == SOURCE_AGENT
-    assert record.session_id == "REDACTEDmorten"
+    assert record.session_id == "acme:alice"
     assert record.turn_id == "turn-1"
     assert record.call_id == "c1"
     assert record.detail["status"] == "ok"
-    assert record.detail["arguments"] == {"email": "m@REDACTED"}
+    assert record.detail["arguments"] == {"email": "alice@example.test"}
 
 
 @pytest.mark.asyncio
@@ -111,9 +111,9 @@ async def test_the_record_carries_both_classification_axes():
     """A reader must be able to tell a rename from a destruction without
     keeping their own tool table."""
     audit = _Recorder()
-    reg = _registry("jellyfin_rename", risk=RiskLevel.HIGH_WRITE, side_effects=SideEffects.LOCAL)
+    reg = _registry("library_rename", risk=RiskLevel.HIGH_WRITE, side_effects=SideEffects.LOCAL)
     await _dispatcher(reg, audit).run(
-        [ToolCall(id="c1", name="jellyfin_rename", arguments={})], ctx=_Ctx()
+        [ToolCall(id="c1", name="library_rename", arguments={})], ctx=_Ctx()
     )
 
     assert audit.records[0].detail["risk"] == "high_write"
@@ -160,7 +160,7 @@ async def test_secret_arguments_never_reach_the_ledger():
                 id="c1",
                 name="provision",
                 arguments={
-                    "user": "REDACTED",
+                    "user": "bob",
                     "password": "hunter2",
                     "api_token": "sk-live-1234",
                     "options": {"deep": {"nested": True}},
@@ -173,7 +173,7 @@ async def test_secret_arguments_never_reach_the_ledger():
     arguments = audit.records[0].detail["arguments"]
     assert arguments["password"] == "***"
     assert arguments["api_token"] == "***"
-    assert arguments["user"] == "REDACTED"
+    assert arguments["user"] == "bob"
     # Nesting is flattened, so a payload cannot ride into the ledger inside an
     # argument value.
     assert arguments["options"] == "[object]"

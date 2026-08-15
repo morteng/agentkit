@@ -19,7 +19,7 @@ from agentkit.store.fakes import FakeMemoryStore, FakeSessionStore
 from agentkit.tools.registry import ToolRegistry
 from agentkit.transports.websocket import _replay_history  # pyright: ignore[reportPrivateUsage]
 
-_SESSION = SessionId("REDACTEDmorten")
+_SESSION = SessionId("acme:alice")
 
 
 class _FakeWS:
@@ -40,7 +40,7 @@ def _session(store: Any) -> AgentSession:
     config.stores.session = store
     config.stores.memory = FakeMemoryStore()
     return AgentSession(
-        owner=OwnerId("REDACTEDmorten"),
+        owner=OwnerId("acme:alice"),
         config=config,
         provider=FakeProvider().script(FakeProvider.text("hi")),
         registry=ToolRegistry(),
@@ -62,7 +62,7 @@ def _user(text: str) -> Message:
 @pytest.mark.asyncio
 async def test_the_replay_frame_carries_the_stored_transcript():
     store = FakeSessionStore()
-    await store.create(_SESSION, OwnerId("REDACTEDmorten"))
+    await store.create(_SESSION, OwnerId("acme:alice"))
     await store.append_message(_SESSION, _user("find something to watch"))
     ws = _FakeWS()
 
@@ -71,7 +71,7 @@ async def test_the_replay_frame_carries_the_stored_transcript():
     assert len(ws.sent) == 1
     frame = ws.sent[0]
     assert frame["type"] == "history"
-    assert frame["session_id"] == "REDACTEDmorten"
+    assert frame["session_id"] == "acme:alice"
     assert frame["count"] == 1
     assert frame["items"][0]["kind"] == "user"
     assert frame["items"][0]["text"] == "find something to watch"
@@ -91,7 +91,7 @@ async def test_an_empty_session_still_gets_a_frame():
 @pytest.mark.asyncio
 async def test_the_limit_reaches_the_store():
     store = FakeSessionStore()
-    await store.create(_SESSION, OwnerId("REDACTEDmorten"))
+    await store.create(_SESSION, OwnerId("acme:alice"))
     for i in range(5):
         await store.append_message(_SESSION, _user(f"m{i}"))
     ws = _FakeWS()
