@@ -299,6 +299,49 @@ async def test_resume_after_timeout_emits_errored_and_does_not_execute_tool():
 
 
 @pytest.mark.asyncio
+async def test_timed_out_resume_never_repeats_a_turn_id_sequence_pair():
+    """K11(a): the timeout stream reuses the suspended turn's turn_id, so its
+    sequence numbers must continue from where the suspended turn left off —
+    not restart at 0 — or a client that dedupes on (turn_id, sequence)
+    silently drops the ApprovalResolved that was supposed to close the card."""
+    session, _, executions = _make_approval_session()
+    session.config.guards.approval_timeout_seconds = 0.05  # 50ms
+
+    first_stream_events: list = []
+    async with session.run("delete x") as stream:
+        async for ev in stream:
+            first_stream_events.append(ev)
+    assert any(isinstance(e, ApprovalNeeded) for e in first_stream_events)
+    turn_id = first_stream_events[0].turn_id
+    # TurnStarted is always sequence 0 on the original stream — this is
+    # exactly the pair a naive restart-at-0 timeout stream would collide with.
+    assert first_stream_events[0].sequence == 0
+
+    await asyncio.sleep(0.2)  # past the timeout
+
+    needed = next(e for e in first_stream_events if isinstance(e, ApprovalNeeded))
+    timeout_stream_events: list = []
+    async with session.resume_with_approval(
+        needed.turn_id, needed.call_id, decision="approve"
+    ) as s:
+        async for ev in s:
+            timeout_stream_events.append(ev)
+
+    assert executions == []  # never ran
+
+    all_events = first_stream_events + timeout_stream_events
+    pairs = [(e.turn_id, e.sequence) for e in all_events]
+    assert all(t == turn_id for t, _ in pairs), "every event in this cycle shares one turn_id"
+    assert len(pairs) == len(set(pairs)), (
+        f"(turn_id, sequence) pair repeated across suspend/timeout: {pairs}"
+    )
+    # And the timeout stream's own sequences are still internally monotonic.
+    timeout_seqs = [e.sequence for e in timeout_stream_events]
+    assert timeout_seqs == sorted(timeout_seqs)
+    assert len(timeout_seqs) == len(set(timeout_seqs))
+
+
+@pytest.mark.asyncio
 async def test_load_resume_context_raises_approval_timeout_directly():
     """F24: lower-level _load_resume_context still raises ApprovalTimeout for callers
     that prefer the exception path over the event stream."""

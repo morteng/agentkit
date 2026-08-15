@@ -11,7 +11,8 @@ import pytest
 
 from agentkit import AgentConfig, AgentSession
 from agentkit._ids import CheckpointId, OwnerId, TurnId, new_id
-from agentkit.errors import ApprovalTimeout
+from agentkit.audit import AuditRecord, AuditSink
+from agentkit.errors import ApprovalTimeout, CheckpointMissing
 from agentkit.events import ApprovalResolved, Errored, TurnEnded
 from agentkit.guards.taint import TaintSource
 from agentkit.loop.context import TurnContext, to_checkpoint_payload
@@ -20,7 +21,15 @@ from agentkit.store.fakes import FakeCheckpointStore, FakeMemoryStore, FakeSessi
 from agentkit.tools.registry import ToolRegistry
 
 
-def _session() -> AgentSession:
+class _Recorder(AuditSink):
+    def __init__(self) -> None:
+        self.records: list[AuditRecord] = []
+
+    async def record(self, record: AuditRecord) -> None:
+        self.records.append(record)
+
+
+def _session(audit_sink: AuditSink | None = None) -> AgentSession:
     config = AgentConfig()
     config.stores.session = FakeSessionStore()
     config.stores.memory = FakeMemoryStore()
@@ -31,6 +40,7 @@ def _session() -> AgentSession:
         provider=FakeProvider().script(FakeProvider.text("hi")),
         registry=ToolRegistry(),
         model="m",
+        audit_sink=audit_sink,
     )
 
 
@@ -185,6 +195,89 @@ async def test_expired_checkpoint_names_the_calls_it_stranded():
         await session._load_resume_context(turn_id)  # pyright: ignore[reportPrivateUsage]
 
     assert excinfo.value.call_ids == ("c1", "c2")
+
+
+# ---------------------------------------------------------------------------
+# K11(b): expiry is detectable on an access path other than resume.
+#
+# check_approval_expiry is a lazy check, not a sweep — agentkit has no
+# background-task lifecycle to drive one. It lets a host that already knows a
+# turn_id is awaiting approval (e.g. one it persisted from its own
+# ApprovalNeeded event) find out, and close the card out, without a client
+# ever having to call resume_with_approval.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_check_approval_expiry_is_none_when_nothing_is_pending():
+    session = _session()
+    assert await session.check_approval_expiry(new_id(TurnId)) is None
+
+
+@pytest.mark.asyncio
+async def test_check_approval_expiry_leaves_a_live_checkpoint_untouched():
+    """Not yet expired: this is a read, not a destructive peek at something
+    still answerable."""
+    session = _session()
+    turn_id = new_id(TurnId)
+    await _save_checkpoint(
+        session,
+        turn_id,
+        pending=[{"id": "c1", "name": "t", "arguments": {}}],
+        timeout_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    assert await session.check_approval_expiry(turn_id) is None
+
+    # A real resume still finds it — nothing was consumed.
+    ctx, _queue = await session._load_resume_context(  # pyright: ignore[reportPrivateUsage]
+        turn_id, require_call_ids=["c1"]
+    )
+    assert ctx.turn_id == turn_id
+
+
+@pytest.mark.asyncio
+async def test_check_approval_expiry_closes_out_an_approval_nobody_ever_resumed():
+    """The core K11(b) case: no client ever calls resume. This is the only
+    other thing that can discover the expiry, and it must produce the same
+    outcome resume's timeout path would have."""
+    audit = _Recorder()
+    session = _session(audit)
+    turn_id = new_id(TurnId)
+    await _save_checkpoint(
+        session,
+        turn_id,
+        pending=[
+            {"id": "c1", "name": "t", "arguments": {}},
+            {"id": "c2", "name": "t", "arguments": {}},
+        ],
+        timeout_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+
+    stream = await session.check_approval_expiry(turn_id)
+    assert stream is not None
+    events = [ev async for ev in stream]
+
+    resolved = [e for e in events if isinstance(e, ApprovalResolved)]
+    assert [e.call_id for e in resolved] == ["c1", "c2"]
+    for ev in resolved:
+        assert ev.expired is True
+        assert ev.decision == "deny"
+        assert ev.resolved_by == "system"
+    assert isinstance(events[-2], Errored)
+    assert isinstance(events[-1], TurnEnded)
+    assert [e.sequence for e in events] == list(range(len(events)))
+
+    # Audited even though nobody was watching the stream — same guarantee as
+    # the resume timeout path.
+    assert [r.call_id for r in audit.records] == ["c1", "c2"]
+    for record in audit.records:
+        assert record.detail["expired"] is True
+        assert record.detail["decision"] == "deny"
+
+    # Consumed: a later resume finds nothing to resume.
+    with pytest.raises(CheckpointMissing):
+        await session._load_resume_context(turn_id)  # pyright: ignore[reportPrivateUsage]
 
 
 def _collect(stream) -> list:

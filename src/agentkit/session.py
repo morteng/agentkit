@@ -661,24 +661,112 @@ class AgentSession:
         # checkpoint (success or timeout) so it can't be resumed later.
         timeout_iso = ctx.metadata.get("approval_timeout_at")
         await self.config.stores.checkpoint.delete(ckpt_id)
-        if timeout_iso:
-            try:
-                deadline = datetime.fromisoformat(timeout_iso)
-            except ValueError:
-                deadline = None
-            if deadline is not None and datetime.now(UTC) > deadline:
-                # The turn is now dead — checkpoint deleted, pending calls will
-                # never run. Close them off in the store, or the stored
-                # transcript keeps a ``tool_use`` that nothing can ever answer
-                # and every later turn ships malformed history.
-                stranded = [c["id"] for c in ctx.metadata.get("pending_user_approvals", [])]
-                ctx.metadata["pending_user_approvals"] = []
-                await self._persist_turn(ctx, len(ctx.history), end_reason=TurnEndReason.ERROR)
-                raise ApprovalTimeout(
-                    f"approval window for turn {turn_id} expired at {timeout_iso}",
-                    call_ids=stranded,
-                )
+        if self._is_expired(timeout_iso):
+            # The turn is now dead — checkpoint deleted, pending calls will
+            # never run. Close them off in the store, or the stored
+            # transcript keeps a ``tool_use`` that nothing can ever answer
+            # and every later turn ships malformed history.
+            raise await self._close_expired_checkpoint(ctx, turn_id, timeout_iso)
         return ctx, queue
+
+    @staticmethod
+    def _is_expired(timeout_iso: str | None) -> bool:
+        """True when ``timeout_iso`` (an ``approval_timeout_at`` ISO string, or
+        ``None`` for "no deadline recorded") is in the past."""
+        if not timeout_iso:
+            return False
+        try:
+            deadline = datetime.fromisoformat(timeout_iso)
+        except ValueError:
+            return False
+        return datetime.now(UTC) > deadline
+
+    async def _close_expired_checkpoint(
+        self, ctx: TurnContext, turn_id: TurnId, timeout_iso: str | None
+    ) -> ApprovalTimeout:
+        """Strand ``ctx``'s pending calls, persist the turn as ERROR, and build
+        the :class:`ApprovalTimeout` describing what expired.
+
+        Shared by the resume path (which reaches here after a decision was
+        already given, either way) and :meth:`check_approval_expiry` (which
+        reaches here only after confirming the checkpoint IS expired — K11b:
+        expiry used to be observable only when a client called resume, so an
+        approval nobody ever answered emitted no event and wrote no audit
+        row). Does not touch the checkpoint store itself; callers delete
+        (or, for the resume path, already deleted) the checkpoint around this
+        call.
+        """
+        stranded = [c["id"] for c in ctx.metadata.get("pending_user_approvals", [])]
+        ctx.metadata["pending_user_approvals"] = []
+        await self._persist_turn(ctx, len(ctx.history), end_reason=TurnEndReason.ERROR)
+        return ApprovalTimeout(
+            f"approval window for turn {turn_id} expired at {timeout_iso}",
+            call_ids=stranded,
+            # ctx.event_sequence is the checkpoint's next unused sequence
+            # number — restarting the timeout stream at 0 would collide with
+            # events the suspended turn already emitted under the same
+            # turn_id (K11a).
+            sequence_base=ctx.event_sequence,
+        )
+
+    async def check_approval_expiry(self, turn_id: TurnId) -> AsyncIterator[Event] | None:
+        """Detect and close out an expired approval without a resume call.
+
+        K11b: expiry was previously observable only through
+        :meth:`resume_with_approval` — an approval nobody ever answers emits
+        no event and writes no audit row, so "silence is not consent" held
+        only if somebody eventually came back to check. This gives a host
+        application a lazy-check primitive it can call from any access path
+        that already knows about a pending turn — a periodic sweep over
+        turn_ids the host tracked from its own persisted ``ApprovalNeeded``
+        events, a status check when a session is reopened, and so on —
+        without agentkit itself owning a scheduler or background-task
+        lifecycle it does not otherwise have.
+
+        Returns ``None`` and leaves the checkpoint untouched when there is
+        nothing pending for ``turn_id``, or when it is pending but has not
+        yet expired — this is a read *unless* it finds an expiry, never a
+        destructive peek at a still-answerable approval. When the deadline
+        has passed, deletes the checkpoint, persists the turn as
+        ``TurnEndReason.ERROR`` (closing any dangling ``tool_use`` so the
+        stored transcript stays well-formed), audits the resolution, and
+        returns the same ``ApprovalResolved(expired=True)`` /
+        ``Errored`` / ``TurnEnded`` stream :meth:`resume_with_approval` would
+        have yielded, with sequence numbers continuing from the checkpoint's
+        ``event_sequence`` (K11a) so a client dedupes correctly however the
+        expiry was discovered.
+        """
+        if self.config.stores.checkpoint is None:
+            return None
+        ckpt_id = CheckpointId(f"approval:{turn_id}")
+        payload = await self.config.stores.checkpoint.load(ckpt_id)
+        if payload is None:
+            return None
+
+        data = from_checkpoint_payload(payload)
+        metadata: dict[str, Any] = dict(data.get("metadata", {}))
+        timeout_iso = metadata.get("approval_timeout_at")
+        if not self._is_expired(timeout_iso):
+            return None  # still pending, or no deadline recorded — untouched
+
+        history = [Message.model_validate(m) for m in data["history"]]
+        ctx = TurnContext(
+            session_id=self.id,
+            turn_id=turn_id,
+            call_id="",
+            history=history,
+            clock=SystemClock(),
+            memory_store=self.config.stores.memory,
+            memory_scope=self.config.stores.memory_scope,
+        )
+        ctx.event_sequence = int(data.get("event_sequence", 0))
+        ctx.metadata.update(metadata)
+        ctx.metadata["owner"] = self.owner
+        ctx.metadata.pop("suspend_reason", None)
+
+        await self.config.stores.checkpoint.delete(ckpt_id)
+        exc = await self._close_expired_checkpoint(ctx, turn_id, timeout_iso)
+        return self._approval_timeout_stream(turn_id, exc)
 
     @staticmethod
     def _validate_call_ids(ctx: TurnContext, call_ids: Sequence[str]) -> None:
@@ -767,15 +855,24 @@ class AgentSession:
         used to emit nothing addressed to the card the user is looking at, which
         is indistinguishable from a hang. ``expired=True`` with
         ``decision="deny"`` says the window closed and the call did not run.
+
+        Sequence numbers continue from ``exc.sequence_base`` — the suspended
+        turn's next unused ``event_sequence``, captured while its ``ctx`` was
+        still in scope at the raise site — rather than restarting at 0. The
+        turn_id is reused from the suspended turn, so restarting at 0 would
+        collide with that turn's own events (``TurnStarted`` is always
+        sequence 0), and a client that dedupes on ``(turn_id, sequence)``
+        would silently drop the ApprovalResolved meant to close the card.
         """
         now = datetime.now(UTC)
+        base = exc.sequence_base
         events: list[Event] = [
             ApprovalResolved(
                 event_id=new_id(EventId),
                 session_id=self.id,
                 turn_id=turn_id,
                 ts=now,
-                sequence=i,
+                sequence=base + i,
                 call_id=call_id,
                 decision="deny",
                 resolved_by=SYSTEM_RESOLVER,
@@ -784,15 +881,13 @@ class AgentSession:
             )
             for i, call_id in enumerate(exc.call_ids)
         ]
-        # The context is gone by now, so sequence numbers restart at 0 for this
-        # stream — as they always have for the two events below.
         events.append(
             Errored(
                 event_id=new_id(EventId),
                 session_id=self.id,
                 turn_id=turn_id,
                 ts=now,
-                sequence=len(events),
+                sequence=base + len(events),
                 code=ErrorCode.APPROVAL_TIMEOUT,
                 message=str(exc),
                 recoverable=False,
@@ -804,7 +899,7 @@ class AgentSession:
                 session_id=self.id,
                 turn_id=turn_id,
                 ts=now,
-                sequence=len(events),
+                sequence=base + len(events),
                 reason=TurnEndReason.ERROR,
                 metrics=TurnMetrics(),
             )

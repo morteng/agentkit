@@ -336,3 +336,36 @@ async def test_expired_approval_closes_the_open_call_in_the_store():
     assert _dangling_tool_use_ids(stored) == []
     closer = next(m for m in stored if m.metadata.annotations.get(SYNTHETIC_TOOL_RESULT_ANNOTATION))
     assert closer.role is MessageRole.TOOL
+
+
+@pytest.mark.asyncio
+async def test_check_approval_expiry_closes_the_open_call_even_when_nobody_ever_resumes():
+    """K11(b): the same transcript-corruption risk exists when no client ever
+    calls resume at all — check_approval_expiry is the only other thing that
+    can find and close this out."""
+    executions: list[dict] = []
+    session = _make_session(
+        FakeProvider.tool_call("REDACTED.devices.delete", {"id": "x"}),
+        _FINALIZE,
+        executions=executions,
+    )
+    session.config.guards.approval_timeout_seconds = 0.05
+    needed = await _suspend(session, "delete x")
+    assert _dangling_tool_use_ids(await _stored(session)) == [needed[0].call_id]
+
+    await asyncio.sleep(0.2)
+
+    stream = await session.check_approval_expiry(needed[0].turn_id)
+    assert stream is not None
+    async for _ev in stream:
+        pass
+
+    assert executions == []
+    stored = await _stored(session)
+    assert _dangling_tool_use_ids(stored) == []
+    closer = next(m for m in stored if m.metadata.annotations.get(SYNTHETIC_TOOL_RESULT_ANNOTATION))
+    assert closer.role is MessageRole.TOOL
+
+    # And a resume attempted after the sweep finds nothing left to resume.
+    with pytest.raises(CheckpointMissing):
+        await session._load_resume_context(needed[0].turn_id)  # pyright: ignore[reportPrivateUsage]

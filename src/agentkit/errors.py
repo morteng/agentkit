@@ -34,11 +34,21 @@ class ApprovalTimeout(AgentkitError):
     ``call_ids`` are the approvals the expiry stranded, so the caller can emit
     one resolution event per card instead of a bare error the client cannot
     match to anything it is showing.
+
+    ``sequence_base`` is the turn's next unused ``event_sequence`` at the
+    moment the timeout was detected — the checkpoint's ``ctx`` is still in
+    scope at the raise site, so the caller building the timeout stream can
+    continue the turn's ``(turn_id, sequence)`` numbering instead of
+    restarting at 0 and colliding with events the suspended turn already
+    emitted (e.g. ``TurnStarted``, sequence 0).
     """
 
-    def __init__(self, message: str, *, call_ids: Sequence[str] = ()) -> None:
+    def __init__(
+        self, message: str, *, call_ids: Sequence[str] = (), sequence_base: int = 0
+    ) -> None:
         super().__init__(message)
         self.call_ids: tuple[str, ...] = tuple(call_ids)
+        self.sequence_base = sequence_base
 
 
 class CheckpointMissing(AgentkitError):

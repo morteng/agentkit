@@ -109,8 +109,13 @@ def fresh_child_context(parent: TurnContext, *, prompt: str) -> TurnContext:
     )
     # Taint latches downward: a parent turn that already ingested untrusted
     # content must not be able to launder it through a fresh child whose
-    # ``tainted`` flag starts clean.
+    # ``tainted`` flag starts clean. The provenance list has to travel with
+    # it — a child that knows it is tainted but not why defeats provenance
+    # reporting — copied rather than shared so the child mutating its own
+    # list (e.g. ingesting more untrusted content) cannot corrupt the
+    # parent's record.
     child.tainted = parent.tainted
+    child.taint_sources = list(parent.taint_sources)
     return child
 
 

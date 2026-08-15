@@ -64,7 +64,32 @@ async def handle_approval_wait(ctx: TurnContext, deps: dict[str, Any]) -> Phase:
         from agentkit._ids import CheckpointId  # noqa: PLC0415
         from agentkit.loop.context import to_checkpoint_payload  # noqa: PLC0415
 
-        payload = to_checkpoint_payload(ctx)
+        # K11(a): after this handler returns Phase.TURN_ENDED, the orchestrator
+        # still allocates up to two more sequence numbers under this same
+        # turn_id — a PhaseChanged for the APPROVAL_WAIT -> TURN_ENDED
+        # transition (unless publish_phase_changed is off, which this handler
+        # has no visibility into via ``deps``) and always a TurnEnded. Those
+        # events call ctx.next_sequence() themselves, *after* this snapshot is
+        # taken, so the checkpoint's saved event_sequence has to be the value
+        # the counter will hold once they've run — not the value it holds
+        # now — or a resume/expiry stream that continues from the saved value
+        # would land on the same sequence numbers those still-pending events
+        # are about to use. Bump only for the snapshot, then restore, so the
+        # real trailing events still get their natural (lower) numbers from
+        # this same ctx; over-reserving by one when PhaseChanged is suppressed
+        # only wastes a sequence number, it can never collide.
+        # try/finally rather than a bare restore: to_checkpoint_payload
+        # serialises the whole history and can raise, and leaking the inflated
+        # counter back to the orchestrator would skip two sequence numbers on
+        # the live stream — a gap a client dedupe/ordering check may read as a
+        # dropped event.
+        live_sequence = ctx.event_sequence
+        ctx.event_sequence = live_sequence + 2
+        try:
+            payload = to_checkpoint_payload(ctx)
+        finally:
+            ctx.event_sequence = live_sequence
+
         await checkpoint_store.save(CheckpointId(f"approval:{ctx.turn_id}"), payload)
         ctx.metadata["checkpoint_id"] = f"approval:{ctx.turn_id}"
 
