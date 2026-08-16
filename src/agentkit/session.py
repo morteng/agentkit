@@ -35,7 +35,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from agentkit._content import TextBlock, ToolResultBlock, ToolUseBlock
-from agentkit._ids import CheckpointId, EventId, MessageId, OwnerId, SessionId, TurnId, new_id
+from agentkit._ids import EventId, MessageId, OwnerId, SessionId, TurnId, new_id
 from agentkit._logging import get_logger
 from agentkit._messages import Message, MessageMetadata, MessageRole
 from agentkit._redaction import argument_preview, clean_text
@@ -86,6 +86,12 @@ from agentkit.loop.message_builder import MessageBuilder
 from agentkit.loop.orchestrator import Loop
 from agentkit.loop.phase import Phase
 from agentkit.loop.tool_dispatcher import DispatchPolicy, ToolDispatcher
+from agentkit.store.checkpoint import (
+    APPROVAL_CHECKPOINT_PREFIX,
+    EnumerableCheckpointStore,
+    approval_checkpoint_id,
+    turn_id_from_approval_checkpoint,
+)
 from agentkit.subagents.dispatcher import SubagentDispatcher
 
 if TYPE_CHECKING:
@@ -624,7 +630,7 @@ class AgentSession:
         """
         if self.config.stores.checkpoint is None:
             raise RuntimeError("CheckpointStore not configured; cannot resume")
-        ckpt_id = CheckpointId(f"approval:{turn_id}")
+        ckpt_id = approval_checkpoint_id(turn_id)
         payload = await self.config.stores.checkpoint.load(ckpt_id)
         if payload is None:
             raise CheckpointMissing(ckpt_id)
@@ -738,7 +744,7 @@ class AgentSession:
         """
         if self.config.stores.checkpoint is None:
             return None
-        ckpt_id = CheckpointId(f"approval:{turn_id}")
+        ckpt_id = approval_checkpoint_id(turn_id)
         payload = await self.config.stores.checkpoint.load(ckpt_id)
         if payload is None:
             return None
@@ -767,6 +773,101 @@ class AgentSession:
         await self.config.stores.checkpoint.delete(ckpt_id)
         exc = await self._close_expired_checkpoint(ctx, turn_id, timeout_iso)
         return await self._approval_timeout_stream(turn_id, exc)
+
+    async def expire_due(self) -> list[Event]:
+        """Close out every approval of this session whose window has shut.
+
+        The other half of K11(b). :meth:`check_approval_expiry` closes out an
+        approval whose ``turn_id`` the caller already knows; this finds the
+        ones nobody remembers. That is the case the guarantee actually rests
+        on — an approval nobody ever answers is also, usually, one nobody is
+        still holding a turn_id for, and until the store could be enumerated
+        there was no way to ask "what is overdue?" at all.
+
+        **Shape.** A caller-driven sweep, not a background task. agentkit owns
+        no scheduler and no task lifecycle, and acquiring one so that a library
+        can wake up on its own is a much larger change than the problem needs:
+        a host already has somewhere to put periodic work, and it is the host
+        that knows how often "often enough" is for its own approval windows.
+        What was genuinely missing was not the timer, it was the enumeration —
+        so that is what this adds, and the timer stays the caller's.
+
+        **Scope.** This session only. Checkpoint ids are keyed by turn, not by
+        session, so the sweep does see other sessions' pending approvals; it
+        reads each payload's ``session_id`` and skips the ones that are not
+        ours. Closing a foreign approval from here would emit ApprovalResolved
+        under the wrong ``session_id``, write the stranded turn into *this*
+        session's message store, and file the audit row against the wrong
+        session — three quiet corruptions in place of one missing event. A
+        host with many sessions sweeps each of them.
+
+        Returns every event the expiries produced, flattened, in turn order —
+        the same ``ApprovalResolved(expired=True)`` / ``Errored`` / ``TurnEnded``
+        sequence per turn that :meth:`resume_with_approval` would have yielded,
+        so a transport can forward them without special-casing the sweep. An
+        empty list means nothing was due, which is a real answer here and not a
+        silent failure: a store that cannot be enumerated raises instead (see
+        below).
+
+        Raises:
+            TypeError: the configured checkpoint store does not implement
+                :class:`~agentkit.store.checkpoint.EnumerableCheckpointStore`.
+                Returning ``[]`` would be worse than useless — the caller would
+                read "nothing is overdue" from a sweep that never looked, which
+                is precisely the silence this method exists to break.
+        """
+        store = self.config.stores.checkpoint
+        if store is None:
+            # No checkpoint store means approvals cannot suspend in the first
+            # place, so there is nothing that could have expired. Distinct from
+            # the non-enumerable case below: that one is a misconfiguration,
+            # this one is a deployment that simply does not use approvals.
+            return []
+        if not isinstance(store, EnumerableCheckpointStore):
+            raise TypeError(
+                f"expire_due() needs a checkpoint store that can enumerate its keys; "
+                f"{type(store).__name__} implements CheckpointStore but not "
+                f"EnumerableCheckpointStore (add an async list_ids(prefix) -> "
+                f"list[CheckpointId]). Use check_approval_expiry(turn_id) if you can "
+                f"only address approvals you already hold a turn_id for."
+            )
+
+        # Sorted so a sweep is reproducible: Redis SCAN order is arbitrary, and
+        # the returned event list is ordered by turn.
+        checkpoint_ids = sorted(await store.list_ids(APPROVAL_CHECKPOINT_PREFIX))
+        events: list[Event] = []
+        for ckpt_id in checkpoint_ids:
+            turn_id = turn_id_from_approval_checkpoint(ckpt_id)
+            if turn_id is None:  # pragma: no cover - prefix filter already did this
+                continue
+            payload = await store.load(ckpt_id)
+            if payload is None:
+                # Listed and then gone: the TTL fired, or another sweep (or a
+                # resume) got there first. Both are ordinary races, and both
+                # mean this turn is somebody else's business now.
+                continue
+            if from_checkpoint_payload(payload).get("session_id") != self.id:
+                continue
+
+            # Delegated rather than reimplemented, and deliberately re-reads
+            # the payload it was just handed. One expiry path means one delete,
+            # one persisted turn and one audit row, so "exactly once" is a
+            # property of there being a single implementation rather than of
+            # two implementations agreeing. The duplicate load costs one round
+            # trip per *expired* approval on a periodic sweep.
+            stream = await self.check_approval_expiry(turn_id)
+            if stream is None:
+                continue  # not expired yet, or resumed in the window above
+            events.extend([ev async for ev in stream])
+
+        if events:
+            log.info(
+                "approval_expiry_sweep_closed_turns",
+                session_id=str(self.id),
+                turns=len({str(ev.turn_id) for ev in events}),
+                events=len(events),
+            )
+        return events
 
     @staticmethod
     def _validate_call_ids(ctx: TurnContext, call_ids: Sequence[str]) -> None:

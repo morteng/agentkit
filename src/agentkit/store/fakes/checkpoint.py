@@ -16,3 +16,9 @@ class FakeCheckpointStore(CheckpointStore):
 
     async def delete(self, checkpoint_id: CheckpointId) -> None:
         self._data.pop(checkpoint_id, None)
+
+    async def list_ids(self, prefix: str = "") -> list[CheckpointId]:
+        # Sorted, where the Redis backend cannot promise any order. A fake that
+        # returned a *stable arbitrary* order (dict insertion) would let a test
+        # accidentally depend on ordering the real store does not provide.
+        return sorted(cid for cid in self._data if cid.startswith(prefix))

@@ -61,8 +61,8 @@ async def handle_approval_wait(ctx: TurnContext, deps: dict[str, Any]) -> Phase:
     checkpoint_store = deps.get("checkpoint_store")
     if checkpoint_store is not None:
         # Local imports to avoid module-level import cycle.
-        from agentkit._ids import CheckpointId  # noqa: PLC0415
         from agentkit.loop.context import to_checkpoint_payload  # noqa: PLC0415
+        from agentkit.store.checkpoint import approval_checkpoint_id  # noqa: PLC0415
 
         # K11(a): after this handler returns Phase.TURN_ENDED, the orchestrator
         # still allocates up to two more sequence numbers under this same
@@ -90,8 +90,9 @@ async def handle_approval_wait(ctx: TurnContext, deps: dict[str, Any]) -> Phase:
         finally:
             ctx.event_sequence = live_sequence
 
-        await checkpoint_store.save(CheckpointId(f"approval:{ctx.turn_id}"), payload)
-        ctx.metadata["checkpoint_id"] = f"approval:{ctx.turn_id}"
+        ckpt_id = approval_checkpoint_id(ctx.turn_id)
+        await checkpoint_store.save(ckpt_id, payload)
+        ctx.metadata["checkpoint_id"] = ckpt_id
 
     # The Loop end_reason for this turn is overridden by the AgentSession when
     # it sees pending_user_approvals; here we transition to TURN_ENDED so the

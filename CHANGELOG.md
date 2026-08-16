@@ -8,7 +8,65 @@ from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **`AgentSession.expire_due()` — a sweep for approvals nobody ever answers.**
+  `check_approval_expiry(turn_id)` could close out an expired approval only if
+  the caller still knew its `turn_id`. That left the case the guarantee
+  actually rests on: an approval nobody answers is usually one nobody is
+  holding a turn_id for either, so it emitted no `ApprovalResolved`, wrote no
+  audit row, and left its card on screen indefinitely. "Silence is not consent"
+  held only for a caller who came back.
+
+  `expire_due()` enumerates the checkpoint store, closes every approval of this
+  session whose window has shut, and returns the flattened
+  `ApprovalResolved(expired=True)` / `Errored` / `TurnEnded` stream that
+  `resume_with_approval` would have produced. It delegates each expiry to
+  `check_approval_expiry`, so there is exactly one expiry path: one delete, one
+  persisted turn, one audit row, and no double-fire if a client later resumes
+  (the checkpoint is gone, so resume raises `CheckpointMissing` as it already
+  did).
+
+  It is caller-driven rather than a background task. agentkit owns no scheduler
+  and no task lifecycle; the host already has somewhere to put periodic work
+  and knows how often is often enough for its own approval windows. The missing
+  piece was never the timer, it was the enumeration.
+
+  Scoped to the calling session: checkpoint ids are keyed by turn, not by
+  session, so the sweep does see other sessions' approvals in a shared store
+  and skips them by the payload's `session_id`. Closing a foreign approval from
+  here would emit `ApprovalResolved` under the wrong session id, write the
+  stranded turn into the wrong message store, and misfile the audit row — three
+  quiet corruptions in place of one missing event.
+
+- **`EnumerableCheckpointStore`** (`agentkit.store`) — an optional protocol
+  adding `async list_ids(prefix="") -> list[CheckpointId]`, implemented by
+  `FakeCheckpointStore` and `RedisCheckpointStore` (SCAN, not a maintained
+  index SET: checkpoints carry a TTL, so an index would keep naming entries
+  Redis had already dropped). Kept separate from `CheckpointStore` so existing
+  third-party stores are unaffected — `expire_due()` feature-detects and raises
+  `TypeError` rather than reporting "nothing was due" from a sweep that never
+  looked.
+
+- `agentkit.store.approval_checkpoint_id` /
+  `agentkit.store.turn_id_from_approval_checkpoint` and
+  `APPROVAL_CHECKPOINT_PREFIX`, replacing four hand-written
+  `f"approval:{turn_id}"` literals.
+
 ### Fixed
+
+- **An expiring approval wrote no audit row unless someone read the event
+  stream.** The audit loop sat at the top of the async generator that yields
+  the timeout events, and an async generator body does not run until its first
+  `__anext__`. `resume_with_approval` hands that stream out of an
+  `@asynccontextmanager`, so a client that was told the window had shut and
+  simply closed its approval card — exiting the `async with` without iterating
+  — produced zero audit rows. The comment directly above the loop asserted the
+  opposite ("on the record whether or not the consumer drains this stream"),
+  and the regression test meant to cover it pulled one event, which was
+  precisely what made the old code write. Rows are now written before the
+  caller is handed the iterator; `AgentSession._approval_timeout_stream` became
+  a coroutine to make that possible.
 
 - `InProcessMCPClient.call_tool` now validates arguments against the registered
   `ToolSpec.parameters` (JSON Schema) before dispatching to the handler.

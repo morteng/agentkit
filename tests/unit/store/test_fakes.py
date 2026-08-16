@@ -119,3 +119,27 @@ async def test_checkpoint_store_round_trips_bytes():
     assert await store.load(cid) == payload
     await store.delete(cid)
     assert await store.load(cid) is None
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_store_lists_ids_by_prefix():
+    """FAILS PRE-FIX (FakeCheckpointStore has no list_ids).
+
+    The prefix filter is what keeps the approval-expiry sweep from trying to
+    read every other subsystem's checkpoints as approvals.
+    """
+    store = FakeCheckpointStore()
+    for cid in ("approval:t2", "approval:t1", "other:x"):
+        await store.save(CheckpointId(cid), b"{}")
+
+    assert await store.list_ids("approval:") == ["approval:t1", "approval:t2"]
+    assert await store.list_ids() == ["approval:t1", "approval:t2", "other:x"]
+    assert await store.list_ids("nothing-here:") == []
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_store_stops_listing_a_deleted_id():
+    store = FakeCheckpointStore()
+    await store.save(CheckpointId("approval:t1"), b"{}")
+    await store.delete(CheckpointId("approval:t1"))
+    assert await store.list_ids("approval:") == []
