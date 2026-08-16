@@ -55,6 +55,29 @@ from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
 ### Fixed
 
+- **The finalize validator rejected truthful `answer_evidence: "tool_results"`
+  envelopes from any turn whose reads were named `read_*`, `fetch_*` or
+  `query_*`.** `_DEFAULT_READ_PREFIXES` classifies a tool as a write unless its
+  name matches a read prefix, and those three were absent while their synonyms
+  `get_`, `list_` and `search` were present. Rule 9
+  (`answer_evidence_consistent`) then found no successful read in the turn and
+  blocked the envelope.
+
+  Fail-closed is the right default for the write-mandate rules, but it inverts
+  here: the cost is not a false pass, it is a false rejection of an honest
+  claim. A consumer whose only read tool was `read_blocks` could not finalize an
+  answer at all — observed downstream as every finalize in a suite of flows
+  being rejected until the missing-finalize budget expired and the turns never
+  finalized. A model that survives this either burns its retries or "corrects"
+  itself to `answer_evidence: "context"`, which is false. A validator that
+  punishes accuracy trains inaccuracy.
+
+  Rule 9 still rejects a `tool_results` claim from a turn with no tool calls,
+  one whose calls were all genuine writes, and one whose only read errored; it
+  still scopes to the current turn, so stale reads from a prior turn do not
+  count. Both consumers of the heuristic (`finalize_validator` and
+  `guards.finalize`) are fixed at once.
+
 - **An expiring approval wrote no audit row unless someone read the event
   stream.** The audit loop sat at the top of the async generator that yields
   the timeout events, and an async generator body does not run until its first

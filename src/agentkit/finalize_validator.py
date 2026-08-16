@@ -13,8 +13,39 @@ from agentkit._messages import INJECTED_CORRECTION_ANNOTATION, Message, MessageR
 from agentkit.envelope import Envelope, ToolCallSummary, ValidationResult, Violation
 
 _DEFAULT_READ_PREFIXES: frozenset[str] = frozenset(
-    {"search", "get_", "list_", "validate_", "evaluate_", "smart_search", "recall_"}
+    {
+        "search",
+        "get_",
+        "list_",
+        "read_",
+        "fetch_",
+        "query_",
+        "validate_",
+        "evaluate_",
+        "smart_search",
+        "recall_",
+    }
 )
+"""Tool-name prefixes that mark a call as a read. Everything else is a write.
+
+Fail-closed by construction — an unrecognised name counts as a write — which is
+right for the write-mandate rules but backwards for Rule 9
+(``answer_evidence_consistent``), where being classified a write means a
+genuine read does not count as evidence. A missing prefix there does not
+produce a false *pass*; it produces a false *rejection* of a truthful envelope,
+and the model pays for that either by burning its finalize retries on something
+that cannot validate, or by "correcting" ``answer_evidence`` to ``"context"`` —
+a lie the validator pushed it into.
+
+``read_``, ``fetch_`` and ``query_`` were missing. They are plain synonyms of
+``get_``/``list_``/``search``, which were already here, and each is the entire
+read vocabulary of some tool suites: a consumer whose only read tool is
+``read_blocks`` could not finalize an answer at all.
+
+Deliberately not exhaustive. Every entry weakens Rule 9 for each tool whose
+name starts with it — ``get_or_create_x`` reads as a read — so this list grows
+on evidence of an honest envelope being rejected, not on brainstormed verbs.
+"""
 
 
 def _bare_name(name: str) -> str:

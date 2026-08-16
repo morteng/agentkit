@@ -218,3 +218,142 @@ async def test_structural_validator_accepts_general_knowledge_with_no_reads():
     )
     verdict = await StructuralFinalizeValidator().validate(call, ctx)
     assert verdict.accept is True
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    ["read_blocks", "fetch_page", "query_index", "get_profile", "list_rooms", "search_notes"],
+)
+@pytest.mark.asyncio
+async def test_structural_validator_accepts_a_truthful_tool_results_claim_after_a_read(
+    tool_name: str,
+):
+    """A turn whose only tool call is a plainly-named read must be allowed to
+    say so.
+
+    Rule 9 classifies a tool as a write unless its name matches a read prefix,
+    and ``read_``/``fetch_``/``query_`` were missing from that list — so a turn
+    that called ``read_blocks``, got a result, and truthfully reported
+    ``answer_evidence="tool_results"`` was rejected. The consequences are worse
+    than a spurious error: the model either burns its finalize retries on an
+    envelope that cannot pass, or "corrects" itself to
+    ``answer_evidence="context"``, which is false. A validator that punishes an
+    accurate claim teaches the model to make inaccurate ones.
+
+    Driven through ``StructuralFinalizeValidator.validate`` rather than
+    ``validate_envelope``, and asserting on the verdict: the rule-9 tests
+    alongside this one hand ``ToolCallSummary(is_write=...)`` in directly, so
+    they never exercise the name-based classification where the bug lived. The
+    prefixes already present are parametrized here too, so a future edit to the
+    list cannot quietly drop one.
+    """
+    from agentkit._content import TextBlock, ToolResultBlock, ToolUseBlock
+    from agentkit._messages import MessageRole
+    from agentkit.guards.finalize import StructuralFinalizeValidator
+    from agentkit.loop.context import TurnContext
+    from agentkit.tools.spec import ToolCall
+
+    history = [
+        _msg(MessageRole.USER, [TextBlock(text="what is in the collab room?")]),
+        _msg(MessageRole.ASSISTANT, [ToolUseBlock(id="r1", name=tool_name, arguments={})]),
+        _msg(
+            MessageRole.USER,
+            [ToolResultBlock(tool_use_id="r1", content=[TextBlock(text="…")], is_error=False)],
+        ),
+    ]
+    ctx = TurnContext.empty()
+    for msg in history:
+        ctx.add_message(msg)
+    call = ToolCall(
+        id="f1",
+        name="finalize_response",
+        arguments={
+            "status": "done",
+            "intent_kind": "answer",
+            "answer_evidence": "tool_results",
+        },
+    )
+
+    verdict = await StructuralFinalizeValidator().validate(call, ctx)
+
+    assert verdict.accept is True, (
+        f"{tool_name} is a read; a truthful tool_results claim must be accepted. "
+        f"Got: {verdict.feedback}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_rule9_still_rejects_tool_results_when_the_turn_only_wrote():
+    """The half of rule 9 that survives widening the read-prefix list.
+
+    Worth pinning next to the test above: the point of adding read verbs is to
+    stop rejecting honest claims, not to stop checking. A turn whose only call
+    was a write still cannot claim its answer came from tool results.
+    """
+    from agentkit._content import TextBlock, ToolResultBlock, ToolUseBlock
+    from agentkit._messages import MessageRole
+    from agentkit.guards.finalize import StructuralFinalizeValidator
+    from agentkit.loop.context import TurnContext
+    from agentkit.tools.spec import ToolCall
+
+    history = [
+        _msg(MessageRole.USER, [TextBlock(text="delete the draft")]),
+        _msg(MessageRole.ASSISTANT, [ToolUseBlock(id="w1", name="delete_block", arguments={})]),
+        _msg(
+            MessageRole.USER,
+            [ToolResultBlock(tool_use_id="w1", content=[TextBlock(text="ok")], is_error=False)],
+        ),
+    ]
+    ctx = TurnContext.empty()
+    for msg in history:
+        ctx.add_message(msg)
+    call = ToolCall(
+        id="f1",
+        name="finalize_response",
+        arguments={
+            "status": "done",
+            "intent_kind": "answer",
+            "answer_evidence": "tool_results",
+        },
+    )
+
+    verdict = await StructuralFinalizeValidator().validate(call, ctx)
+
+    assert verdict.accept is False
+    assert "answer_evidence_consistent" in (verdict.feedback or "")
+
+
+@pytest.mark.asyncio
+async def test_rule9_still_rejects_tool_results_when_the_only_read_errored():
+    """The other surviving half: a read that failed is not evidence."""
+    from agentkit._content import TextBlock, ToolResultBlock, ToolUseBlock
+    from agentkit._messages import MessageRole
+    from agentkit.guards.finalize import StructuralFinalizeValidator
+    from agentkit.loop.context import TurnContext
+    from agentkit.tools.spec import ToolCall
+
+    history = [
+        _msg(MessageRole.USER, [TextBlock(text="what is in the room?")]),
+        _msg(MessageRole.ASSISTANT, [ToolUseBlock(id="r1", name="read_blocks", arguments={})]),
+        _msg(
+            MessageRole.USER,
+            [ToolResultBlock(tool_use_id="r1", content=[TextBlock(text="boom")], is_error=True)],
+        ),
+    ]
+    ctx = TurnContext.empty()
+    for msg in history:
+        ctx.add_message(msg)
+    call = ToolCall(
+        id="f1",
+        name="finalize_response",
+        arguments={
+            "status": "done",
+            "intent_kind": "answer",
+            "answer_evidence": "tool_results",
+        },
+    )
+
+    verdict = await StructuralFinalizeValidator().validate(call, ctx)
+
+    assert verdict.accept is False
+    assert "answer_evidence_consistent" in (verdict.feedback or "")
