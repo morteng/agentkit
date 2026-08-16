@@ -10,6 +10,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Depth 0 for the --history check below. The default depth of 1 would
+          # let it pass by inspecting a single commit — a green tick for a
+          # question it never asked.
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v3
       - run: uv sync --all-extras --group dev
       - run: uv run ruff check .
@@ -22,7 +27,18 @@ jobs:
       # and passes, because a contributor cannot be asked to avoid names they
       # are not allowed to see. On `main` the secret is present and the check
       # is real.
-      - run: uv run python scripts/check_no_private_identifiers.py
+      - name: No private identifiers (working tree)
+        run: uv run python scripts/check_no_private_identifiers.py
+        env:
+          AGENTKIT_PRIVATE_IDENTIFIERS: ${{ secrets.AGENTKIT_PRIVATE_IDENTIFIERS }}
+      # The step above only ever saw the checkout. On 2026-08-16 that was found
+      # to be worth very little: it had been green throughout a period when 183
+      # of 185 commits and all 33 tags carried the names, because deleting a
+      # name in an ordinary commit does nothing to what a public repo still
+      # serves. This is the one that asks about the repository rather than the
+      # checkout. ~1s over ~900 blobs.
+      - name: No private identifiers (history)
+        run: uv run python scripts/check_no_private_identifiers.py --history
         env:
           AGENTKIT_PRIVATE_IDENTIFIERS: ${{ secrets.AGENTKIT_PRIVATE_IDENTIFIERS }}
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail if a private-system identifier appears anywhere in the tree.
+"""Fail if a private-system identifier appears anywhere in the tree, or in history.
 
 Why this exists: agentkit was public from its first commit while carrying, at
 various times, a 392-line audit of three private downstream repos, source
@@ -31,6 +31,24 @@ blocked by a list they cannot see. The guard's real posts are the maintainer's
 pre-commit hook and a CI job holding the list as a secret — both places where
 the names are already known.
 
+Two properties this file learned the hard way, on 2026-08-16:
+
+1. THE REPORT MUST NOT ECHO WHAT IT FOUND. The first version printed the
+   matching needle and the offending source line. On a public repo that output
+   lands in a public Actions log, and a comma-joined secret is masked by
+   GitHub only as one whole string — never term by term. So the guard would
+   have published every name it exists to protect, precisely when it fired.
+   Findings are now reported as a location plus an opaque term index. Whoever
+   holds the list can resolve the index in one grep; nobody else learns
+   anything.
+
+2. CHECKING THE WORKING TREE IS NOT CHECKING THE REPO. This script used to
+   scan `git ls-files` and nothing else, so it went green on a checkout whose
+   history held the names in 183 of 185 commits and all 33 tags. Removing a
+   name in an ordinary commit does nothing to a public repo — the old blob is
+   still served. `--history` is the mode that answers the question the guard's
+   name implies, and CI runs it on main.
+
 Scope note: the maintainer's own name (LICENSE, NOTICE, pyproject author) and
 the contact address in SECURITY.md / CODE_OF_CONDUCT.md are deliberate. The
 author's name is stripped from each line before matching, so a surname that is
@@ -39,6 +57,7 @@ also part of a forbidden domain does not trip on its own.
 
 from __future__ import annotations
 
+import argparse
 import os
 import re
 import subprocess
@@ -69,6 +88,14 @@ ALLOWED_PATHS = {
 #: The author's own name, which is supposed to be here.
 AUTHOR_RE = re.compile(r"morten gulden", re.IGNORECASE)
 
+#: Fields in a ``git cat-file --batch`` header line: "<sha> <type> <size>".
+#: Anything else is a "<sha> missing" style response and is skipped.
+BATCH_HEADER_FIELDS = 3
+
+#: Findings printed before the report truncates. A history hit is usually
+#: hundreds of blobs saying the same thing; the count below is the real signal.
+MAX_REPORTED = 200
+
 
 def load_forbidden() -> list[str]:
     """Lowercased substrings that must not appear in tracked files.
@@ -92,14 +119,121 @@ def load_forbidden() -> list[str]:
     return out
 
 
-def tracked_files() -> list[str]:
-    out = subprocess.run(["git", "ls-files"], capture_output=True, text=True, check=True).stdout
-    return [line for line in out.splitlines() if line]
+def _git(*args: str) -> str:
+    return subprocess.run(["git", *args], capture_output=True, text=True, check=True).stdout
+
+
+def scan_text(text: str, forbidden: list[str]) -> list[tuple[int, int]]:
+    """(1-based line number, blocklist index) for every match in ``text``."""
+    found: list[tuple[int, int]] = []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        # Strip the author's name first so a surname that also appears inside a
+        # forbidden domain never trips on its own.
+        probe = AUTHOR_RE.sub("", line).lower()
+        for idx, needle in enumerate(forbidden):
+            if needle in probe:
+                found.append((lineno, idx))
+    return found
+
+
+def check_worktree(forbidden: list[str]) -> tuple[list[str], int]:
+    """Scan the files git currently tracks. Fast; what pre-commit wants."""
+    files = [line for line in _git("ls-files").splitlines() if line]
+    hits: list[str] = []
+    for path in files:
+        if path in ALLOWED_PATHS:
+            continue
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue  # binary or unreadable; nothing to match
+        for lineno, idx in scan_text(text, forbidden):
+            hits.append(f"{path}:{lineno}  [term #{idx}]")
+    return hits, len(files)
+
+
+def _all_blobs() -> list[str]:
+    """Every blob in the object database, reachable or not.
+
+    ``--batch-all-objects`` rather than ``rev-list`` on purpose: after a history
+    rewrite the interesting objects are exactly the ones no ref points at any
+    more, and those are the ones a forge may still serve by SHA.
+    """
+    out = _git("cat-file", "--batch-all-objects", "--batch-check=%(objectname) %(objecttype)")
+    return [line.split()[0] for line in out.splitlines() if line.endswith(" blob")]
+
+
+def _read_blobs(shas: list[str]) -> list[tuple[str, bytes]]:
+    """Stream blob contents via one ``git cat-file --batch``."""
+    if not shas:
+        return []
+    proc = subprocess.run(
+        ["git", "cat-file", "--batch"],
+        input=("\n".join(shas) + "\n").encode(),
+        capture_output=True,
+        check=True,
+    )
+    data, pos, out = proc.stdout, 0, []
+    while pos < len(data):
+        nl = data.find(b"\n", pos)
+        if nl == -1:
+            break
+        header = data[pos:nl].decode("utf-8", "replace").split()
+        pos = nl + 1
+        if len(header) != BATCH_HEADER_FIELDS:  # "<sha> missing" and friends
+            continue
+        sha, size = header[0], int(header[2])
+        out.append((sha, data[pos : pos + size]))
+        pos += size + 1  # trailing newline git appends
+    return out
+
+
+def check_history(forbidden: list[str]) -> tuple[list[str], int]:
+    """Scan every blob and every commit message in the object database.
+
+    Deliberately blob-oriented rather than commit-oriented: a blob shared by
+    two hundred commits is read once, and a blob orphaned by a rewrite is still
+    read. Blobs carry no path, which is why findings name the object — and
+    ``git log --all --find-object=<sha>`` turns that back into a path locally,
+    for whoever is allowed to know.
+    """
+    hits: list[str] = []
+    blobs = _all_blobs()
+    for sha, raw in _read_blobs(blobs):
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        seen: set[int] = set()
+        for _lineno, idx in scan_text(text, forbidden):
+            seen.add(idx)
+        if seen:
+            terms = ",".join(f"#{i}" for i in sorted(seen))
+            hits.append(f"blob {sha}  [terms {terms}]")
+
+    messages = _git("log", "--all", "--format=%H%x00%B%x00")
+    for record in messages.split("\x00\x00"):
+        if "\x00" not in record:
+            continue
+        commit, _, body = record.strip().partition("\x00")
+        seen = {idx for _ln, idx in scan_text(body, forbidden)}
+        if seen:
+            terms = ",".join(f"#{i}" for i in sorted(seen))
+            hits.append(f"commit {commit[:12]} (message)  [terms {terms}]")
+    return hits, len(blobs)
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--history",
+        action="store_true",
+        help="scan every blob and commit message in the object database, "
+        "not just the files currently tracked",
+    )
+    args = parser.parse_args()
+
     forbidden = load_forbidden()
-    files = tracked_files()
 
     if not forbidden:
         # Not an error, and not silent either. A guard that passes without
@@ -113,34 +247,35 @@ def main() -> int:
         )
         return 0
 
-    hits: list[tuple[str, int, str, str]] = []
-    for path in files:
-        if path in ALLOWED_PATHS:
-            continue
-        try:
-            lines = Path(path).read_text(encoding="utf-8").splitlines()
-        except (UnicodeDecodeError, OSError):
-            continue  # binary or unreadable; nothing to match
-        for lineno, line in enumerate(lines, 1):
-            # Strip the author's name first so a surname that also appears
-            # inside a forbidden domain never trips on its own.
-            probe = AUTHOR_RE.sub("", line).lower()
-            for needle in forbidden:
-                if needle in probe:
-                    hits.append((path, lineno, needle, line.rstrip()[:110]))
+    if args.history:
+        hits, scanned = check_history(forbidden)
+        scope = f"{scanned} blobs in history"
+    else:
+        hits, scanned = check_worktree(forbidden)
+        scope = f"{scanned} tracked files"
 
     if not hits:
-        print(f"ok — no private identifiers in {len(files)} tracked files")
+        print(f"ok — no private identifiers in {scope}")
         return 0
 
-    print("Private identifiers found in tracked files:\n", file=sys.stderr)
-    for path, lineno, needle, text in hits:
-        print(f"  {path}:{lineno}  [{needle}]  {text}", file=sys.stderr)
+    # Locations and term indices only. Never the term, never the matching line:
+    # this output is public whenever CI is.
+    print(f"Private identifiers found ({scope}):\n", file=sys.stderr)
+    for hit in hits[:MAX_REPORTED]:
+        print(f"  {hit}", file=sys.stderr)
+    if len(hits) > MAX_REPORTED:
+        print(f"  ... and {len(hits) - MAX_REPORTED} more", file=sys.stderr)
     print(
         f"\n{len(hits)} hit(s). This repo is publishable; those names are not.\n"
+        "Term indices are positions in your blocklist file — resolve them locally,\n"
+        'with `sed -n "$((N+1))p"` against it. They are printed instead of the words\n'
+        "because this output is public whenever CI is.\n"
+        "For a blob, `git log --all --find-object=<sha>` names the commits and path.\n"
         "Keep the lesson, drop the identity: say 'a downstream consumer', not\n"
         "which one. If a hit is legitimate, add its path to ALLOWED_PATHS in\n"
-        "scripts/check_no_private_identifiers.py and say why in the commit message.",
+        "scripts/check_no_private_identifiers.py and say why in the commit message.\n"
+        "A history hit cannot be fixed by a new commit — it needs the history\n"
+        "rewritten (git filter-repo --replace-text) and every consumer re-pinned.",
         file=sys.stderr,
     )
     return 1
