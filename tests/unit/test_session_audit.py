@@ -178,17 +178,26 @@ async def test_a_verdict_the_runtime_reached_is_agent_activity():
 
 
 @pytest.mark.asyncio
-async def test_an_expired_approval_is_recorded_even_if_nobody_reads_the_stream():
+async def test_an_expired_approval_is_recorded_before_a_single_event_is_pulled():
     """Silence is not consent, and an unanswered approval that leaves no trace
-    is indistinguishable from one that was never asked for."""
+    is indistinguishable from one that was never asked for.
+
+    This test used to be named "...even if nobody reads the stream" and then
+    pulled one event — which was precisely the thing that made the old
+    implementation write its records, because the audit loop lived at the top
+    of the async generator body. Pulling nothing at all is the case that
+    mattered, and it is the case this now covers. See
+    ``test_expiry_is_audited_even_when_the_client_never_reads_the_stream`` in
+    test_session_approval_resolution.py for the same property driven through
+    the public resume API.
+    """
     audit = _Recorder()
     session = _session(audit)
     turn_id = new_id(TurnId)
     exc = ApprovalTimeout("approval window expired", call_ids=["c1", "c2"])
 
-    stream = session._approval_timeout_stream(turn_id, exc)  # pyright: ignore[reportPrivateUsage]
-    # Pull one event only: the records must already all be written.
-    await anext(stream)
+    # Not iterated at all — awaiting the call is the entire interaction.
+    await session._approval_timeout_stream(turn_id, exc)  # pyright: ignore[reportPrivateUsage]
 
     assert [r.call_id for r in audit.records] == ["c1", "c2"]
     for record in audit.records:

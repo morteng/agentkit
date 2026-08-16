@@ -766,7 +766,7 @@ class AgentSession:
 
         await self.config.stores.checkpoint.delete(ckpt_id)
         exc = await self._close_expired_checkpoint(ctx, turn_id, timeout_iso)
-        return self._approval_timeout_stream(turn_id, exc)
+        return await self._approval_timeout_stream(turn_id, exc)
 
     @staticmethod
     def _validate_call_ids(ctx: TurnContext, call_ids: Sequence[str]) -> None:
@@ -844,12 +844,17 @@ class AgentSession:
         ctx.metadata["approved_tool_calls"] = approved
         ctx.metadata["denied_tool_calls"] = denied
 
-    def _approval_timeout_stream(
+    async def _approval_timeout_stream(
         self, turn_id: TurnId, exc: ApprovalTimeout
     ) -> AsyncIterator[Event]:
         """Surface a stale approval as one ApprovalResolved per stranded call,
         then Errored + TurnEnded(error), so consumers don't have to add a second
         exception path.
+
+        A coroutine returning an iterator, rather than an async generator or a
+        plain function: the audit rows must be written before the caller gets
+        the iterator back, and only an awaited call can guarantee that. See the
+        comment on the audit loop below.
 
         The per-call events matter more than the error: an expiring approval
         used to emit nothing addressed to the card the user is looking at, which
@@ -905,27 +910,37 @@ class AgentSession:
             )
         )
 
+        # Audited here, in the coroutine, rather than inside ``_timeout_iter``:
+        # an async generator body does not run until the first ``__anext__``,
+        # so an audit loop placed at the top of the generator writes nothing
+        # at all for a consumer that takes the iterator and never drains it.
+        # ``resume_with_approval`` hands this stream out of an
+        # ``@asynccontextmanager`` and a client that simply closes its approval
+        # card — the single most likely thing to do on being told the window
+        # shut — exits the ``async with`` without iterating. That path used to
+        # produce zero audit rows while the comment above it asserted the
+        # opposite. An expiry is a verdict the runtime reached on a human's
+        # behalf; it goes on the record when the verdict is reached, not when
+        # somebody gets around to looking at it.
+        for ev in events:
+            if isinstance(ev, ApprovalResolved):
+                await record_audit(
+                    self.audit_sink,
+                    self._approval_audit_record(
+                        turn_id,
+                        ev.call_id,
+                        # The context is gone with the checkpoint, so the
+                        # tool name is genuinely unknown here.
+                        tool_name="",
+                        decision="deny",
+                        edited_args=None,
+                        reason=str(exc),
+                        resolved_by=SYSTEM_RESOLVER,
+                        expired=True,
+                    ),
+                )
+
         async def _timeout_iter() -> AsyncIterator[Event]:
-            # Audited up front rather than as each event goes out: an expiry is
-            # a decision the runtime made on a human's behalf, and it has to be
-            # on the record whether or not the consumer drains this stream.
-            for ev in events:
-                if isinstance(ev, ApprovalResolved):
-                    await record_audit(
-                        self.audit_sink,
-                        self._approval_audit_record(
-                            turn_id,
-                            ev.call_id,
-                            # The context is gone with the checkpoint, so the
-                            # tool name is genuinely unknown here.
-                            tool_name="",
-                            decision="deny",
-                            edited_args=None,
-                            reason=str(exc),
-                            resolved_by=SYSTEM_RESOLVER,
-                            expired=True,
-                        ),
-                    )
             for ev in events:
                 yield ev
 
@@ -1158,7 +1173,7 @@ class AgentSession:
         try:
             ctx, queue = await self._load_resume_context(turn_id, require_call_ids=[call_id])
         except ApprovalTimeout as exc:
-            yield self._approval_timeout_stream(turn_id, exc)
+            yield await self._approval_timeout_stream(turn_id, exc)
             return
 
         self._apply_approval_decision(ctx, call_id, decision, edited_args, reason)
@@ -1224,7 +1239,7 @@ class AgentSession:
                 turn_id, require_call_ids=[d["call_id"] for d in decisions]
             )
         except ApprovalTimeout as exc:
-            yield self._approval_timeout_stream(turn_id, exc)
+            yield await self._approval_timeout_stream(turn_id, exc)
             return
 
         # Apply every verdict first so a bad call_id fails fast before any tool

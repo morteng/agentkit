@@ -64,13 +64,15 @@ async def _save_checkpoint(
     )
 
 
-def test_expiry_emits_a_resolution_per_stranded_call_before_the_error():
+@pytest.mark.asyncio
+async def test_expiry_emits_a_resolution_per_stranded_call_before_the_error():
     """A timeout that emits nothing is indistinguishable from a hang."""
     session = _session()
     turn_id = new_id(TurnId)
     exc = ApprovalTimeout("approval window expired", call_ids=["c1", "c2"])
 
-    events = _collect(session._approval_timeout_stream(turn_id, exc))  # pyright: ignore[reportPrivateUsage]
+    stream = await session._approval_timeout_stream(turn_id, exc)  # pyright: ignore[reportPrivateUsage]
+    events = [ev async for ev in stream]
 
     resolved = [e for e in events if isinstance(e, ApprovalResolved)]
     assert [e.call_id for e in resolved] == ["c1", "c2"]
@@ -86,11 +88,13 @@ def test_expiry_emits_a_resolution_per_stranded_call_before_the_error():
     assert [e.sequence for e in events] == list(range(len(events)))
 
 
-def test_timeout_without_known_calls_still_errors():
+@pytest.mark.asyncio
+async def test_timeout_without_known_calls_still_errors():
     session = _session()
-    events = _collect(
-        session._approval_timeout_stream(new_id(TurnId), ApprovalTimeout("expired"))  # pyright: ignore[reportPrivateUsage]
+    stream = await session._approval_timeout_stream(  # pyright: ignore[reportPrivateUsage]
+        new_id(TurnId), ApprovalTimeout("expired")
     )
+    events = [ev async for ev in stream]
     assert [type(e).__name__ for e in events] == ["Errored", "TurnEnded"]
 
 
@@ -268,8 +272,9 @@ async def test_check_approval_expiry_closes_out_an_approval_nobody_ever_resumed(
     assert isinstance(events[-1], TurnEnded)
     assert [e.sequence for e in events] == list(range(len(events)))
 
-    # Audited even though nobody was watching the stream — same guarantee as
-    # the resume timeout path.
+    # Audited, same as the resume timeout path. (This case drains the stream;
+    # the "nobody drains it" guarantee is covered separately below — the
+    # comment that used to be here claimed it and did not test it.)
     assert [r.call_id for r in audit.records] == ["c1", "c2"]
     for record in audit.records:
         assert record.detail["expired"] is True
@@ -280,8 +285,73 @@ async def test_check_approval_expiry_closes_out_an_approval_nobody_ever_resumed(
         await session._load_resume_context(turn_id)  # pyright: ignore[reportPrivateUsage]
 
 
-def _collect(stream) -> list:
-    async def _run() -> list:
-        return [ev async for ev in stream]
+# ---------------------------------------------------------------------------
+# The audit row for an expiry does not depend on anyone watching the stream.
+# ---------------------------------------------------------------------------
 
-    return asyncio.run(_run())
+
+@pytest.mark.asyncio
+async def test_expiry_is_audited_even_when_the_client_never_reads_the_stream():
+    """FAILS PRE-FIX (0 audit records instead of 1).
+
+    The audit loop used to sit at the top of the async generator that yields
+    the timeout events. An async generator body does not execute until its
+    first ``__anext__``, so a consumer that entered ``resume_with_approval``'s
+    context manager and then simply closed its approval card — without
+    iterating — produced no audit row at all, while the comment above the loop
+    claimed the write happened "whether or not the consumer drains this
+    stream".
+
+    This drives the real seam: the public ``resume_with_approval`` context
+    manager, abandoned exactly the way a UI abandons it. Asserting on
+    ``_approval_timeout_stream`` directly would not have caught it, because
+    every existing test of that helper drains what it returns.
+    """
+    audit = _Recorder()
+    session = _session(audit)
+    turn_id = new_id(TurnId)
+    await _save_checkpoint(
+        session,
+        turn_id,
+        pending=[{"id": "c1", "name": "t", "arguments": {}}],
+        timeout_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+
+    async with session.resume_with_approval(turn_id, "c1", decision="approve"):
+        pass  # never iterated — the card was just dismissed
+
+    assert [r.call_id for r in audit.records] == ["c1"]
+    assert audit.records[0].detail["expired"] is True
+    assert audit.records[0].detail["decision"] == "deny"
+    # A verdict the runtime reached on its own is agent activity, never filed
+    # as a human decision.
+    assert audit.records[0].actor == "system"
+
+
+@pytest.mark.asyncio
+async def test_an_abandoned_expiry_stream_still_audits_exactly_once():
+    """Writing the rows eagerly must not also write them again on iteration.
+
+    Guards the obvious wrong fix for the test above — leaving the loop inside
+    the generator and adding a second one outside it. Passes pre-fix too (the
+    pre-fix code audits exactly once *when* drained); it is here to pin the
+    "exactly once" half that the eager write could regress.
+    """
+    audit = _Recorder()
+    session = _session(audit)
+    turn_id = new_id(TurnId)
+    await _save_checkpoint(
+        session,
+        turn_id,
+        pending=[
+            {"id": "c1", "name": "t", "arguments": {}},
+            {"id": "c2", "name": "t", "arguments": {}},
+        ],
+        timeout_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+
+    async with session.resume_with_approval(turn_id, "c1", decision="approve") as stream:
+        events = [ev async for ev in stream]
+
+    assert [e.call_id for e in events if isinstance(e, ApprovalResolved)] == ["c1", "c2"]
+    assert [r.call_id for r in audit.records] == ["c1", "c2"]  # once each, not twice
