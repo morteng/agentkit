@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from pydantic import ValidationError
 
 from agentkit._content import ToolResultBlock, ToolUseBlock
+from agentkit.compaction import PRIOR_TOOL_CALLS_ANNOTATION
 from agentkit.envelope import Envelope, ToolCallSummary, Violation
 from agentkit.finalize_validator import (
     _is_default_write,  # pyright: ignore[reportPrivateUsage]
@@ -43,12 +44,21 @@ def _ctx_to_summaries(ctx: TurnContext) -> list[ToolCallSummary]:
     """Walk ctx.history to build a ToolCallSummary list for the validator."""
     use_names: dict[str, str] = {}
     result_errors: dict[str, bool] = {}
+    compacted_names: set[str] = set()
     for msg in ctx.history:
         for block in msg.content:
             if isinstance(block, ToolUseBlock):
                 use_names[block.id] = block.name
             elif isinstance(block, ToolResultBlock):
                 result_errors[block.tool_use_id] = block.is_error
+        # A compaction summary message carries the names of successful writes
+        # from the turn(s) it replaced (see PRIOR_TOOL_CALLS_ANNOTATION) — the
+        # ToolUseBlock/ToolResultBlock pair itself is gone, but the write
+        # genuinely happened this session, so Rule 1 must still be able to
+        # credit it rather than reading a compacted turn as a fabricated one.
+        carried = msg.metadata.annotations.get(PRIOR_TOOL_CALLS_ANNOTATION)
+        if carried:
+            compacted_names.update(carried)
 
     summaries: list[ToolCallSummary] = []
     for use_id, name in use_names.items():
@@ -62,6 +72,13 @@ def _ctx_to_summaries(ctx: TurnContext) -> list[ToolCallSummary]:
                 is_error=result_errors.get(use_id, False),
                 is_write=_is_default_write(name),
             )
+        )
+    for name in compacted_names:
+        bare = name.split(".", 1)[-1]
+        if bare in ("finalize_response", "finalize"):
+            continue
+        summaries.append(
+            ToolCallSummary(name=bare, is_error=False, is_write=_is_default_write(name))
         )
     return summaries
 

@@ -106,6 +106,22 @@ from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
 ### Fixed
 
+- **A write from an already-compacted turn read as a fabricated one.** Rule 1
+  (`fabricated_tool`) proves a claimed action by finding a matching
+  `ToolUseBlock`/`ToolResultBlock` pair in `ctx.history`. `compact_history` is
+  the one thing in this codebase that deliberately removes that pair once its
+  turn scrolls out of the kept window, replacing it with a prose summary
+  message — so a model that genuinely called a write tool, had that turn
+  compacted, and later truthfully lists the tool in `actions_performed` looked
+  identical to one that invented the call. Both hit the same violation:
+  `fabricated_tool: no successful <tool> call this turn`. `compact_history` now
+  stamps the summary message with `PRIOR_TOOL_CALLS_ANNOTATION`, the distinct
+  names of tool calls that succeeded in the span being summarized (carried
+  forward across repeated compaction passes), and `guards.finalize` reads it
+  back into the same evidence Rule 1 already trusts. A tool that never
+  genuinely ran is still fabricated after compaction — only a call that
+  actually succeeded is credited.
+
 - **The finalize validator rejected truthful `answer_evidence: "tool_results"`
   envelopes from any turn whose reads were named `read_*`, `fetch_*` or
   `query_*`.** `_DEFAULT_READ_PREFIXES` classifies a tool as a write unless its

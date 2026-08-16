@@ -43,6 +43,23 @@ if TYPE_CHECKING:
 #: condensed summary standing in for one.
 COMPACTION_SUMMARY_ANNOTATION = "compaction_summary"
 
+#: ``Message.metadata.annotations`` key carrying the distinct names of tool
+#: calls that succeeded somewhere in the span this summary message replaces.
+#:
+#: Rule 1 (``fabricated_tool``, see ``finalize_validator.py``) proves a claimed
+#: action by finding a matching ``ToolUseBlock``/``ToolResultBlock`` pair in
+#: ``ctx.history``. Compaction deletes exactly that pair once the turn it
+#: happened in scrolls out of the kept window — the summary message that
+#: replaces it carries prose, not a ``ToolUseBlock``. Without this annotation,
+#: a model that genuinely called a write tool, then had that turn compacted
+#: away, and later truthfully lists the tool in ``actions_performed`` is
+#: indistinguishable from one that invented the call: both show zero matching
+#: tool calls in the loaded history. ``guards.finalize._ctx_to_summaries``
+#: reads this annotation to restore the evidence a real call left behind, so
+#: compaction (a summarization decision) does not silently turn into a
+#: fabrication verdict (a truthfulness decision).
+PRIOR_TOOL_CALLS_ANNOTATION = "compacted_successful_tool_calls"
+
 #: Prefix prepended to every summary message so it is unambiguous in
 #: transcripts/UIs — bilingual (nb/en) per project convention for
 #: user-visible strings that might surface in either editor language.
@@ -83,6 +100,34 @@ def _tool_pair_spans(history: list[Message]) -> list[tuple[int, int]]:
                 if use_idx is not None:
                     spans.append((use_idx, idx))
     return spans
+
+
+def _successful_tool_names(messages: list[Message]) -> list[str]:
+    """Distinct names of tool calls in ``messages`` that both completed (a
+    matching ``ToolResultBlock`` exists) and succeeded (``is_error`` is
+    false).
+
+    Used to populate :data:`PRIOR_TOOL_CALLS_ANNOTATION` on the summary
+    message so Rule 1 (``fabricated_tool``) can still credit a genuine write
+    after the turn it happened in has been compacted away. Errored or
+    still-pending calls are excluded on purpose — Rule 1 only ever needs to
+    prove a *successful* write, and crediting a failed or dangling call would
+    let a later turn claim credit for something that did not actually happen.
+    """
+    use_name_by_id: dict[str, str] = {}
+    for msg in messages:
+        for block in msg.content:
+            if isinstance(block, ToolUseBlock):
+                use_name_by_id[block.id] = block.name
+
+    names: set[str] = set()
+    for msg in messages:
+        for block in msg.content:
+            if isinstance(block, ToolResultBlock) and not block.is_error:
+                name = use_name_by_id.get(block.tool_use_id)
+                if name is not None:
+                    names.add(name)
+    return sorted(names)
 
 
 def _is_safe_boundary(history: list[Message], i: int, spans: list[tuple[int, int]]) -> bool:
@@ -177,12 +222,30 @@ async def compact_history(
 
     summary_text = await summarizer(prefix)
 
+    # Carry forward evidence of successful writes so Rule 1 (fabricated_tool)
+    # can still credit them after this turn is gone from the loaded window —
+    # see PRIOR_TOOL_CALLS_ANNOTATION. A prefix message can itself be an
+    # earlier compaction summary (a second compaction pass over an
+    # already-compacted transcript), so union in whatever names it already
+    # carried rather than only scanning for live ToolUseBlock/ToolResultBlock
+    # pairs — otherwise a second compaction would silently drop the first
+    # one's evidence.
+    prior_writes: set[str] = set(_successful_tool_names(prefix))
+    for msg in prefix:
+        carried = msg.metadata.annotations.get(PRIOR_TOOL_CALLS_ANNOTATION)
+        if carried:
+            prior_writes.update(carried)
+
+    annotations: dict[str, object] = {COMPACTION_SUMMARY_ANNOTATION: True}
+    if prior_writes:
+        annotations[PRIOR_TOOL_CALLS_ANNOTATION] = sorted(prior_writes)
+
     summary_message = Message(
         id=new_id(MessageId),
         session_id=session_id,
         role=MessageRole.USER,
         content=[TextBlock(text=f"{_SUMMARY_PREFIX}{summary_text}")],
-        metadata=MessageMetadata(annotations={COMPACTION_SUMMARY_ANNOTATION: True}),
+        metadata=MessageMetadata(annotations=annotations),
         created_at=datetime.now(UTC),
     )
 
