@@ -10,6 +10,12 @@ try:
         ANY_ORIGIN as ANY_ORIGIN,
     )
     from agentkit.transports.websocket import (
+        WS_CLOSE_LIFETIME_EXCEEDED as WS_CLOSE_LIFETIME_EXCEEDED,
+    )
+    from agentkit.transports.websocket import (
+        WS_CLOSE_LIFETIME_EXCEEDED_REASON as WS_CLOSE_LIFETIME_EXCEEDED_REASON,
+    )
+    from agentkit.transports.websocket import (
         InsecureAllowAllAuth as InsecureAllowAllAuth,
     )
     from agentkit.transports.websocket import (
@@ -30,6 +36,8 @@ try:
 
     __all__ = [
         "ANY_ORIGIN",
+        "WS_CLOSE_LIFETIME_EXCEEDED",
+        "WS_CLOSE_LIFETIME_EXCEEDED_REASON",
         "InsecureAllowAllAuth",
         "InsecureTransportWarning",
         "SameSocketApprovalAuthority",

@@ -174,6 +174,37 @@ class TokenBoundApproval:
 mount_websocket_route(..., auth=HeaderTokenAuth(), approval_authority=TokenBoundApproval())
 ```
 
+**How long the socket may hold its handshake decision.** Whatever `auth=`
+checked at the upgrade — a token, a cookie, a forward-auth header, a group
+membership — the connection then holds for as long as it stays open. A
+WebSocket sends no headers after the handshake, so there is nothing to
+re-check in place; the only control is to end the connection and make the
+client come back through it. `max_connection_seconds` does that:
+
+```python
+mount_websocket_route(..., auth=HeaderTokenAuth(), max_connection_seconds=3600)
+```
+
+Default `None` is unbounded. When set, the close carries
+`WS_CLOSE_LIFETIME_EXCEEDED` (4008) and happens **only between turns** — a turn
+already streaming finishes first, and so does any command that arrived while it
+was streaming. A bound that cut a stream would trade staleness for data loss
+the user watches happen, which is the worse of the two. Pick the number from
+how stale an authorization decision may get, and price in a reconnect landing
+in the middle of whatever the user is doing.
+
+A client needs no change: the close is indistinguishable from a network drop,
+and any reconnect path already handles it. Special-casing 4008 to skip the
+first backoff delay is a nicety, not a correctness requirement.
+
+**Keepalive is the ASGI server's job, not this route's.** ASGI defines no
+message type for a protocol-level ping — an app may send only `websocket.send`
+and `websocket.close` — so an application cannot send one. `uvicorn
+--ws-ping-interval` is where that control lives, and all three of uvicorn's
+WebSocket implementations honour it (default 20s). This function used to accept
+a `heartbeat_interval` that did nothing at all; it was removed rather than
+reserved.
+
 ### Wire protocol
 
 Inbound commands (client → server):

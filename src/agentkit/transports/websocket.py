@@ -75,6 +75,16 @@ log = get_logger(__name__)
 #: ``dev_mode=True`` — see :func:`mount_websocket_route`.
 ANY_ORIGIN = "*"
 
+#: Close code sent when ``max_connection_seconds`` elapses. In the private-use
+#: range (4000-4999) so it cannot collide with an RFC 6455 code, and distinct
+#: from 4001 (auth rejected) and 4003 (origin rejected) so a client can tell
+#: "reconnect, you are expected back" from "do not bother".
+WS_CLOSE_LIFETIME_EXCEEDED = 4008
+
+#: Reason string paired with :data:`WS_CLOSE_LIFETIME_EXCEEDED`. Plain enough
+#: for a UI to show, and it says the connection ended, not that anything failed.
+WS_CLOSE_LIFETIME_EXCEEDED_REASON = "reconnect required"
+
 
 class InsecureTransportWarning(UserWarning):
     """Warns that the WebSocket bridge is mounted without a real security control.
@@ -380,6 +390,54 @@ async def _replay_history(ws: WebSocket, session: AgentSession, *, limit: int, p
     await ws.send_json(history_frame(page))
 
 
+def _lifetime_deadline(max_connection_seconds: float | None) -> float | None:
+    """Absolute monotonic time this connection must be closed at, if bounded."""
+    if max_connection_seconds is None:
+        return None
+    return asyncio.get_running_loop().time() + max_connection_seconds
+
+
+async def _receive_or_expire(ws: WebSocket, deadline: float | None) -> dict[str, Any] | None:
+    """Await the next inbound command, or ``None`` if the lifetime bound elapsed.
+
+    Called only from the *between-turns* position in the receive loop, which is
+    what makes the bound safe: an expiry decided here can never truncate a
+    stream the user is watching. A turn that starts before the deadline and
+    runs past it is not interrupted — the loop comes back here when it ends,
+    finds the budget already spent, and closes then. That deferral is the whole
+    point. A close landing mid-stream would turn a staleness control into
+    visible data loss, which is strictly worse than the staleness it buys.
+    """
+    if deadline is None:
+        return await ws.receive_json()
+    remaining = deadline - asyncio.get_running_loop().time()
+    if remaining <= 0:
+        # The previous turn outlived the bound. Do not even start a receive.
+        return None
+    try:
+        return await asyncio.wait_for(ws.receive_json(), remaining)
+    except TimeoutError:
+        return None
+
+
+async def _close_expired(ws: WebSocket, *, path: str, session: AgentSession) -> None:
+    """Send the lifetime-exceeded close frame. Errors are logged, never raised.
+
+    The surrounding ``finally`` still runs :func:`_close_session`, whose own
+    ``ws.close(1000)`` is a suppressed no-op once this frame has gone out. We
+    send from here rather than from the ``finally`` so the client learns *why*
+    immediately, instead of after however long session shutdown takes.
+    """
+    log.info(
+        "ws_connection_lifetime_exceeded",
+        path=path,
+        session_id=str(session.id),
+        code=WS_CLOSE_LIFETIME_EXCEEDED,
+    )
+    with contextlib.suppress(RuntimeError, WebSocketDisconnect):
+        await ws.close(code=WS_CLOSE_LIFETIME_EXCEEDED, reason=WS_CLOSE_LIFETIME_EXCEEDED_REASON)
+
+
 async def _close_session(session: AgentSession, ws: WebSocket, *, path: str) -> None:
     """Shut the session down in the route task, then close the socket.
 
@@ -403,7 +461,7 @@ def mount_websocket_route(
     origin_allowlist: list[str],
     auth: WSAuth,
     approval_authority: WSApprovalAuthority | None = None,
-    heartbeat_interval: float = 30.0,
+    max_connection_seconds: float | None = None,
     replay_history: bool = False,
     replay_limit: int = DEFAULT_HISTORY_PAGE_LIMIT,
     dev_mode: bool = False,
@@ -419,6 +477,20 @@ def mount_websocket_route(
     one driving the model. Defaults to
     :class:`SameSocketApprovalAuthority` — same principal, documented hazard.
 
+    ``max_connection_seconds`` bounds how long one connection may live.
+    ``None`` (the default) is unbounded — the historical behaviour, unchanged
+    for every existing caller. When set, the socket is closed with
+    :data:`WS_CLOSE_LIFETIME_EXCEEDED` once the wall clock passes the bound,
+    **but only between turns**: a turn already streaming runs to completion and
+    the close happens when it ends. Pass this when the handshake carried an
+    authorization decision that the connection then holds forever — a
+    forward-auth header, a cookie, a group membership. Nothing can re-check
+    those on an open socket (there are no headers after the handshake), so the
+    only control available is to make the client come back and be re-checked.
+    The client sees an ordinary close and its existing reconnect path re-runs
+    the handshake; it needs no change to be correct, and can special-case the
+    code to skip a backoff delay it does not need.
+
     ``replay_history=True`` sends one ``history`` frame right after the socket
     opens, carrying the newest ``replay_limit`` stored messages projected to
     the slim shapes in :mod:`agentkit.history`. Off by default: it is a second
@@ -432,7 +504,12 @@ def mount_websocket_route(
     so a misconfiguration fails at import/startup rather than on the first
     connection.
     """
-    _ = heartbeat_interval  # reserved: ping/pong keepalive is not wired up yet
+    if max_connection_seconds is not None and max_connection_seconds <= 0:
+        raise ValueError(
+            "max_connection_seconds must be positive, or None for an unbounded "
+            f"connection; got {max_connection_seconds!r}. A zero or negative "
+            "bound would close every connection before it could carry a turn."
+        )
     auth_impl: WSAuth = _validate_auth(auth)
     _validate_origin_allowlist(origin_allowlist, dev_mode=dev_mode)
     approval_impl: WSApprovalAuthority = approval_authority or SameSocketApprovalAuthority()
@@ -490,6 +567,9 @@ def mount_websocket_route(
     async def _ws_route(ws: WebSocket) -> None:  # pyright: ignore[reportUnusedFunction]
         if not await _handshake(ws, origin_allowlist=origin_allowlist, auth_impl=auth_impl):
             return
+        # Clocked from the handshake, because what the bound is really ageing
+        # out is the authorization decision _handshake just made.
+        deadline = _lifetime_deadline(max_connection_seconds)
         session = await _open_session(ws, session_factory=session_factory, path=path)
         if session is None:
             return
@@ -500,9 +580,17 @@ def mount_websocket_route(
             if replay_history:
                 await _replay_history(ws, session, limit=replay_limit, path=path)
             while True:
-                cmd: dict[str, Any] = (
-                    pending_cmd if pending_cmd is not None else await ws.receive_json()
-                )
+                cmd: dict[str, Any] | None
+                if pending_cmd is not None:
+                    # A command buffered during the turn we just finished. It is
+                    # already queued work, so it runs even past the deadline —
+                    # the expiry is checked when the socket is genuinely idle.
+                    cmd = pending_cmd
+                else:
+                    cmd = await _receive_or_expire(ws, deadline)
+                    if cmd is None:
+                        await _close_expired(ws, path=path, session=session)
+                        break
                 pending_cmd = await _dispatch(ws, session, cmd)
         except WebSocketDisconnect:
             pass

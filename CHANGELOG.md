@@ -10,6 +10,35 @@ from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
 ### Added
 
+- **`mount_websocket_route(..., max_connection_seconds=...)` — bound how long a
+  connection may keep the authorization decision its handshake made.** `auth=`
+  runs once, at the upgrade. After that a WebSocket carries no headers, so a
+  cookie that was revoked, a token that expired, or a group membership that
+  changed cannot reach an open socket at all: the connection keeps whatever it
+  opened with, for as long as it stays open. A tab left open on a stable link
+  keeps a stale role indefinitely. There is no re-check-in-place option to
+  build — the only control available is to end the connection and make the
+  client come back through the handshake.
+
+  Default `None` is unbounded, i.e. exactly today's behaviour for every
+  existing caller. When set, the close carries the new
+  `WS_CLOSE_LIFETIME_EXCEEDED` (4008), distinct from 4001/4003 so a client can
+  tell "come back" from "do not bother". Clients need no change: the close is
+  indistinguishable from a network drop and any reconnect path already covers
+  it.
+
+  **The close happens only between turns.** A turn already streaming runs to
+  completion, and a command buffered during it still runs, before the socket is
+  retired — the deadline is checked at the one point in the receive loop where
+  no stream is in flight. A bound enforced by racing the deadline against the
+  turn would swap a staleness control for data loss the user watches happen
+  mid-answer, which is the worse of the two failures. Both directions are
+  regression-tested; the deferral half fails against the naive
+  `wait_for`-the-whole-loop implementation.
+
+  A non-positive bound raises `ValueError` at mount time rather than closing
+  every connection before it can carry a turn.
+
 - **`AgentSession.expire_due()` — a sweep for approvals nobody ever answers.**
   `check_approval_expiry(turn_id)` could close out an expired approval only if
   the caller still knew its `turn_id`. That left the case the guarantee
@@ -52,6 +81,28 @@ from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
   `agentkit.store.turn_id_from_approval_checkpoint` and
   `APPROVAL_CHECKPOINT_PREFIX`, replacing four hand-written
   `f"approval:{turn_id}"` literals.
+
+### Removed
+
+- **`mount_websocket_route`'s `heartbeat_interval` parameter, which never did
+  anything.** It had a real-looking default (`30.0`), a place in the public
+  signature, and one line of implementation: `_ = heartbeat_interval  #
+  reserved`. A caller reading the signature had every reason to believe passing
+  it bought periodic liveness checking. One downstream consumer wrote the
+  keepalive fix into its own backlog as "fix upstream in agentkit, then bump
+  the pin past it" — a version bump budgeted against a fix that was never
+  coming, which is the specific cost of a parameter that lies.
+
+  Removed rather than implemented, because this transport cannot honour the
+  name: ASGI lets an application send only `websocket.send` and
+  `websocket.close`, so a protocol-level ping frame is not expressible here at
+  all. What *could* be built is an application-level JSON heartbeat frame, and
+  that is a wire-protocol change every client has to be taught — a consumer's
+  decision, not a default this function may quietly take. Meanwhile the control
+  the parameter appeared to offer already exists one layer down: `uvicorn
+  --ws-ping-interval` (default 20s, honoured by all three of its WebSocket
+  implementations). Nothing in this repo or its known consumers passed the
+  argument, so removal breaks no caller.
 
 ### Fixed
 
