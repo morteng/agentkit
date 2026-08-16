@@ -106,6 +106,26 @@ from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
 ### Fixed
 
+- **`Provenance.UNTRUSTED` was never assigned to anything.** The taint guard
+  (`RiskBasedTaintPolicy`) has read `ToolResult.provenance` since it shipped,
+  but no code path in this package ever set it to anything but the `SYSTEM`
+  default — including `StdioMCPClient`, whose whole risk/approval/side_effects
+  posture already treats a subprocess MCP server as "code we did not write"
+  and fails closed for exactly that reason. Its successful results now carry
+  `Provenance.UNTRUSTED`, so a turn that reads a compromised or malicious MCP
+  server's output is tainted the same way a scraped web page would taint it,
+  instead of never tainting at all. Results agentkit synthesizes itself — an
+  unclassified-tool refusal, a transport exception — are unaffected; that text
+  is ours, not the server's.
+
+  Separately, `loop.handlers.tool_results` built the `ToolResultBlock` it
+  appends to `ctx.history` without forwarding `ToolResult.provenance` — the
+  taint decision itself was already correct (`mark_taint` reads the
+  pre-conversion `ToolResult`), but the persisted message always read `SYSTEM`
+  regardless of the real value, so a transcript re-read after a checkpoint
+  resume or by any future code that trusts the stored message would see the
+  wrong thing. Now forwarded.
+
 - **A write from an already-compacted turn read as a fabricated one.** Rule 1
   (`fabricated_tool`) proves a claimed action by finding a matching
   `ToolUseBlock`/`ToolResultBlock` pair in `ctx.history`. `compact_history` is

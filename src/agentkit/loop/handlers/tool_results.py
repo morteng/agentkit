@@ -32,6 +32,14 @@ async def handle_tool_results(ctx: TurnContext, deps: dict[str, Any]) -> Phase:
                     tool_use_id=r.call_id,
                     content=tr_blocks,
                     is_error=(r.status != "ok"),
+                    # Carry the trust level forward. guards.taint.mark_taint
+                    # already read r.provenance to decide whether this turn
+                    # is tainted (that happened before this handler ran), but
+                    # the persisted message has its own provenance field —
+                    # dropping it here means the stored transcript always
+                    # reads SYSTEM regardless of where the content actually
+                    # came from.
+                    provenance=r.provenance,
                 )
             ]
             msg = Message(

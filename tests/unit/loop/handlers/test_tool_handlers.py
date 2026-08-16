@@ -310,3 +310,37 @@ async def test_tool_results_counts_unknown_tool_errors_for_loop_abort():
     next_ = await handle_tool_results(ctx, {"max_consecutive_tool_errors": 3})
     assert next_ is Phase.ERRORED
     assert ctx.metadata["tool_error_loop"]["tool"] == "get_kb_fact"
+
+
+@pytest.mark.asyncio
+async def test_tool_results_carries_provenance_onto_the_persisted_block():
+    """ToolResult.provenance must survive the fold into ctx.history.
+
+    guards.taint.mark_taint reads ``ToolResult.provenance`` before this
+    handler ever runs, so the taint decision itself is unaffected either way
+    — but the ``ToolResultBlock`` this handler appends to ``ctx.history`` (and
+    therefore to whatever the session store persists) has its own
+    ``provenance`` field, defaulting to SYSTEM, and nothing carried the real
+    value into it. A transcript re-read later — after a checkpoint resume, by
+    an audit tool, or by any future code that infers trust from the stored
+    message rather than re-deriving it — would see every result as SYSTEM
+    regardless of where it actually came from.
+    """
+    from agentkit._content import Provenance, ToolResultBlock
+
+    ctx = TurnContext.empty()
+    ctx.metadata["tool_results"] = [
+        ToolResult(
+            call_id="c1",
+            status="ok",
+            content=[ContentBlockOut(type="text", text="scraped page text")],
+            duration_ms=5,
+            cached=False,
+            provenance=Provenance.UNTRUSTED,
+        )
+    ]
+    await handle_tool_results(ctx, {})
+
+    block = ctx.history[-1].content[0]
+    assert isinstance(block, ToolResultBlock)
+    assert block.provenance is Provenance.UNTRUSTED

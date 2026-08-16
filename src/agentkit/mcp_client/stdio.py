@@ -8,6 +8,7 @@ from typing import Any
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from agentkit._content import Provenance
 from agentkit._logging import get_logger
 from agentkit.mcp_client.base import MCPClient, ProgressCallback
 from agentkit.tools.spec import (
@@ -243,6 +244,13 @@ class StdioMCPClient(MCPClient):
             error=None,
             duration_ms=elapsed,
             cached=False,
+            # This content came from a subprocess we spoke JSON-RPC to, not
+            # code we wrote — the same "outside world" UNCLASSIFIED_RISK
+            # already fails closed for above. A compromised or malicious MCP
+            # server can shape its response to look like an instruction the
+            # same way a scraped web page can, so the taint guard needs to see
+            # it: see agentkit.guards.taint / Provenance.UNTRUSTED.
+            provenance=Provenance.UNTRUSTED,
         )
 
     async def shutdown(self) -> None:
