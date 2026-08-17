@@ -12,6 +12,7 @@ failure (recognised in the upstream error stream). Both are raised, never
 degraded into a quieter outcome.
 """
 
+from collections import Counter
 from collections.abc import AsyncIterator, Callable
 from decimal import Decimal
 
@@ -102,12 +103,17 @@ class ScrubbingProvider(Provider):
                 "refusing to send a PII-carrying request to it"
             )
 
-        scrubbed = self._firewall.scrub_request(request, tmap)
+        # Count replacements as the scrubber makes them — the audit's
+        # ``substitutions`` must record this request's actual scrubbing work,
+        # not a scan of the outgoing text (which mistakes bracketed-capitals
+        # literals for placeholders and re-counts history every turn).
+        substitutions: Counter[str] = Counter()
+        scrubbed = self._firewall.scrub_request(request, tmap, counts=substitutions)
         routing = self._firewall.routing_prefs()
         if routing is not None:
             scrubbed.routing = routing
 
-        emit_audit(self._firewall.build_audit(scrubbed))
+        emit_audit(self._firewall.build_audit(scrubbed, substitutions=substitutions))
 
         require_zdr = policy.require_zdr
         async for event in self._inner.stream(scrubbed):

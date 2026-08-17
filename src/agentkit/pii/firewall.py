@@ -51,6 +51,21 @@ if TYPE_CHECKING:  # avoid a runtime import cycle (spec imports pii.types)
 
 #: Placeholder pattern for the fail-closed finalize gate. Matches ``[EMAIL]``,
 #: ``[CANDIDATE_NAME]``, ``[PHONE_1]`` etc.
+#:
+#: Deliberately broad, and it must stay that way. The two errors this gate can
+#: make are not symmetric: a false positive (a bracketed-capitals literal like
+#: a ``[FLAC]`` scene tag tripping it) refuses one finalize, loudly, and the
+#: caller can see and route around it; a false negative lets a real PII
+#: placeholder through an *irreversible* send, silently. Consumers mint their
+#: own token shapes — the docstring above promises suffix-less ``[EMAIL]`` and
+#: ``[CANDIDATE_NAME]`` are caught — and a model can invent or mangle a
+#: placeholder into any nearby shape, so no narrower pattern is safe here.
+#: (The token map cannot replace the pattern either: a mangled or invented
+#: placeholder is by definition not in the map, and those are exactly the
+#: "map miss" cases the gate exists for.) Do NOT reuse this pattern where the
+#: risk runs the other way — counting or classifying, where breadth
+#: fabricates matches; ``build_audit`` learned that the hard way and now
+#: counts what the scrubber actually replaced instead of scanning.
 _RESIDUAL_TOKEN_RE = re.compile(r"\[[A-Z_]+(_\d+)?\]")
 
 #: Arg-field name substrings that a rehydrate=ALLOW tool must NOT accept — a
@@ -97,7 +112,14 @@ class Firewall:
 
     # ---- Primitive ---------------------------------------------------------
 
-    def scrub_text(self, text: str, tmap: TokenMap, *, field: str | None = None) -> str:
+    def scrub_text(
+        self,
+        text: str,
+        tmap: TokenMap,
+        *,
+        field: str | None = None,
+        counts: Counter[str] | None = None,
+    ) -> str:
         """Run the detector; replace spans right-to-left so offsets stay valid.
 
         NEVER_SEND → ``[REDACTED]`` (never tokenized, never stored). TOKENIZE →
@@ -107,6 +129,13 @@ class Firewall:
         there is one. Detectors implementing
         :class:`~agentkit.pii.protocols.FieldContextDetector` receive it;
         others are called through plain ``detect`` exactly as before.
+
+        ``counts``, when supplied, is incremented once per replacement actually
+        made — by span kind for TOKENIZE, under ``"REDACTED"`` for NEVER_SEND.
+        This is the ground truth :meth:`build_audit` reports as
+        ``substitutions``: counting the replacements as they happen is the only
+        definition that cannot be fooled by placeholder-shaped literals already
+        in the text or by placeholders replayed from earlier turns' history.
 
         Overlapping spans are resolved by
         :func:`~agentkit.pii.spans.merge_spans` before substitution — two
@@ -128,43 +157,66 @@ class Firewall:
             value = text[span.start : span.end]
             if span.action is Action.NEVER_SEND:
                 replacement = "[REDACTED]"
+                if counts is not None:
+                    counts["REDACTED"] += 1
             else:
                 replacement = tmap.token_for(value, span.kind)
+                if counts is not None:
+                    counts[span.kind] += 1
             out = out[: span.start] + replacement + out[span.end :]
         return out
 
     # ---- Request scrubbing (egress) ----------------------------------------
 
-    def scrub_request(self, req: ProviderRequest, tmap: TokenMap) -> ProviderRequest:
+    def scrub_request(
+        self,
+        req: ProviderRequest,
+        tmap: TokenMap,
+        *,
+        counts: Counter[str] | None = None,
+    ) -> ProviderRequest:
         """Deep-copy ``req`` and scrub every text-bearing field. Never mutates input.
+
+        ``counts``, when supplied, accumulates the replacements actually made
+        (see :meth:`scrub_text`) — pass it on to :meth:`build_audit` so the
+        audit reports this request's real scrubbing work.
 
         See the module docstring for the surface-by-surface coverage table.
         """
         scrubbed: ProviderRequest = req.model_copy(deep=True)
         for block in scrubbed.system:
-            block.text = self.scrub_text(block.text, tmap)
+            block.text = self.scrub_text(block.text, tmap, counts=counts)
         for msg in scrubbed.messages:
             for content in msg.content:
-                self._scrub_content_block(content, tmap)
+                self._scrub_content_block(content, tmap, counts)
         return scrubbed
 
-    def _scrub_content_block(self, block: Any, tmap: TokenMap) -> None:
+    def _scrub_content_block(
+        self, block: Any, tmap: TokenMap, counts: Counter[str] | None = None
+    ) -> None:
         if isinstance(block, TextBlock):
-            block.text = self.scrub_text(block.text, tmap)
+            block.text = self.scrub_text(block.text, tmap, counts=counts)
         elif isinstance(block, ThinkingBlock):
             # A signed thinking block must go back to the provider byte-exact
             # or the signature fails — and it is that provider's own output
             # returning, so scrubbing it protects nothing. Unsigned thinking
             # (other providers, replayed transcripts) is scrubbed.
             if block.signature is None:
-                block.text = self.scrub_text(block.text, tmap)
+                block.text = self.scrub_text(block.text, tmap, counts=counts)
         elif isinstance(block, ToolUseBlock):
-            block.arguments = self._scrub_json(block.arguments, tmap)
+            block.arguments = self._scrub_json(block.arguments, tmap, counts=counts)
         elif isinstance(block, ToolResultBlock):
             for inner in block.content:
-                self._scrub_content_block(inner, tmap)
+                self._scrub_content_block(inner, tmap, counts)
 
-    def _scrub_json(self, value: Any, tmap: TokenMap, field: str | None = None) -> Any:
+    def _scrub_json(
+        self,
+        value: Any,
+        tmap: TokenMap,
+        field: str | None = None,
+        *,
+        counts: Counter[str] | None = None,
+    ) -> Any:
         """Recursively scrub string leaves of a JSON-ish structure.
 
         ``field`` carries the enclosing key down to the leaf, so a detector can
@@ -172,11 +224,11 @@ class Firewall:
         List elements inherit the key of the list itself.
         """
         if isinstance(value, str):
-            return self.scrub_text(value, tmap, field=field)
+            return self.scrub_text(value, tmap, field=field, counts=counts)
         if isinstance(value, dict):
-            return {k: self._scrub_json(v, tmap, str(k)) for k, v in value.items()}  # type: ignore[reportUnknownVariableType]
+            return {k: self._scrub_json(v, tmap, str(k), counts=counts) for k, v in value.items()}  # type: ignore[reportUnknownVariableType]
         if isinstance(value, list):
-            return [self._scrub_json(v, tmap, field) for v in value]  # type: ignore[reportUnknownVariableType]
+            return [self._scrub_json(v, tmap, field, counts=counts) for v in value]  # type: ignore[reportUnknownVariableType]
         return value
 
     # ---- Rehydration -------------------------------------------------------
@@ -286,16 +338,44 @@ class Firewall:
 
     # ---- Audit helper (used by the decorator) ------------------------------
 
-    def build_audit(self, scrubbed: ProviderRequest) -> OutboundAudit:
-        """Build an outbound-audit record from an already-scrubbed request."""
+    def build_audit(
+        self,
+        scrubbed: ProviderRequest,
+        *,
+        substitutions: Counter[str] | None = None,
+    ) -> OutboundAudit:
+        """Build an outbound-audit record from an already-scrubbed request.
+
+        ``substitutions`` is the counter :meth:`scrub_request` filled while
+        scrubbing this request — the replacements the scrubber actually made.
+        Pass it whenever you have it: it is the only faithful source for the
+        record. Kinds are upper-cased for the record so it matches the
+        placeholder casing token maps mint (``[PERSON_NAME_3]`` → key
+        ``PERSON_NAME``); the ``REDACTED`` key becomes ``never_send_hits``.
+
+        Without it, the legacy fallback *scans* the scrubbed text with the gate
+        pattern and reports every bracketed-capitals match as a substitution.
+        That is an approximation with two known distortions, kept only for
+        backward compatibility: any ``[BRACKETED_CAPITALS]`` literal in the
+        payload is reported as a substitution of a detector kind that does not
+        exist (observed live: torrent scene tags produced
+        ``{'FLAC': 13, 'PMEDIA': 4, …}`` in a record meant to prove what left
+        the house), and placeholders replayed from earlier turns' history are
+        re-counted on every request, so counts inflate monotonically over a
+        session.
+        """
         texts: list[str] = [b.text for b in scrubbed.system]
         for msg in scrubbed.messages:
             texts.extend(self._collect_texts(msg.content))
         blob = "\n".join(texts)
         counts: Counter[str] = Counter()
-        for token in _RESIDUAL_TOKEN_RE.finditer(blob):
-            kind = re.sub(r"_\d+$", "", token.group(0)[1:-1])
-            counts[kind] += 1
+        if substitutions is not None:
+            for kind, n in substitutions.items():
+                counts[kind.upper()] += n
+        else:
+            for token in _RESIDUAL_TOKEN_RE.finditer(blob):
+                kind = re.sub(r"_\d+$", "", token.group(0)[1:-1])
+                counts[kind] += 1
         never_send = counts.pop("REDACTED", 0)
         return OutboundAudit(
             scrubbed_hash=hashlib.sha256(blob.encode("utf-8")).hexdigest(),

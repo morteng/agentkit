@@ -138,6 +138,28 @@ from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
   which of those produced it — so the fix targets the proven perpetuation
   mechanism, which also defuses whatever seeded it.
 
+- **`build_audit` reported placeholder-shaped text as "substitutions".** The
+  outbound audit's counts were produced by scanning the scrubbed request with
+  the finalize gate's broad bracketed-capitals pattern, which counts a
+  different quantity than the field claims: any bracketed-capitals literal in
+  the payload was reported as a substitution of a detector kind that does not
+  exist (a live record read
+  `{'PERSON_NAME': 5, 'PHONE': 81, 'FLAC': 13, 'WEB': 2, 'PMEDIA': 4, 'MC': 1}`
+  — four of those are torrent scene tags), and placeholders replayed from
+  earlier turns' history were re-counted on every request, so counts inflated
+  monotonically over a session. The scrub path now counts replacements as it
+  makes them (`scrub_text`/`scrub_request` take an optional `counts` Counter,
+  and `ScrubbingProvider` threads one into `build_audit`), so the record
+  states what this request's scrubbing actually did. Calling `build_audit`
+  without counts still falls back to the scan, with its limitations
+  documented.
+
+  The finalize gate (`assert_no_residual_tokens`) keeps the broad pattern
+  deliberately, now with the risk asymmetry stated in a comment and pinned by
+  a test: a false positive refuses one finalize, loudly and recoverably; a
+  narrower pattern would let a suffix-less, mangled, or model-invented
+  placeholder through an irreversible send, silently.
+
 - **`Provenance.UNTRUSTED` was never assigned to anything.** The taint guard
   (`RiskBasedTaintPolicy`) has read `ToolResult.provenance` since it shipped,
   but no code path in this package ever set it to anything but the `SYSTEM`

@@ -79,3 +79,23 @@ def test_assert_no_residual_tokens_passes_clean(detector: FakeDetector):
 def test_assert_no_residual_tokens_raises(detector: FakeDetector, bad: str):
     with pytest.raises(ResidualTokenError):
         _fw(detector).assert_no_residual_tokens(bad)
+
+
+@pytest.mark.parametrize("literal", ["ripped to [FLAC]", "Album (1987) [PMEDIA]", "[WEB] rip"])
+def test_gate_stays_broad_bracketed_capitals_literals_still_trip_it(
+    detector: FakeDetector, literal: str
+):
+    """Deliberate, asymmetric false positive — do not "fix" by narrowing.
+
+    ``[FLAC]`` here is a scene tag, not a placeholder, and the gate refuses it
+    anyway. That is the chosen trade: a false positive refuses one finalize,
+    loudly and recoverably; a narrower pattern would create false negatives —
+    a real placeholder (a consumer's suffix-less ``[EMAIL]``, or a mangled or
+    model-invented token no map contains) surviving into an irreversible
+    send, silently. Callers that need bracketed-capitals literals to pass must
+    handle that at their own boundary, not by weakening this gate. The audit
+    stopped using this pattern for counting for exactly the inverse reason —
+    see ``build_audit``.
+    """
+    with pytest.raises(ResidualTokenError):
+        _fw(detector).assert_no_residual_tokens(literal)
