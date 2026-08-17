@@ -394,6 +394,73 @@ async def test_wire_tool_name_is_decoded_to_canonical_name():
 
 
 @pytest.mark.asyncio
+async def test_poisoned_history_round_trip_reaches_the_registered_tool():
+    """Encode -> wire -> decode at the seam, with a poisoned history entry.
+
+    Regression for a live failure: a decode miss once preserved
+    ``torrent__torrent_add`` into session history as if canonical, and from
+    then on that entry stole the real tool's natural wire alias on every
+    request — the model called the name it had seen work and got "unknown
+    tool" forever. This drives the same round trip the adapter runs: the
+    request builder must advertise the registered tool under its natural
+    alias, and the parser must decode a model call to that alias back to the
+    canonical registered name.
+    """
+    from datetime import UTC, datetime
+
+    from agentkit._content import ToolUseBlock
+    from agentkit._ids import MessageId, SessionId, new_id
+    from agentkit._messages import Message, MessageRole
+    from agentkit.providers.base import ProviderRequest, ToolDefinition
+    from agentkit.providers.openrouter.request_builder import build_openrouter_request
+
+    poisoned = Message(
+        id=new_id(MessageId),
+        session_id=new_id(SessionId),
+        role=MessageRole.ASSISTANT,
+        content=[ToolUseBlock(id="call_0", name="torrent__torrent_add", arguments={})],
+        created_at=datetime.now(UTC),
+    )
+    request = ProviderRequest(
+        model="test/model",
+        messages=[poisoned],
+        tools=[ToolDefinition(name="torrent.torrent_add", description="", parameters={})],
+    )
+    codec = ToolNameCodec.from_request(request)
+    payload = build_openrouter_request(request, name_codec=codec)
+
+    # The registered tool is advertised under its natural alias; the poisoned
+    # history entry is replayed under a distinct one (bijective, so the
+    # provider rejects neither).
+    assert [t["function"]["name"] for t in payload["tools"]] == ["torrent__torrent_add"]
+    replayed = payload["messages"][0]["tool_calls"][0]["function"]["name"]
+    assert replayed == "torrent__torrent_add_2"
+
+    # The model calls the advertised name — the one it has seen work — and the
+    # parser hands the loop the canonical registered name, not the poison.
+    chunks: list[Any] = [
+        _Chunk(
+            [
+                _Choice(
+                    _Delta(
+                        tool_calls=[_ToolCallStreamChunk(0, "call_1", "torrent__torrent_add", "{}")]
+                    )
+                )
+            ]
+        ),
+        _Chunk([_Choice(_Delta(), finish_reason="tool_calls")]),
+    ]
+    events = [
+        ev
+        async for ev in parse_openrouter_stream(
+            _aiter(chunks), model="test/model", name_codec=codec
+        )
+    ]
+    completes = [ev for ev in events if isinstance(ev, ToolCallComplete)]
+    assert [ev.tool_name for ev in completes] == ["torrent.torrent_add"]
+
+
+@pytest.mark.asyncio
 async def test_pending_tool_calls_flush_when_finish_reason_is_tool_calls():
     """Happy path — finish_reason="tool_calls" means args are complete; emit ToolCallComplete."""
     chunks: list[Any] = [

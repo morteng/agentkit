@@ -123,6 +123,14 @@ def unknown_tool_message(name: str, known_names: Iterable[str] | None = None) ->
     This is a suggestion only: no transparent rerouting. When ``known_names``
     is not supplied, or the suffix match is absent/ambiguous, plain names get
     the bare message.
+
+    A plain name that equals exactly ONE registered name with its dots
+    rewritten to ``__`` — ``torrent__torrent_add`` for ``torrent.torrent_add``
+    — is the OpenAI-wire encoding of that tool (dots are illegal in function
+    names, so the OpenRouter codec advertises dotted tools under ``__``
+    aliases). The model repeating a wire name it has seen work is calling the
+    right tool by the only spelling it was ever shown; a bare "unknown tool"
+    here sent a session in circles live while the tool sat registered.
     """
     if "." in name:
         return (
@@ -131,10 +139,14 @@ def unknown_tool_message(name: str, known_names: Iterable[str] | None = None) ->
             f"(await {name}(...)), or use the matching flat tool if one exists."
         )
     if known_names is not None:
+        known = list(known_names)
         # Namespacing convention is ``<server>.<tool>`` (split on the first
         # dot); mirror plane.py's ``_bare`` so the suffix compared here is the
         # same one advertised elsewhere.
-        matches = [k for k in known_names if k.split(".", 1)[-1] == name]
+        matches = [k for k in known if k.split(".", 1)[-1] == name]
+        if not matches:
+            # Wire-encoded spelling of a dotted name (see docstring).
+            matches = [k for k in known if "." in k and k.replace(".", "__") == name]
         if len(matches) == 1:
             return f"unknown tool: {name}. Did you mean {matches[0]}?"
     return f"unknown tool: {name}"

@@ -106,6 +106,38 @@ from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
 ### Fixed
 
+- **One tool-name decode miss poisoned an OpenRouter session permanently.**
+  Canonical dotted names (`torrent.torrent_add`) are advertised to
+  OpenAI-grammar providers under `__` aliases (`torrent__torrent_add`). When a
+  request's codec could not decode such an alias (the tool absent from that
+  request's tools *and* its earlier calls gone from replayed history — e.g.
+  compacted away), `decode()` preserved the wire name, the session stored it
+  into history as if it were canonical, and from then on `from_names`'s
+  safe-name-wins collision rule let that history entry hold the real tool's
+  natural alias on every later request: the registered tool was advertised
+  under `_2`, the model kept calling the name it had seen work, and every call
+  failed `unknown tool: torrent__torrent_add` — observed live minutes after
+  the same tool had run twice in the same session. Three changes, each
+  independently useful:
+
+  - `ToolNameCodec.from_names` now gives a dotted name priority over a
+    wire-safe sibling that equals its natural `__` encoding (the previous rule
+    is kept for every other collision). The poisoned history entry gets the
+    suffixed alias instead, the mapping stays bijective, and the session heals
+    on the next request that advertises the tool.
+  - `decode()` accepts a name that is canonical in this request (models echo
+    dotted names they see in history prose and diagnostics); previously a dot
+    made it "malformed" and it decoded to the sentinel.
+  - `unknown_tool_message` recognises a `__`-spelling of exactly one
+    registered dotted name as a near-match and answers "Did you mean
+    torrent.torrent_add?" instead of the bare message — the model was being
+    told nothing while using precisely the name agentkit had advertised.
+
+  The original seeding miss is not reproduced — it needs a request built
+  without the tool and without its history, and no log survives to prove
+  which of those produced it — so the fix targets the proven perpetuation
+  mechanism, which also defuses whatever seeded it.
+
 - **`Provenance.UNTRUSTED` was never assigned to anything.** The taint guard
   (`RiskBasedTaintPolicy`) has read `ToolResult.provenance` since it shipped,
   but no code path in this package ever set it to anything but the `SYSTEM`

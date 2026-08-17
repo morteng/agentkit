@@ -59,12 +59,33 @@ class ToolNameCodec:
         wire_to_canonical: dict[str, str] = {}
         used_wire_names: set[str] = set()
 
+        # The natural ``__`` encodings of the non-wire-safe names in this set.
+        # A wire-safe canonical name that *equals* one of these is ambiguous:
+        # it may be a genuine flat tool, or it may be a dotted tool's own wire
+        # alias that a decode miss on an earlier request preserved and the
+        # session then stored into history as if it were canonical.  The dotted
+        # original must win that collision.  When the echoed alias won (the
+        # previous behaviour), the poisoned history entry held the natural
+        # alias forever: the real tool was advertised under a ``_2`` suffix,
+        # every call the model made to the name it had seen work decoded to the
+        # poisoned entry, and the registry answered "unknown tool" for a tool
+        # it had — a self-perpetuating failure observed live
+        # (``torrent__torrent_add`` failing minutes after ``torrent.torrent_add``
+        # ran twice).  With the dotted original winning, the same call decodes
+        # back to the registered name and the session heals itself.
+        encoded_candidates = {
+            _candidate_wire_name(name) for name in canonical_names if not is_wire_safe_name(name)
+        }
+
         # Preserve already-safe names whenever possible.  This keeps ordinary
         # flat tools byte-compatible and leaves only qualified/invalid names
         # translated.  Reserve these first so an encoded name can never steal
-        # an exact alias from another canonical tool.
+        # an exact alias from another canonical tool — except when the safe
+        # name IS another tool's natural encoding (see above): that name goes
+        # through the suffix loop instead, and sorted order guarantees the
+        # dotted original claims the alias first (``.`` sorts before ``_``).
         for name in canonical_names:
-            if is_wire_safe_name(name):
+            if is_wire_safe_name(name) and name not in encoded_candidates:
                 canonical_to_wire[name] = name
                 wire_to_canonical[name] = name
                 used_wire_names.add(name)
@@ -113,6 +134,12 @@ class ToolNameCodec:
     def decode(self, wire_name: str) -> str:
         """Decode a provider alias, failing closed for malformed names.
 
+        A name that is not a known alias but IS a known canonical name is
+        returned as canonical: models echo the dotted names they see in
+        history text and error diagnostics ("Did you mean acme.search?"), and
+        such a name identifies exactly one tool of this request — treating it
+        as malformed would turn correct intent into the sentinel.
+
         A provider may return a safe-but-unknown name; preserving it lets the
         existing unknown-tool path produce its normal diagnostic.  Malformed
         names are replaced with a safe sentinel so they cannot poison session
@@ -122,6 +149,12 @@ class ToolNameCodec:
         canonical_name = self.wire_to_canonical.get(wire_name)
         if canonical_name is not None:
             return canonical_name
+        if wire_name in self.canonical_to_wire:
+            # Only reachable for canonical names that are not their own alias
+            # (dotted names, or a flat name displaced from its alias by a
+            # dotted sibling's encoding — the alias lookup above wins for
+            # every identity-mapped name).
+            return wire_name
         return wire_name if is_wire_safe_name(wire_name) else UNKNOWN_INVALID_TOOL_NAME
 
 

@@ -103,6 +103,31 @@ def test_unknown_tool_message_suggests_unique_qualified_suffix_match():
     assert msg == "unknown tool: web_search. Did you mean acme.web_search?"
 
 
+def test_unknown_tool_message_recognises_wire_encoded_names():
+    """``torrent__torrent_add`` is ``torrent.torrent_add`` as the OpenAI wire
+    grammar forces it to be spelled — the model is repeating a name agentkit
+    itself advertised. The live failure was the bare message here: the tool
+    was registered, had just run twice, and the model was told only "unknown
+    tool" with nothing to correct toward."""
+    from agentkit.tools.spec import unknown_tool_message
+
+    known = ["torrent.torrent_add", "acme.web_search", "kit.finalize"]
+
+    msg = unknown_tool_message("torrent__torrent_add", known)
+    assert msg == "unknown tool: torrent__torrent_add. Did you mean torrent.torrent_add?"
+
+    # Ambiguity still yields the terse message — a wrong guess is worse.
+    ambiguous = ["alpha__x.y", "alpha.x__y"]  # both encode to alpha__x__y
+    assert unknown_tool_message("alpha__x__y", ambiguous) == "unknown tool: alpha__x__y"
+
+    # An exact suffix match keeps priority over the encoding heuristic.
+    both = ["acme.torrent__torrent_add", "torrent.torrent_add"]
+    assert (
+        unknown_tool_message("torrent__torrent_add", both)
+        == "unknown tool: torrent__torrent_add. Did you mean acme.torrent__torrent_add?"
+    )
+
+
 def test_unknown_tool_message_no_suggestion_when_ambiguous_or_absent():
     """No suggestion when the suffix matches zero or more than one qualified
     name — a wrong guess is worse than the terse message. Suggestion only,
