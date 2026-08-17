@@ -1,10 +1,10 @@
 """Translate OpenAI-protocol streaming responses into ProviderEvents."""
 
 import json
-import logging
 from collections.abc import AsyncIterator, Generator
 from typing import Any, cast
 
+from agentkit._logging import get_logger
 from agentkit._messages import Usage
 from agentkit._stream_trace import is_tracing, trace_delta
 from agentkit.providers.base import (
@@ -36,7 +36,13 @@ from agentkit.providers.tool_call_errors import (
     invalid_arguments_message as _invalid_arguments_message,
 )
 
-logger = logging.getLogger(__name__)
+# structlog, not stdlib logging. These three warnings are the only record
+# that a tool call was dropped or refused, and under a stdlib logger they
+# went nowhere: the application configures structlog, so every one of them
+# was mute in production. Found while trying to use
+# `pending_tool_calls_dropped` as evidence during an incident and getting
+# zero lines — with a control showing zero `openrouter.*` lines of any kind.
+logger = get_logger(__name__)
 
 # Re-exported here because these names shipped from this module: the codes and
 # the model-facing wording now live in agentkit.providers.tool_call_errors so
@@ -227,20 +233,18 @@ async def parse_openrouter_stream(  # noqa: PLR0912 — chunk-type dispatch + tr
         # argument buffers carry user text and would sidestep the PII firewall.
         logger.warning(
             "openrouter.pending_tool_calls_dropped",
-            extra={
-                "finish_reason": finish_reason_raw,
-                "dropped_count": len(pending_tools),
-                "tools": [
-                    {
-                        "name": _decode_name(slot["name"], name_codec),
-                        "has_id": slot["id"] is not None,
-                        "args_buf_len": len(slot["args_buf"]),
-                    }
-                    for slot in pending_tools.values()
-                ],
-                "model": model,
-                "session_id": session_id,
-            },
+            finish_reason=finish_reason_raw,
+            dropped_count=len(pending_tools),
+            tools=[
+                {
+                    "name": _decode_name(slot["name"], name_codec),
+                    "has_id": slot["id"] is not None,
+                    "args_buf_len": len(slot["args_buf"]),
+                }
+                for slot in pending_tools.values()
+            ],
+            model=model,
+            session_id=session_id,
         )
         # A log is for us; the ErrorEvent is for the model. A dropped call that
         # produces no event at all reads, from the model's side, as an action it
@@ -313,11 +317,9 @@ def _flush_pending_tools(
             # when a name arrives), so mux-level accounting stays consistent.
             logger.warning(
                 "openrouter.nameless_tool_slot_skipped",
-                extra={
-                    "has_id": slot["id"] is not None,
-                    "args_buf_len": len(slot["args_buf"]),
-                    "args_buf_nonempty": bool(slot["args_buf"]),
-                },
+                has_id=slot["id"] is not None,
+                args_buf_len=len(slot["args_buf"]),
+                args_buf_nonempty=bool(slot["args_buf"]),
             )
             yield ErrorEvent(
                 code=INCOMPLETE_TOOL_CALL_CODE,
@@ -342,10 +344,8 @@ def _flush_pending_tools(
             # hand the model a retryable explanation instead.
             logger.warning(
                 "openrouter.tool_args_unparseable_rejected",
-                extra={
-                    "tool_name": tool_name,
-                    "args_buf_len": len(slot["args_buf"]),
-                },
+                tool_name=tool_name,
+                args_buf_len=len(slot["args_buf"]),
             )
             yield ErrorEvent(
                 code=INVALID_TOOL_ARGUMENTS_CODE,
