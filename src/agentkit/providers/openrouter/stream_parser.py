@@ -3,7 +3,7 @@
 import json
 import logging
 from collections.abc import AsyncIterator, Generator
-from typing import Any
+from typing import Any, cast
 
 from agentkit._messages import Usage
 from agentkit._stream_trace import is_tracing, trace_delta
@@ -102,9 +102,17 @@ async def parse_openrouter_stream(  # noqa: PLR0912 — chunk-type dispatch + tr
 
     Args:
         chunks: Async iterator of ChatCompletionChunk objects from the OpenAI SDK.
-        model: The model identifier used for this request (e.g. ``"openai/gpt-5"``).
-            Stamped onto the emitted :class:`UsageEvent` so cost-ledger consumers
-            can attribute usage without inspecting the originating request.
+        model: The model identifier *requested* (e.g. ``"~deepseek/deepseek-v4-flash-latest"``).
+            Used only for tracing/log correlation (``STREAM_TRACE_SESSIONS``,
+            the dropped-tool-call warning) — never stamped onto the emitted
+            :class:`UsageEvent`. OpenRouter supports moving aliases that
+            resolve server-side to a concrete model, and each
+            ``ChatCompletionChunk`` echoes the *resolved* id back on its own
+            ``model`` field (OpenRouter OpenAPI spec: ``ChatStreamChunk.model``,
+            required on every chunk). ``UsageEvent.model`` is stamped from that
+            wire value, not this parameter — echoing the request here was the
+            bug (every usage record said the alias, forever, regardless of
+            which concrete model actually answered).
         session_id: Optional session id, forwarded to the per-session stream
             tracer (``agentkit._stream_trace``). When the session is allowlisted
             via ``STREAM_TRACE_SESSIONS``, each text delta is logged at the
@@ -116,6 +124,27 @@ async def parse_openrouter_stream(  # noqa: PLR0912 — chunk-type dispatch + tr
     started = False
     finish_reason_raw: str | None = None
     final_usage: Usage | None = None
+    # The model actually reported by the wire, not the one requested. Every
+    # ``ChatCompletionChunk``/``ChatStreamChunk`` carries a required ``model``
+    # field that is OpenRouter's resolved id (see the docstring above) — capture
+    # it the same last-wins way as usage, since nothing guarantees which chunk
+    # carries it and a later, real value should win over an earlier one. Starts
+    # ``None`` and *stays* ``None`` if the wire never sends it — never falls
+    # back to the request's ``model`` parameter, which is precisely the bug
+    # being fixed.
+    response_model: str | None = None
+    # The upstream provider that served the request (DeepSeek, Fireworks, ...),
+    # read from OpenRouter's opt-in ``openrouter_metadata`` (see adapter.py's
+    # ``X-OpenRouter-Metadata: enabled`` header). Undeclared on
+    # ``ChatCompletionChunk`` — the openai SDK's ``BaseModel`` has
+    # ``extra="allow"``, so it survives as a plain ``dict`` off
+    # ``chunk.openrouter_metadata``, not a typed sub-object. Stays ``None``
+    # (never a guess, and never the old hardcoded ``"openrouter"`` literal —
+    # that name only ever meant "this is the OpenRouter *adapter*", which is
+    # already carried by ``Provider.name``, not which inference backend
+    # answered) when the metadata is absent, malformed, or no endpoint is
+    # marked ``selected``.
+    provider_name: str | None = None
     pending_tools: dict[int, dict[str, Any]] = {}  # index -> {"id", "name", "args_buf"}
     # Cache the membership check once per stream — no point repeating the
     # set lookup per chunk, and tracing state is per-session-stable.
@@ -125,6 +154,14 @@ async def parse_openrouter_stream(  # noqa: PLR0912 — chunk-type dispatch + tr
         if not started:
             yield MessageStart()
             started = True
+
+        # Last-truthy-wins: an empty/missing ``model`` on one chunk must not
+        # clobber a real value already captured from an earlier one.
+        if chunk_model := getattr(chunk, "model", None):
+            response_model = chunk_model
+
+        if selected := _selected_provider_from_metadata(chunk):
+            provider_name = selected
 
         # Capture usage from any chunk that carries it. The OpenAI canonical
         # ``include_usage`` shape is "empty choices + populated usage on a final
@@ -222,7 +259,7 @@ async def parse_openrouter_stream(  # noqa: PLR0912 — chunk-type dispatch + tr
             )
 
     if final_usage is not None:
-        yield UsageEvent(usage=final_usage, model=model, provider_name="openrouter")
+        yield UsageEvent(usage=final_usage, model=response_model, provider_name=provider_name)
     yield MessageComplete(finish_reason=parse_finish_reason(finish_reason_raw))
 
 
@@ -328,8 +365,64 @@ def _usage_from_openai(u: Any) -> Usage:
     details = getattr(u, "prompt_tokens_details", None)
     if details is not None:
         cached = getattr(details, "cached_tokens", 0) or 0
+    # ``completion_tokens_details.reasoning_tokens`` is the OpenAI-compatible
+    # path OpenRouter's usage block actually reports reasoning tokens under
+    # (OpenRouter OpenAPI spec: ``ChatUsage.completion_tokens_details
+    # .reasoning_tokens``; mirrors openai SDK's own
+    # ``CompletionUsage.completion_tokens_details.reasoning_tokens``, which is
+    # the type this object is when it comes from the real client). This used
+    # to go nowhere: neither a run of ``thinking_delta`` events during the
+    # stream nor this usage figure ever reached ``Usage.thinking_tokens``, so
+    # it silently read 0 on every turn regardless of how much the model
+    # thought.
+    #
+    # ``thinking_tokens`` stays a plain ``int`` (not ``Optional``), unlike
+    # ``model``/``provider_name`` above: 0 is the honest value both when a
+    # non-reasoning model genuinely used no reasoning tokens *and* when the
+    # provider omits the details block because reasoning doesn't apply — in
+    # neither case is there a wrong-looking-right number to manufacture by
+    # defaulting to 0, so there's nothing here that ``None`` would express
+    # more truthfully.
+    thinking = 0
+    completion_details = getattr(u, "completion_tokens_details", None)
+    if completion_details is not None:
+        thinking = getattr(completion_details, "reasoning_tokens", 0) or 0
     return Usage(
         input_tokens=getattr(u, "prompt_tokens", 0),
         output_tokens=getattr(u, "completion_tokens", 0),
         cached_input_tokens=cached,
+        thinking_tokens=thinking,
     )
+
+
+def _selected_provider_from_metadata(chunk: Any) -> str | None:
+    """Extract the serving upstream provider from OpenRouter's opt-in routing metadata.
+
+    Reads ``chunk.openrouter_metadata.endpoints.available[]`` for the entry
+    marked ``selected`` and returns its ``provider``. The metadata is an
+    OpenRouter extension the openai SDK doesn't model — its ``BaseModel`` has
+    ``extra="allow"`` (verified: ``openai/_models.py``'s ``construct()``
+    stores unmodelled keys as plain parsed JSON, not typed sub-objects), so
+    this walks the structure duck-typed against either a ``dict`` (the
+    realistic shape) or an object with matching attributes, and returns
+    ``None`` on any shape it doesn't recognise rather than guessing.
+    """
+
+    def _get(obj: Any, key: str) -> Any:
+        if isinstance(obj, dict):
+            d = cast("dict[str, Any]", obj)
+            return d.get(key)
+        return getattr(obj, key, None)
+
+    meta = getattr(chunk, "openrouter_metadata", None)
+    if meta is None:
+        return None
+    endpoints = _get(meta, "endpoints")
+    if endpoints is None:
+        return None
+    available: list[Any] = _get(endpoints, "available") or []
+    for endpoint in available:
+        if _get(endpoint, "selected"):
+            provider = _get(endpoint, "provider")
+            return str(provider) if provider else None
+    return None

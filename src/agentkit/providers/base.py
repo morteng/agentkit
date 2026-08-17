@@ -151,8 +151,19 @@ class _MessageComplete(_ProviderEventBase):
 class _UsageEvent(_ProviderEventBase):
     type: Literal["usage"] = "usage"  # type: ignore[reportIncompatibleVariableOverride]
     usage: Usage
-    model: str
-    provider_name: str
+    # ``str | None`` rather than ``str``: both fields are meant to carry what
+    # the *response* actually said, not what the request asked for. When a
+    # provider's wire response omits the information (or moving-alias
+    # resolution can't be confirmed), the honest value is "we don't know" —
+    # ``None`` — not a fallback that quietly echoes the request and looks
+    # like a real measurement. See providers/openrouter/stream_parser.py for
+    # the incident this is fixing: ``model`` used to be stamped from
+    # ``request.model`` forever, and ``provider_name`` was a hardcoded
+    # literal, on every OpenRouter usage record. Both fields stay *required*
+    # kwargs (no default) — callers must make a deliberate choice, including
+    # the choice to pass ``None``.
+    model: str | None
+    provider_name: str | None
 
 
 class _ErrorEvent(_ProviderEventBase):

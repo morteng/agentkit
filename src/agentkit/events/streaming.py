@@ -44,6 +44,11 @@ class UsageRecorded(BaseEvent):
 
     type: Literal["usage_recorded"] = Field(default="usage_recorded")  # type: ignore[reportIncompatibleVariableOverride]
     message_id: MessageId
-    model: str
+    # ``str | None``, mirroring providers.base.UsageEvent: a provider that
+    # cannot confirm the resolved model or the serving upstream provider must
+    # say so with ``None`` rather than echo the request. This widens the wire
+    # schema (JSON field becomes nullable) — a non-Python consumer with a
+    # strict non-null string type for these fields needs a matching update.
+    model: str | None
     usage: Usage
-    provider_name: str
+    provider_name: str | None

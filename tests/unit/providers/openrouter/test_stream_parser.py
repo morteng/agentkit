@@ -44,16 +44,51 @@ class _Choice:
 
 
 class _Chunk:
-    def __init__(self, choices: list[_Choice], usage: Any = None) -> None:
+    def __init__(
+        self,
+        choices: list[_Choice],
+        usage: Any = None,
+        model: str | None = None,
+        openrouter_metadata: Any = None,
+    ) -> None:
         self.choices = choices
         self.usage = usage
+        # ``model`` mimics the real wire: ChatCompletionChunk/ChatStreamChunk
+        # carry it on every chunk. Left ``None`` by default so a test that
+        # never passes it exercises the "field absent" path honestly, the
+        # same way a chunk from a broken/old SDK build would.
+        self.model = model
+        # ``openrouter_metadata`` is an OpenRouter extension the openai SDK
+        # doesn't model — on the real wire it survives as a plain ``dict``
+        # (see stream_parser._selected_provider_from_metadata's docstring),
+        # so tests pass raw dicts here, not a typed fake.
+        self.openrouter_metadata = openrouter_metadata
+
+
+class _CompletionTokensDetails:
+    def __init__(self, reasoning_tokens: int | None) -> None:
+        self.reasoning_tokens = reasoning_tokens
 
 
 class _Usage:
-    def __init__(self, prompt_tokens: int, completion_tokens: int, cached_tokens: int = 0) -> None:
+    def __init__(
+        self,
+        prompt_tokens: int,
+        completion_tokens: int,
+        cached_tokens: int = 0,
+        reasoning_tokens: int | None = None,
+    ) -> None:
         self.prompt_tokens = prompt_tokens
         self.completion_tokens = completion_tokens
         self.prompt_tokens_details = None
+        # ``None`` (the default) mimics a response whose usage block omits
+        # ``completion_tokens_details`` entirely — the non-reasoning-model
+        # shape. Passing ``reasoning_tokens=`` wraps it the way the real
+        # openai SDK's ``CompletionUsage.completion_tokens_details`` does:
+        # attribute access, not a dict.
+        self.completion_tokens_details = (
+            _CompletionTokensDetails(reasoning_tokens) if reasoning_tokens is not None else None
+        )
 
 
 class _ToolCallStreamChunk:
@@ -511,22 +546,195 @@ async def test_reasoning_field_alias_also_emits_thinking_delta():
 
 
 @pytest.mark.asyncio
-async def test_parser_stamps_model_and_provider_name_on_usage_event():
-    """The parser must thread its ``model`` kwarg + a fixed
-    ``provider_name='openrouter'`` onto every UsageEvent it yields."""
+async def test_usage_event_model_is_the_resolved_response_model_not_the_requested_alias():
+    """Regression: OpenRouter's moving aliases (e.g. ``~deepseek/deepseek-v4-
+    flash-latest``) resolve server-side to a concrete model, and the response
+    echoes the *resolved* id on ``chunk.model`` — not the alias. The old
+    behaviour stamped ``UsageEvent.model`` from the request, so every usage
+    record said the alias forever regardless of which model actually answered.
+    """
     chunks: list[Any] = [
-        _Chunk([_Choice(_Delta(content="hi"))]),
-        _Chunk([_Choice(_Delta(), finish_reason="stop")]),
-        # Usage arrives in a no-choices chunk (OpenAI stream_options pattern).
-        _Chunk([], usage=_Usage(prompt_tokens=10, completion_tokens=5)),
+        _Chunk([_Choice(_Delta(content="hi"))], model="deepseek/deepseek-v4-flash-0731"),
+        _Chunk([_Choice(_Delta(), finish_reason="stop")], model="deepseek/deepseek-v4-flash-0731"),
+        _Chunk(
+            [],
+            usage=_Usage(prompt_tokens=10, completion_tokens=5),
+            model="deepseek/deepseek-v4-flash-0731",
+        ),
+    ]
+    events = [
+        ev
+        async for ev in parse_openrouter_stream(
+            _aiter(chunks), model="~deepseek/deepseek-v4-flash-latest"
+        )
+    ]
+    usage_events = [e for e in events if isinstance(e, UsageEvent)]
+    assert len(usage_events) == 1
+    assert usage_events[0].model == "deepseek/deepseek-v4-flash-0731"
+    assert usage_events[0].model != "~deepseek/deepseek-v4-flash-latest"
+
+
+@pytest.mark.asyncio
+async def test_usage_event_model_when_request_and_response_agree():
+    """No alias in play: request and response models are identical. This must
+    still read from the response wire value, not merely happen to match the
+    request by coincidence — a fix that hardcodes ``model=request_model``
+    would also pass this test alone, which is why it exists alongside the
+    alias-resolution test above rather than instead of it."""
+    chunks: list[Any] = [
+        _Chunk([_Choice(_Delta(content="hi"))], model="openai/gpt-5"),
+        _Chunk(
+            [_Choice(_Delta(), finish_reason="stop")],
+            usage=_Usage(prompt_tokens=10, completion_tokens=5),
+            model="openai/gpt-5",
+        ),
     ]
     events = [ev async for ev in parse_openrouter_stream(_aiter(chunks), model="openai/gpt-5")]
     usage_events = [e for e in events if isinstance(e, UsageEvent)]
     assert len(usage_events) == 1
     assert usage_events[0].model == "openai/gpt-5"
-    assert usage_events[0].provider_name == "openrouter"
-    assert usage_events[0].usage.input_tokens == 10
-    assert usage_events[0].usage.output_tokens == 5
+
+
+@pytest.mark.asyncio
+async def test_usage_event_model_is_none_when_wire_never_sends_it():
+    """Honest reporting: if no chunk ever carries ``.model``, the usage record
+    must say ``None`` — not silently fall back to the requested alias, which
+    is the exact bug this fixes. A wrong-looking-right value is worse than a
+    missing one."""
+    chunks: list[Any] = [
+        _Chunk([_Choice(_Delta(content="hi"))]),  # no model= passed
+        _Chunk(
+            [_Choice(_Delta(), finish_reason="stop")],
+            usage=_Usage(prompt_tokens=10, completion_tokens=5),
+        ),  # still no model=
+    ]
+    events = [
+        ev
+        async for ev in parse_openrouter_stream(
+            _aiter(chunks), model="~deepseek/deepseek-v4-flash-latest"
+        )
+    ]
+    usage_events = [e for e in events if isinstance(e, UsageEvent)]
+    assert len(usage_events) == 1
+    assert usage_events[0].model is None
+
+
+@pytest.mark.asyncio
+async def test_provider_name_is_none_without_routing_metadata():
+    """Default shape (no ``openrouter_metadata`` on any chunk, e.g. the opt-in
+    header wasn't honoured): must be ``None``, never the old hardcoded
+    ``"openrouter"`` literal — that name identifies the agentkit adapter, not
+    the upstream inference backend that served this specific completion."""
+    chunks: list[Any] = [
+        _Chunk([_Choice(_Delta(content="hi"))]),
+        _Chunk(
+            [_Choice(_Delta(), finish_reason="stop")],
+            usage=_Usage(prompt_tokens=10, completion_tokens=5),
+        ),
+    ]
+    events = [ev async for ev in parse_openrouter_stream(_aiter(chunks), model="test/model")]
+    usage_events = [e for e in events if isinstance(e, UsageEvent)]
+    assert len(usage_events) == 1
+    assert usage_events[0].provider_name is None
+
+
+@pytest.mark.asyncio
+async def test_provider_name_reads_the_selected_endpoint_from_routing_metadata():
+    """OpenRouter's opt-in routing metadata (``X-OpenRouter-Metadata: enabled``,
+    surfaced under ``openrouter_metadata.endpoints.available[]``) marks the
+    endpoint that actually served the request with ``selected: true``. The
+    parser must report that endpoint's ``provider``, not just the first one
+    in the list — a request can see several candidate endpoints and only one
+    is real."""
+    metadata = {
+        "endpoints": {
+            "available": [
+                {"model": "deepseek/deepseek-v4-flash", "provider": "Novita", "selected": False},
+                {"model": "deepseek/deepseek-v4-flash", "provider": "DeepSeek", "selected": True},
+            ],
+            "total": 2,
+        }
+    }
+    chunks: list[Any] = [
+        _Chunk([_Choice(_Delta(content="hi"))], openrouter_metadata=metadata),
+        _Chunk(
+            [_Choice(_Delta(), finish_reason="stop")],
+            usage=_Usage(prompt_tokens=10, completion_tokens=5),
+            openrouter_metadata=metadata,
+        ),
+    ]
+    events = [ev async for ev in parse_openrouter_stream(_aiter(chunks), model="test/model")]
+    usage_events = [e for e in events if isinstance(e, UsageEvent)]
+    assert len(usage_events) == 1
+    assert usage_events[0].provider_name == "DeepSeek"
+
+
+@pytest.mark.asyncio
+async def test_provider_name_is_none_when_no_endpoint_is_marked_selected():
+    """Malformed/incomplete metadata (no endpoint flagged ``selected``) must
+    not guess by picking the first candidate — ``None`` is the honest answer
+    when the wire doesn't actually say which one ran."""
+    metadata = {
+        "endpoints": {
+            "available": [
+                {"model": "deepseek/deepseek-v4-flash", "provider": "Novita", "selected": False},
+            ],
+            "total": 1,
+        }
+    }
+    chunks: list[Any] = [
+        _Chunk(
+            [_Choice(_Delta(), finish_reason="stop")],
+            usage=_Usage(prompt_tokens=10, completion_tokens=5),
+            openrouter_metadata=metadata,
+        ),
+    ]
+    events = [ev async for ev in parse_openrouter_stream(_aiter(chunks), model="test/model")]
+    usage_events = [e for e in events if isinstance(e, UsageEvent)]
+    assert len(usage_events) == 1
+    assert usage_events[0].provider_name is None
+
+
+@pytest.mark.asyncio
+async def test_thinking_tokens_reports_reasoning_tokens_from_usage_details():
+    """A reasoning model that demonstrably thought (the stream emitted
+    ``thinking_delta`` events) must show non-zero ``thinking_tokens`` —
+    previously this always read 0 regardless of the model or the usage
+    block's ``completion_tokens_details.reasoning_tokens``."""
+    chunks: list[Any] = [
+        _Chunk([_Choice(_Delta(reasoning_content="thinking..."))]),
+        _Chunk([_Choice(_Delta(content="answer"))]),
+        _Chunk(
+            [_Choice(_Delta(), finish_reason="stop")],
+            usage=_Usage(prompt_tokens=10, completion_tokens=5, reasoning_tokens=37),
+        ),
+    ]
+    events = [
+        ev async for ev in parse_openrouter_stream(_aiter(chunks), model="deepseek/deepseek-r1")
+    ]
+    usage_events = [e for e in events if isinstance(e, UsageEvent)]
+    assert len(usage_events) == 1
+    assert usage_events[0].usage.thinking_tokens == 37
+
+
+@pytest.mark.asyncio
+async def test_thinking_tokens_is_the_control_zero_for_a_non_reasoning_model():
+    """Control: a non-reasoning model's usage block omits
+    ``completion_tokens_details`` entirely (no reasoning happened, nothing to
+    report). This must read 0 — and a broken fix that reports some constant
+    non-zero "measurement" regardless of the actual usage block must fail
+    this test even though it would pass the reasoning-model test above."""
+    chunks: list[Any] = [
+        _Chunk([_Choice(_Delta(content="hi"))]),
+        _Chunk(
+            [_Choice(_Delta(), finish_reason="stop")],
+            usage=_Usage(prompt_tokens=10, completion_tokens=5),  # reasoning_tokens=None
+        ),
+    ]
+    events = [ev async for ev in parse_openrouter_stream(_aiter(chunks), model="openai/gpt-5-mini")]
+    usage_events = [e for e in events if isinstance(e, UsageEvent)]
+    assert len(usage_events) == 1
+    assert usage_events[0].usage.thinking_tokens == 0
 
 
 @pytest.mark.asyncio
@@ -540,11 +748,12 @@ async def test_usage_captured_when_arrives_with_non_empty_choices():
     empty for 4+ hours because the original guard discarded these chunks.
     """
     chunks: list[Any] = [
-        _Chunk([_Choice(_Delta(content="hi"))]),
+        _Chunk([_Choice(_Delta(content="hi"))], model="deepseek/deepseek-chat-v3.1"),
         # Real OpenRouter final chunk: choices=non-empty + finish_reason + usage.
         _Chunk(
             [_Choice(_Delta(), finish_reason="stop")],
             usage=_Usage(prompt_tokens=12, completion_tokens=2),
+            model="deepseek/deepseek-chat-v3.1",
         ),
     ]
     events = [

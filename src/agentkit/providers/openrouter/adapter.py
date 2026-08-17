@@ -108,7 +108,19 @@ class OpenRouterProvider(Provider):
         reasoning: dict[str, Any] | None = None,
     ) -> None:
         self._client = client or AsyncOpenAI(api_key=api_key, base_url=base_url)
-        self._extra_headers: dict[str, str] = {}
+        self._extra_headers: dict[str, str] = {
+            # Opt-in to OpenRouter's routing metadata so the response can carry
+            # which upstream provider (DeepSeek, Fireworks, ...) actually
+            # served the request. Undocumented in the request-builder schema
+            # because it's a header, not a body field; OpenRouter's OpenAPI
+            # spec (openrouter_metadata / EndpointsMetadata schemas, fetched
+            # 2026-08-17 — no fixture in this repo) says the header defaults
+            # to "disabled" and the field is absent without it. Harmless to
+            # always send: the stream parser treats the metadata as optional
+            # and falls back to ``provider_name=None`` if it's missing,
+            # malformed, or this account/plan doesn't return it.
+            "X-OpenRouter-Metadata": "enabled",
+        }
         if http_referer:
             self._extra_headers["HTTP-Referer"] = http_referer
         if x_title:
