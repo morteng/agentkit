@@ -8,6 +8,7 @@
   "resolved_by": "system",
   "sequence": 1,
   "session_id": "sess_canonical",
+  "tool_name": "acme.delete_content",
   "ts": "2026-01-01T00:00:00Z",
   "turn_id": "turn_canonical",
   "type": "approval_resolved"

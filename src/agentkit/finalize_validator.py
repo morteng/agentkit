@@ -8,6 +8,8 @@ in the consuming project's repo.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from agentkit._content import ToolResultBlock, ToolUseBlock
 from agentkit._messages import INJECTED_CORRECTION_ANNOTATION, Message, MessageRole
 from agentkit.envelope import Envelope, ToolCallSummary, ValidationResult, Violation
@@ -67,8 +69,44 @@ def _is_default_write(name: str) -> bool:
     return not any(_bare_name(name).startswith(p) for p in _DEFAULT_READ_PREFIXES)
 
 
+RiskFor = Callable[[str], str | None]
+"""Resolve a tool name to its registered risk level, or ``None`` if unknown.
+
+Takes the name as it appears in the call log — qualified (``torrent.search``)
+or bare — and is expected to try both.
+"""
+
+
+def _is_write(name: str, risk_for: RiskFor | None = None) -> bool:
+    """Classify a call as a write, preferring the *registered* risk level.
+
+    ``_DEFAULT_READ_PREFIXES`` is a heuristic over names, and a heuristic over
+    names silently encodes a naming convention: every entry there is
+    ``verb_noun`` (``search_web``, ``get_thing``). A consumer that names tools
+    ``noun_verb`` matches no prefix at all, so *every* tool it owns classifies
+    as a write — reads included — and the write-mandate rules stop
+    discriminating between "searched sixteen times" and "downloaded sixteen
+    things". Measured against a real registry, all of ``torrent_search``,
+    ``calibre_search``, ``disk_usage`` and ``docker_ps`` came back WRITE while
+    agentkit's own ``search_web``/``get_thing`` came back read — the function
+    was working exactly as designed and answering the wrong question.
+
+    The registry already holds the answer the heuristic is guessing at, so ask
+    it first. The prefix list stays for names no registry can resolve: a call
+    carried across a compaction boundary whose spec is gone, or a caller with
+    no registry at all. Fail-closed is preserved — an unresolvable name is
+    still a write.
+    """
+    if risk_for is not None:
+        risk = risk_for(name)
+        if risk is not None:
+            return risk != "read"
+    return _is_default_write(name)
+
+
 def _summaries_since_last_user_turn(  # pyright: ignore[reportUnusedFunction]
     history: list[Message],
+    risk_for: RiskFor | None = None,
 ) -> list[ToolCallSummary]:
     """Walk history backwards; return ToolCallSummary entries for tool calls
     made AFTER the most recent USER message.
@@ -122,14 +160,14 @@ def _summaries_since_last_user_turn(  # pyright: ignore[reportUnusedFunction]
         bare = name.split(".", 1)[-1]
         if bare in ("finalize_response", "finalize"):
             continue
-        # Read classification: anything not on the conservative read-prefix
-        # list counts as a write. For Rule 9 we only care about the
-        # read/write flag; reuse the same heuristic.
+        # Read classification: the registry's own risk level when it can
+        # resolve the name, the conservative read-prefix heuristic otherwise.
+        # For Rule 9 we only care about the read/write flag.
         summaries.append(
             ToolCallSummary(
                 name=bare,
                 is_error=result_errors.get(use_id, False),
-                is_write=_is_default_write(name),
+                is_write=_is_write(name, risk_for),
             )
         )
     return summaries

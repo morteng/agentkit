@@ -1446,7 +1446,11 @@ class AgentSession:
             # needs to record something — resolves the same sink as the parent
             # instead of quietly defaulting to the no-op one.
             "audit_sink": self.audit_sink,
-            "finalize_validator": gc.finalize or StructuralFinalizeValidator(),
+            # The registry is what lets the validator read each tool's declared
+            # risk instead of inferring the read/write split from its name.
+            # Without it, every tool whose name is not `verb_noun` classifies
+            # as a write and the write-mandate rules stop discriminating.
+            "finalize_validator": gc.finalize or StructuralFinalizeValidator(self.registry),
             "success_claim": gc.success_claim if gc.success_claim_enabled else None,
             "approval_timeout_seconds": gc.approval_timeout_seconds,
             "max_finalize_retries": lc.max_finalize_retries,

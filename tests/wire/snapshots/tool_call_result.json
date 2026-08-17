@@ -9,6 +9,7 @@
   "sequence": 1,
   "session_id": "sess_canonical",
   "status": "ok",
+  "tool_name": "acme.search_content",
   "ts": "2026-01-01T00:00:00Z",
   "turn_id": "turn_canonical",
   "type": "tool_call_result"

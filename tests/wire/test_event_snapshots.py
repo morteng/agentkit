@@ -171,6 +171,10 @@ EVENT_FIXTURES: list[tuple[type[BaseEvent], str, dict[str, Any]]] = [
         "tool_call_result",
         {
             "call_id": CALL_ID,
+            # Outcome events name the tool, same as the events that open the
+            # call. Consumers were each rebuilding a call_id -> name map to
+            # recover it; pinning it here is what stops it going missing again.
+            "tool_name": "acme.search_content",
             "status": "ok",
             "content_summary": "Found 3 results",
             "duration_ms": 128,
@@ -208,6 +212,7 @@ EVENT_FIXTURES: list[tuple[type[BaseEvent], str, dict[str, Any]]] = [
         "approval_granted",
         {
             "call_id": CALL_ID,
+            "tool_name": "acme.delete_content",
             "edited_args": None,
         },
     ),
@@ -216,6 +221,7 @@ EVENT_FIXTURES: list[tuple[type[BaseEvent], str, dict[str, Any]]] = [
         "approval_denied",
         {
             "call_id": CALL_ID,
+            "tool_name": "acme.delete_content",
             "reason": "User declined",
         },
     ),
@@ -224,6 +230,9 @@ EVENT_FIXTURES: list[tuple[type[BaseEvent], str, dict[str, Any]]] = [
         "approval_resolved",
         {
             "call_id": CALL_ID,
+            # Named even on the expiry path. This is the row that used to audit
+            # as a bare id, which is precisely when a reader needs the name.
+            "tool_name": "acme.delete_content",
             # The expiry case, deliberately: it is the outcome the other two
             # approval events cannot express, and the reason this event exists.
             "decision": "deny",
