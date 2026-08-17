@@ -7,6 +7,7 @@ from agentkit._ids import EventId, MessageId, new_id
 from agentkit._logging import get_logger
 from agentkit._messages import Message, MessageRole
 from agentkit.events import ToolCallResult
+from agentkit.events.approval import UNNAMED_TOOL
 from agentkit.events.lifecycle import TurnEndReason
 from agentkit.loop.context import TurnContext
 from agentkit.loop.phase import Phase
@@ -20,6 +21,16 @@ log = get_logger(__name__)
 async def handle_tool_results(ctx: TurnContext, deps: dict[str, Any]) -> Phase:
     results: list[ToolResult] = ctx.metadata.get("tool_results", [])
     queue = ctx.event_queue
+
+    # call_id -> tool name, from every call categorised this iteration
+    # (approved, denied, unknown). Read once here and used twice: to name the
+    # ToolCallResult events below, and by the consecutive-error counter further
+    # down. Including unknown calls means a model that keeps hallucinating the
+    # same bad tool name both names its result rows and trips the abort.
+    approved = ctx.metadata.get("approved_tool_calls", [])
+    denied = ctx.metadata.get("denied_tool_calls", [])
+    unknown = ctx.metadata.get("unknown_tool_calls", [])
+    name_by_id: dict[str, str] = {c["id"]: c["name"] for c in (*approved, *denied, *unknown)}
 
     # Append each result as a MessageRole.TOOL message and emit ToolCallResult events.
     if results:
@@ -62,6 +73,7 @@ async def handle_tool_results(ctx: TurnContext, deps: dict[str, Any]) -> Phase:
                     ts=ctx.clock.now(),
                     sequence=ctx.next_sequence(),
                     call_id=r.call_id,
+                    tool_name=name_by_id.get(r.call_id, UNNAMED_TOOL),
                     status=r.status,
                     content_summary=content_summary,
                     duration_ms=r.duration_ms,
@@ -77,13 +89,6 @@ async def handle_tool_results(ctx: TurnContext, deps: dict[str, Any]) -> Phase:
     threshold = deps.get("max_consecutive_tool_errors", 3)
     if results and threshold > 0:
         counters: dict[str, int] = ctx.metadata.setdefault("consecutive_tool_errors", {})
-        # Map call_id -> tool name from every call categorised this iteration
-        # (approved, denied, unknown). Including unknown calls means a model
-        # that keeps hallucinating the same bad tool name trips the abort.
-        approved = ctx.metadata.get("approved_tool_calls", [])
-        denied = ctx.metadata.get("denied_tool_calls", [])
-        unknown = ctx.metadata.get("unknown_tool_calls", [])
-        name_by_id = {c["id"]: c["name"] for c in (*approved, *denied, *unknown)}
         for r in results:
             name = name_by_id.get(r.call_id)
             if name is None:

@@ -68,9 +68,14 @@ class AuditRecord(BaseModel):
     approval verdict (``"system"`` when the runtime ruled on its own)."""
     action: str
     target: str = ""
-    """What was acted on — the tool name for a tool call. Empty when the runtime
-    genuinely does not know it, which happens for an approval that expired after
-    its context was discarded; ``call_id`` still identifies the call."""
+    """What was acted on — the tool name for a tool call. Empty only when the
+    runtime genuinely does not know it; ``call_id`` still identifies the call.
+
+    Expiry used to be exactly that case: the checkpoint holding the pending
+    call was cleared before these rows were written, so every expired approval
+    audited as a bare id. The names now travel on
+    :class:`~agentkit.errors.ApprovalTimeout` and expired rows are named like
+    any other."""
     detail: dict[str, Any] = Field(default_factory=dict)
     """Already projected for reading: argument previews are flattened and
     secret-looking keys masked (:mod:`agentkit._redaction`). Never a place to

@@ -17,6 +17,14 @@ SYSTEM_RESOLVER = "system"
 """``ApprovalResolved.resolved_by`` for a verdict agentkit reached on its own
 rather than one a human gave."""
 
+UNNAMED_TOOL = ""
+"""``tool_name`` when the call was not in any of the turn's call buckets.
+
+Not expected on any path agentkit itself emits — the name is looked up from
+the same metadata the verdict was applied to. It exists so the lookup has a
+total return type rather than an optional one, and so a consumer that does
+render the name has a single falsy case to handle."""
+
 
 class ApprovalNeeded(BaseEvent):
     type: Literal["approval_needed"] = Field(default="approval_needed")  # type: ignore[reportIncompatibleVariableOverride]
@@ -46,12 +54,27 @@ class ApprovalNeeded(BaseEvent):
 class ApprovalGranted(BaseEvent):
     type: Literal["approval_granted"] = Field(default="approval_granted")  # type: ignore[reportIncompatibleVariableOverride]
     call_id: str
+    tool_name: str
+    """What was approved, not just which call id.
+
+    :class:`ApprovalNeeded` carries the name; every event reporting the
+    *outcome* used to drop it, so a consumer holding a verdict frame could not
+    say what it authorised without keeping its own ``call_id -> name`` map back
+    to the request. Three independent consumers built that map before this
+    field existed, and agentkit builds it twice internally
+    (``AgentSession._tool_name_for_call``, and ``name_by_id`` in the
+    tool-results handler) — so the name was never missing, only unpublished.
+
+    :data:`UNNAMED_TOOL` when the lookup found nothing.
+    """
     edited_args: dict[str, Any] | None = None
 
 
 class ApprovalDenied(BaseEvent):
     type: Literal["approval_denied"] = Field(default="approval_denied")  # type: ignore[reportIncompatibleVariableOverride]
     call_id: str
+    tool_name: str
+    """What was refused. See :attr:`ApprovalGranted.tool_name`."""
     reason: str | None = None
 
 
@@ -68,6 +91,13 @@ class ApprovalResolved(BaseEvent):
 
     type: Literal["approval_resolved"] = Field(default="approval_resolved")  # type: ignore[reportIncompatibleVariableOverride]
     call_id: str
+    tool_name: str
+    """What resolved. See :attr:`ApprovalGranted.tool_name`.
+
+    Carried on the expiry path too, where it is the only place the name is
+    available at all: expiry emits no verdict event and the checkpoint that
+    held the pending call is gone by the time a consumer sees this.
+    """
     decision: Literal["approve", "deny"]
     """Normalised. The session treats anything that is not exactly ``"approve"``
     as a denial, so this reports which of the two actually happened rather than

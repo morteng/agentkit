@@ -68,7 +68,7 @@ from agentkit.events import (
     TurnEndReason,
     TurnMetrics,
 )
-from agentkit.events.approval import SYSTEM_RESOLVER
+from agentkit.events.approval import SYSTEM_RESOLVER, UNNAMED_TOOL
 from agentkit.guards.approval import RiskBasedApprovalGate
 from agentkit.guards.finalize import StructuralFinalizeValidator
 from agentkit.guards.taint import TaintSource
@@ -702,12 +702,17 @@ class AgentSession:
         (or, for the resume path, already deleted) the checkpoint around this
         call.
         """
-        stranded = [c["id"] for c in ctx.metadata.get("pending_user_approvals", [])]
+        pending = list(ctx.metadata.get("pending_user_approvals", []))
+        stranded = [c["id"] for c in pending]
+        # Read the names before the bucket is cleared: this is the last moment
+        # they exist anywhere, and the resolution events are built after it.
+        stranded_names = {c["id"]: str(c.get("name", "")) for c in pending}
         ctx.metadata["pending_user_approvals"] = []
         await self._persist_turn(ctx, len(ctx.history), end_reason=TurnEndReason.ERROR)
         return ApprovalTimeout(
             f"approval window for turn {turn_id} expired at {timeout_iso}",
             call_ids=stranded,
+            tool_names=stranded_names,
             # ctx.event_sequence is the checkpoint's next unused sequence
             # number — restarting the timeout stream at 0 would collide with
             # events the suspended turn already emitted under the same
@@ -980,6 +985,7 @@ class AgentSession:
                 ts=now,
                 sequence=base + i,
                 call_id=call_id,
+                tool_name=exc.tool_names.get(call_id, UNNAMED_TOOL),
                 decision="deny",
                 resolved_by=SYSTEM_RESOLVER,
                 reason=str(exc),
@@ -1030,9 +1036,11 @@ class AgentSession:
                     self._approval_audit_record(
                         turn_id,
                         ev.call_id,
-                        # The context is gone with the checkpoint, so the
-                        # tool name is genuinely unknown here.
-                        tool_name="",
+                        # The context is gone with the checkpoint, but the
+                        # names were read off it before it was cleared and
+                        # carried here on the exception — an expired approval
+                        # used to audit as a bare call id.
+                        tool_name=exc.tool_names.get(ev.call_id, UNNAMED_TOOL),
                         decision="deny",
                         edited_args=None,
                         reason=str(exc),
@@ -1116,6 +1124,7 @@ class AgentSession:
         reason: str | None,
     ) -> ApprovalGranted | ApprovalDenied:
         """Build the ApprovalGranted/ApprovalDenied event for a single verdict."""
+        tool_name = self._tool_name_for_call(ctx, call_id)
         if decision == "approve":
             return ApprovalGranted(
                 event_id=new_id(EventId),
@@ -1124,6 +1133,7 @@ class AgentSession:
                 ts=datetime.now(UTC),
                 sequence=ctx.next_sequence(),
                 call_id=call_id,
+                tool_name=tool_name,
                 edited_args=edited_args,
             )
         return ApprovalDenied(
@@ -1133,6 +1143,7 @@ class AgentSession:
             ts=datetime.now(UTC),
             sequence=ctx.next_sequence(),
             call_id=call_id,
+            tool_name=tool_name,
             reason=reason,
         )
 
@@ -1161,6 +1172,7 @@ class AgentSession:
             ts=datetime.now(UTC),
             sequence=ctx.next_sequence(),
             call_id=call_id,
+            tool_name=self._tool_name_for_call(ctx, call_id),
             # Mirror _apply_approval_decision: anything but exactly "approve"
             # denied the call, so report the denial rather than the input.
             decision="approve" if approved else "deny",

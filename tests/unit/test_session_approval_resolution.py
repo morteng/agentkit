@@ -14,6 +14,7 @@ from agentkit._ids import CheckpointId, OwnerId, TurnId, new_id
 from agentkit.audit import AuditRecord, AuditSink
 from agentkit.errors import ApprovalTimeout, CheckpointMissing
 from agentkit.events import ApprovalResolved, Errored, TurnEnded
+from agentkit.events.approval import UNNAMED_TOOL
 from agentkit.guards.taint import TaintSource
 from agentkit.loop.context import TurnContext, to_checkpoint_payload
 from agentkit.providers.fakes import FakeProvider
@@ -355,3 +356,99 @@ async def test_an_abandoned_expiry_stream_still_audits_exactly_once():
 
     assert [e.call_id for e in events if isinstance(e, ApprovalResolved)] == ["c1", "c2"]
     assert [r.call_id for r in audit.records] == ["c1", "c2"]  # once each, not twice
+
+
+# --- the tool name on the outcome, not just on the request -------------------
+#
+# ApprovalNeeded has always carried tool_name; every event reporting how the
+# approval *ended* dropped it, so a consumer holding a verdict could not say
+# what it had authorised. These drive the real builders rather than
+# constructing events directly — the field existing proves nothing, the
+# question is whether the name survives the path.
+
+
+@pytest.mark.asyncio
+async def test_expiry_names_the_tool_even_though_the_bucket_is_cleared():
+    """The hard case: expiry empties pending_user_approvals, then builds events.
+
+    _close_expired_checkpoint clears the bucket the names live in, and
+    _approval_timeout_stream runs afterwards — so unless the names ride along
+    on the exception they are already gone. An expired approval used to render
+    and audit as a bare call id.
+    """
+    recorder = _Recorder()
+    session = _session(recorder)
+    turn_id = new_id(TurnId)
+    ctx = TurnContext.empty()
+    ctx.metadata["pending_user_approvals"] = [
+        {"id": "c1", "name": "torrent_admin.torrent_delete", "arguments": {}},
+        {"id": "c2", "name": "music_retag", "arguments": {}},
+    ]
+
+    exc = await session._close_expired_checkpoint(  # pyright: ignore[reportPrivateUsage]
+        ctx, turn_id, "2026-08-17T00:00:00+00:00"
+    )
+    # Precondition for the whole test: the source of the names is now empty.
+    assert ctx.metadata["pending_user_approvals"] == []
+
+    stream = await session._approval_timeout_stream(turn_id, exc)  # pyright: ignore[reportPrivateUsage]
+    events = [ev async for ev in stream]
+
+    resolved = [e for e in events if isinstance(e, ApprovalResolved)]
+    assert {e.call_id: e.tool_name for e in resolved} == {
+        "c1": "torrent_admin.torrent_delete",
+        "c2": "music_retag",
+    }
+    # And the audit rows, which hardcoded "" on this path.
+    expired_rows = {
+        r.call_id: r.target for r in recorder.records if r.action == "approval_resolved"
+    }
+    assert expired_rows == {"c1": "torrent_admin.torrent_delete", "c2": "music_retag"}
+
+
+@pytest.mark.asyncio
+async def test_expiry_falls_back_to_unnamed_for_a_call_it_never_saw():
+    """Control: the mapping can miss, and the miss is visible as UNNAMED_TOOL.
+
+    Without this, the test above would pass against an implementation that
+    returned a constant, and "" would read as success rather than as absence.
+    """
+    session = _session()
+    exc = ApprovalTimeout("expired", call_ids=["c1"], tool_names={"other": "music_retag"})
+
+    stream = await session._approval_timeout_stream(new_id(TurnId), exc)  # pyright: ignore[reportPrivateUsage]
+    resolved = [e async for e in stream if isinstance(e, ApprovalResolved)]
+
+    assert [e.tool_name for e in resolved] == [UNNAMED_TOOL]
+
+
+def test_verdict_and_resolution_events_name_the_tool():
+    session = _session()
+    ctx = TurnContext.empty()
+    turn_id = new_id(TurnId)
+    # Post-verdict shape: _apply_approval_decision has already moved the entry
+    # out of pending_user_approvals, which is why the lookup searches all three.
+    ctx.metadata["approved_tool_calls"] = [
+        {"id": "c1", "name": "music_retag", "arguments": {}},
+    ]
+    ctx.metadata["denied_tool_calls"] = [
+        {"id": "c2", "name": "torrent_admin.torrent_delete", "arguments": {}},
+    ]
+
+    granted = session._build_verdict_event(ctx, turn_id, "c1", "approve", None, None)  # pyright: ignore[reportPrivateUsage]
+    assert granted.tool_name == "music_retag"
+
+    denied = session._build_verdict_event(ctx, turn_id, "c2", "deny", None, "no")  # pyright: ignore[reportPrivateUsage]
+    assert denied.tool_name == "torrent_admin.torrent_delete"
+
+    resolved = session._build_resolution_event(  # pyright: ignore[reportPrivateUsage]
+        ctx, turn_id, "c1", "approve", None, None, "u:alice"
+    )
+    assert resolved.tool_name == "music_retag"
+
+    # Control: a call in none of the buckets is reported as unnamed rather
+    # than borrowing whichever name happened to be first.
+    stray = session._build_resolution_event(  # pyright: ignore[reportPrivateUsage]
+        ctx, turn_id, "c-unknown", "deny", None, None, "u:alice"
+    )
+    assert stray.tool_name == UNNAMED_TOOL

@@ -69,6 +69,7 @@ def test_approval_resolved_round_trips_through_the_union():
     ev = ApprovalResolved(
         **_common(3),
         call_id="c1",
+        tool_name="torrent_admin.torrent_delete",
         decision="approve",
         resolved_by="u:alice",
         edited_args={"category": "movies"},
@@ -76,6 +77,9 @@ def test_approval_resolved_round_trips_through_the_union():
     parsed = EVENT_ADAPTER.validate_python(ev.model_dump(mode="json"))
     assert isinstance(parsed, ApprovalResolved)
     assert parsed.type == "approval_resolved"
+    # Survives the union round-trip: a consumer reading off the wire can say
+    # what was approved without keeping its own call_id -> name map.
+    assert parsed.tool_name == "torrent_admin.torrent_delete"
     assert parsed.decision == "approve"
     assert parsed.resolved_by == "u:alice"
     assert parsed.edited_args == {"category": "movies"}
@@ -87,6 +91,7 @@ def test_approval_resolved_expiry_is_a_denial():
     ev = ApprovalResolved(
         **_common(),
         call_id="c1",
+        tool_name="torrent_admin.torrent_delete",
         decision="deny",
         resolved_by=SYSTEM_RESOLVER,
         reason="approval window expired",

@@ -1,6 +1,6 @@
 """Exception hierarchy. All agentkit exceptions inherit from AgentkitError."""
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 
 class AgentkitError(Exception):
@@ -35,6 +35,13 @@ class ApprovalTimeout(AgentkitError):
     one resolution event per card instead of a bare error the client cannot
     match to anything it is showing.
 
+    ``tool_names`` maps those ids to what each call would have run. Expiry is
+    the one path that emits no ``ApprovalGranted``/``ApprovalDenied``, and it
+    clears ``pending_user_approvals`` as it goes — so unless the names travel
+    on this exception they are gone by the time the resolution events are
+    built, and an expiry notice can name only an opaque id. Ids absent from
+    the mapping resolve to :data:`~agentkit.events.approval.UNNAMED_TOOL`.
+
     ``sequence_base`` is the turn's next unused ``event_sequence`` at the
     moment the timeout was detected — the checkpoint's ``ctx`` is still in
     scope at the raise site, so the caller building the timeout stream can
@@ -44,10 +51,16 @@ class ApprovalTimeout(AgentkitError):
     """
 
     def __init__(
-        self, message: str, *, call_ids: Sequence[str] = (), sequence_base: int = 0
+        self,
+        message: str,
+        *,
+        call_ids: Sequence[str] = (),
+        tool_names: Mapping[str, str] | None = None,
+        sequence_base: int = 0,
     ) -> None:
         super().__init__(message)
         self.call_ids: tuple[str, ...] = tuple(call_ids)
+        self.tool_names: dict[str, str] = dict(tool_names or {})
         self.sequence_base = sequence_base
 
 

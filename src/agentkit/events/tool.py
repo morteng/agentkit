@@ -48,6 +48,19 @@ class ToolCallProgress(BaseEvent):
 class ToolCallResult(BaseEvent):
     type: Literal["tool_call_result"] = Field(default="tool_call_result")  # type: ignore[reportIncompatibleVariableOverride]
     call_id: str
+    tool_name: str
+    """Which tool produced this result.
+
+    :class:`ToolCallStarted` carries the name and this event used to drop it,
+    so a consumer rendering results had to hold every started-event's name
+    keyed by call id — across reconnects and replays, where the started event
+    may never arrive. The handler that builds this event already builds the
+    same ``call_id -> name`` map a few lines further down, for the
+    consecutive-error counter; it is the same lookup, now published.
+
+    :data:`agentkit.events.approval.UNNAMED_TOOL` when the call was not in any
+    of the turn's call buckets.
+    """
     status: Literal["ok", "error", "denied", "timeout", "cancelled"]
     content_summary: str  # short, human-readable; full content in storage
     duration_ms: int

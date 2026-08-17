@@ -1,5 +1,9 @@
+import asyncio
+
 import pytest
 
+from agentkit.events import ToolCallResult
+from agentkit.events.approval import UNNAMED_TOOL
 from agentkit.guards.approval import RiskBasedApprovalGate
 from agentkit.loop.context import TurnContext
 from agentkit.loop.handlers.tool_executing import handle_tool_executing
@@ -344,3 +348,59 @@ async def test_tool_results_carries_provenance_onto_the_persisted_block():
     block = ctx.history[-1].content[0]
     assert isinstance(block, ToolResultBlock)
     assert block.provenance is Provenance.UNTRUSTED
+
+
+@pytest.mark.asyncio
+async def test_tool_call_result_events_name_the_tool_that_produced_them():
+    """A result event that carries only a call id makes every consumer keep a
+    map back to ToolCallStarted — across reconnects and replays, where that
+    earlier event may never arrive. The handler already builds this exact
+    ``call_id -> name`` map for its consecutive-error counter.
+    """
+    ctx = TurnContext.empty()
+    ctx.event_queue = asyncio.Queue()
+    ctx.metadata["approved_tool_calls"] = [{"id": "c1", "name": "music_retag", "arguments": {}}]
+    ctx.metadata["denied_tool_calls"] = [{"id": "c2", "name": "torrent_delete", "arguments": {}}]
+    ctx.metadata["tool_results"] = [
+        ToolResult(
+            call_id="c1",
+            status="ok",
+            content=[ContentBlockOut(type="text", text="done")],
+            error=None,
+            duration_ms=1,
+            cached=False,
+        ),
+        ToolResult(
+            call_id="c2",
+            status="denied",
+            content=[ContentBlockOut(type="text", text="no")],
+            error=None,
+            duration_ms=1,
+            cached=False,
+        ),
+        # Control: a result whose call was in none of the buckets. Proves the
+        # names above were looked up rather than a constant, and that a miss
+        # is visible as UNNAMED_TOOL instead of borrowing a neighbour's name.
+        ToolResult(
+            call_id="c-stray",
+            status="ok",
+            content=[ContentBlockOut(type="text", text="?")],
+            error=None,
+            duration_ms=1,
+            cached=False,
+        ),
+    ]
+
+    await handle_tool_results(ctx, {})
+
+    events: list[ToolCallResult] = []
+    while not ctx.event_queue.empty():
+        ev = ctx.event_queue.get_nowait()
+        if isinstance(ev, ToolCallResult):
+            events.append(ev)
+
+    assert {e.call_id: e.tool_name for e in events} == {
+        "c1": "music_retag",
+        "c2": "torrent_delete",
+        "c-stray": UNNAMED_TOOL,
+    }

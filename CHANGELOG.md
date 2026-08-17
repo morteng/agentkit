@@ -10,6 +10,54 @@ from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
 ### Added
 
+- **`tool_name` on every event that reports how a call or an approval ended.**
+  `ApprovalNeeded` and `ToolCallStarted` have always carried the tool's name.
+  `ToolCallResult`, `ApprovalGranted`, `ApprovalDenied` and `ApprovalResolved`
+  did not — so a consumer holding an outcome could not say *what* it was the
+  outcome of without keeping its own `call_id -> tool_name` map back to the
+  request event. That map has to survive reconnects and replays, where the
+  request event may never arrive at all; three independent consumers built one,
+  and one of them shipped a security notice reading `approved call
+  chatcmpl-tool-abc123` — unactionable, because the reader cannot judge whether
+  it was them when nothing says what "it" was.
+
+  The name was never missing, only unpublished: agentkit already built the same
+  lookup **twice internally** — `AgentSession._tool_name_for_call`, and
+  `name_by_id` in the tool-results handler, 28 lines below the
+  `ToolCallResult` construction that omitted it. Both are now read once and
+  published.
+
+  **Breaking for anyone constructing these four events** (the field is
+  required, not defaulted, so an emit site added later cannot silently drop it
+  again). Consumers only gain a field. `UNNAMED_TOOL` (`""`) is exported from
+  `agentkit.events.approval` for the case where the call is in none of the
+  turn's buckets.
+
+- **`ApprovalTimeout.tool_names`** — the `call_id -> name` mapping for the
+  approvals an expiry stranded. Expiry is the one path that emits no verdict
+  event, and `_close_expired_checkpoint` clears `pending_user_approvals` before
+  the resolution events are built, so the names had to travel on the exception
+  or be gone. Previously the expiry audit row hardcoded `target=""` with a
+  comment that the name was "genuinely unknown here"; expired approvals now
+  audit and render with a name like any other.
+
+### Known gap
+
+- **`WSApprovalAuthority.authorize_approval` still cannot name what it is
+  authorising.** It receives `(ws, command)` — the raw inbound frame — and runs
+  *before* the session resolves anything, which is exactly what makes it the
+  only place that can prove consent preceded execution. But the frame carries
+  call ids and no names, so an authority that audits or notifies at that moment
+  can only quote an id. The names are reachable (`session` is in scope at the
+  call site in `mount_websocket_route`, and the checkpoint's
+  `pending_user_approvals` holds them), so this is a protocol change, not a
+  missing fact. The four event fields above do not close it: they arrive after
+  the verdict.
+
+  Filed rather than worked around, per the pattern this whole entry is about —
+  a consumer that quietly correlates around it is how the last hole survived
+  three consumers.
+
 - **`mount_websocket_route(..., max_connection_seconds=...)` — bound how long a
   connection may keep the authorization decision its handshake made.** `auth=`
   runs once, at the upgrade. After that a WebSocket carries no headers, so a
