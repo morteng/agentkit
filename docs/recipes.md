@@ -212,8 +212,17 @@ Inbound commands (client → server):
 | `type`                   | Fields                                                     | Notes |
 | ------------------------ | ---------------------------------------------------------- | ----- |
 | `send_message`           | `text`                                                     | Starts a turn. |
-| `respond_to_approval`    | `turn_id`, `call_id`, `decision` ("approve"/"deny"), optional `edited_args`, `reason` | After receiving an `approval_needed` event. |
+| `respond_to_approval`    | `turn_id`, `call_id`, `decision` ("approve"/"deny"), optional `edited_args`, `reason` | Rules on **one** call. Every other call the same turn suspended on is auto-denied with reason `"not resolved in this resume"`. |
+| `respond_to_approvals`   | `turn_id`, `decisions`: list of `{call_id, decision, edited_args?, reason?}` | Rules on **all** of them in one resume. Send this whenever a turn suspended on more than one call. |
 | `cancel`                 | optional `reason`                                          | Aborts an active turn or no-ops between turns. |
+
+A turn can suspend on several tool calls at once — one model message, several
+approval-worthy calls. `respond_to_approval` rules on exactly one of them, so
+answering such a turn with it costs N-1 auto-denials the human never made.
+`respond_to_approvals` carries every verdict in one frame and restarts the loop
+once. Both frames go through `approval_authority`. An empty `decisions`, or a
+`call_id` that is not pending, raises `CheckpointMissing` and leaves the
+checkpoint intact, so the turn is still resumable from a corrected frame.
 
 Outbound events (server → client) are JSON dumps of every `agentkit.events.Event`
 plus a `cancelled` ack frame. UIs typically render: `text_delta` (typewriter),

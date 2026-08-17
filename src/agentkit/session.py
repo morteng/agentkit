@@ -1332,8 +1332,18 @@ class AgentSession:
 
         An unknown or duplicated ``call_id`` raises :class:`CheckpointMissing`
         before anything is applied, and leaves the checkpoint intact so the
-        caller can retry with a corrected batch.
+        caller can retry with a corrected batch. So does an **empty**
+        ``decisions``: it names no call_id at all, and the auto-deny above
+        would otherwise turn it into a silent rejection of every pending call
+        — the loudest possible outcome wearing the quietest possible frame.
+        Same exception, same intact checkpoint, so a caller that already
+        handles a bad call_id needs no new branch.
         """
+        if not decisions:
+            raise CheckpointMissing(
+                "resume_with_approval_batch needs at least one decision; an "
+                "empty batch would auto-deny every pending approval"
+            )
         await self.initialize()
         try:
             ctx, queue = await self._load_resume_context(

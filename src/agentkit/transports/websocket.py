@@ -36,17 +36,17 @@ that a client sending no ``Origin`` header at all (most non-browser clients)
 presents ``""``; add ``""`` to the allowlist deliberately if you want to
 admit those, rather than reaching for ``"*"``.
 
-**Approval hazard — read this before shipping.** ``respond_to_approval``
-arrives on the *same* channel that drives the model. Whoever can send
-``send_message`` can therefore also grant the approvals that message
-provoked, so the human-in-the-loop gate protects against a confused model,
+**Approval hazard — read this before shipping.** ``respond_to_approval`` and
+``respond_to_approvals`` arrive on the *same* channel that drives the model.
+Whoever can send ``send_message`` can therefore also grant the approvals that
+message provoked, so the human-in-the-loop gate protects against a confused model,
 not against a compromised or coerced client. If the driving channel is
 scriptable (a browser tab reachable by XSS, an automation key, a relay that
 forwards model-adjacent content), treat every approval on it as
 self-granted.
 
 Bind approvals to a different principal by passing ``approval_authority``:
-every ``respond_to_approval`` frame is checked by
+every approval frame — singular or plural — is checked by
 :meth:`WSApprovalAuthority.authorize_approval` before it reaches the session,
 so a consumer can require a second factor carried in the frame (a signed
 one-time approval token minted by an out-of-band approver UI), a different
@@ -60,7 +60,7 @@ import asyncio
 import contextlib
 import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
@@ -209,14 +209,19 @@ class WSAuth(Protocol):
 class WSApprovalAuthority(Protocol):
     """Decides whether *this* socket may answer an approval prompt.
 
-    Consulted for every ``respond_to_approval`` frame, after :class:`WSAuth`
-    has already admitted the connection. Returning ``False`` rejects the frame
-    with an ``approval_not_authorized`` error and leaves the suspended turn
-    intact, so a legitimate approver can still resolve it.
+    Consulted for every ``respond_to_approval`` **and**
+    ``respond_to_approvals`` frame, after :class:`WSAuth` has already admitted
+    the connection. Returning ``False`` rejects the frame with an
+    ``approval_not_authorized`` error and leaves the suspended turn intact, so
+    a legitimate approver can still resolve it.
 
     ``command`` is the raw inbound frame, so an implementation can require an
     out-of-band credential inside it (e.g. a one-time approval token minted by
-    a separate approver UI and bound to ``command["call_id"]``).
+    a separate approver UI and bound to ``command["call_id"]``). Read the frame
+    by ``type``: the plural form carries no top-level ``call_id`` — its ids are
+    under ``command["decisions"][*]["call_id"]``, and an implementation that
+    binds a token per call must check **every** entry, or one authorised id
+    would carry a batch of unauthorised ones in beside it.
     """
 
     async def authorize_approval(self, ws: WebSocket, command: dict[str, Any]) -> bool: ...
@@ -313,6 +318,95 @@ def _validate_origin_allowlist(origin_allowlist: list[str], *, dev_mode: bool) -
 
 async def _send_error(ws: WebSocket, code: str, message: str) -> None:
     await ws.send_json({"type": "errored", "code": code, "message": message})
+
+
+def _approval_call_ids(cmd: dict[str, Any]) -> list[str] | None:
+    """Every call_id an approval frame rules on — singular or plural — for logs.
+
+    ``None`` when the frame carries neither shape, which is what a malformed
+    frame looks like from here; the frame is still handed to the authority,
+    which may legitimately reject it on that basis.
+    """
+    if isinstance(cmd.get("decisions"), list):
+        # Cast rather than narrow: `isinstance(..., list)` on an untyped value
+        # leaves the element type unknown, and this is a logging helper — it
+        # must not be the thing that raises on a frame the authority is about
+        # to reject anyway, so non-dict entries are skipped rather than read.
+        ids: list[str] = []
+        for entry in cast("list[Any]", cmd["decisions"]):
+            if not isinstance(entry, dict):
+                continue
+            decision = cast("dict[str, Any]", entry)
+            if "call_id" in decision:
+                ids.append(str(decision["call_id"]))
+        return ids
+    if "call_id" in cmd:
+        return [str(cmd["call_id"])]
+    return None
+
+
+#: Inbound frames that answer an approval prompt. Both are checked by
+#: :class:`WSApprovalAuthority` before they reach the session — see
+#: ``_dispatch``. Singular rules on one call_id; plural carries a
+#: ``decisions`` list and rules on all of them in one resume.
+_APPROVAL_COMMANDS = ("respond_to_approval", "respond_to_approvals")
+
+
+def _batch_decisions(cmd: dict[str, Any]) -> list[dict[str, Any]]:
+    """Normalise a ``respond_to_approvals`` frame's entries for the session.
+
+    Field-for-field the same reading the singular handler gives its own frame:
+    ``call_id`` is required (a missing one raises ``KeyError`` out of the route
+    loop, exactly as ``cmd["call_id"]`` does), ``decision`` defaults to
+    ``"deny"`` and is stringified, and ``edited_args``/``reason`` are optional.
+    Nothing here rules on whether a call_id is *pending* — the session does
+    that, and raises ``CheckpointMissing`` with the checkpoint left intact.
+    """
+    return [
+        {
+            "call_id": d["call_id"],
+            "decision": str(d.get("decision", "deny")),
+            "edited_args": d.get("edited_args"),
+            "reason": d.get("reason"),
+        }
+        for d in cmd["decisions"]
+    ]
+
+
+def _approval_resume(
+    ws: WebSocket, session: AgentSession, cmd: dict[str, Any]
+) -> Callable[[asyncio.Event], Coroutine[Any, Any, None]]:
+    """Pick the resume coroutine an already-authorised approval frame runs.
+
+    The plural frame routes to ``resume_with_approval_batch`` so every verdict
+    is applied before the loop restarts. The singular one is left exactly as it
+    was — other consumers send it, and its one-call-plus-auto-deny behaviour is
+    documented and depended on.
+
+    Both index ``cmd["turn_id"]`` (and the singular ``cmd["call_id"]``)
+    directly: a frame missing them raises ``KeyError`` out of the route loop,
+    which is the pre-existing contract for a malformed approval frame.
+    """
+    if cmd.get("type") == "respond_to_approvals":
+        decisions = _batch_decisions(cmd)
+
+        async def _resume_batch(cancel_evt: asyncio.Event) -> None:
+            async with session.resume_with_approval_batch(cmd["turn_id"], decisions) as stream:
+                await _drain_stream_into_ws(ws, stream, cancel_evt)
+
+        return _resume_batch
+
+    async def _resume(cancel_evt: asyncio.Event) -> None:
+        async with session.resume_with_approval(
+            cmd["turn_id"],
+            cmd["call_id"],
+            decision=str(cmd.get("decision", "deny")),
+            edited_args=cmd.get("edited_args"),
+            reason=cmd.get("reason"),
+        ) as stream:
+            await _drain_stream_into_ws(ws, stream, cancel_evt)
+
+    return _resume
 
 
 async def _handshake(ws: WebSocket, *, origin_allowlist: list[str], auth_impl: WSAuth) -> bool:
@@ -472,10 +566,17 @@ def mount_websocket_route(
     is matched exactly against the handshake's ``Origin`` header; ``"*"``
     raises unless ``dev_mode=True``.
 
-    ``approval_authority`` gates ``respond_to_approval`` frames independently
-    of ``auth``, so approvals can be bound to a different principal than the
-    one driving the model. Defaults to
-    :class:`SameSocketApprovalAuthority` — same principal, documented hazard.
+    ``approval_authority`` gates ``respond_to_approval`` and
+    ``respond_to_approvals`` frames independently of ``auth``, so approvals can
+    be bound to a different principal than the one driving the model. Defaults
+    to :class:`SameSocketApprovalAuthority` — same principal, documented hazard.
+
+    Two approval frames, because a turn can suspend on more than one call:
+    ``respond_to_approval`` rules on a single ``call_id`` and auto-denies every
+    other pending call (``"not resolved in this resume"``), while
+    ``respond_to_approvals`` carries a ``decisions`` list and rules on all of
+    them in one resume. Prefer the plural in any UI that can show a
+    multi-call checkpoint; the singular is kept unchanged for existing clients.
 
     ``max_connection_seconds`` bounds how long one connection may live.
     ``None`` (the default) is unbounded — the historical behaviour, unchanged
@@ -528,12 +629,21 @@ def mount_websocket_route(
 
             return await _stream_with_cancel_watch(ws, _run)
 
-        if ctype == "respond_to_approval":
+        if ctype in _APPROVAL_COMMANDS:
+            # Two frames, one gate. ``respond_to_approval`` rules on a single
+            # call_id and AgentSession._deny_unresolved closes out every other
+            # pending call as "not resolved in this resume" — so on a turn that
+            # suspended on N calls the human could physically only answer one
+            # card. ``respond_to_approvals`` carries all N verdicts and
+            # restarts the loop once. Both go through the same authority; a
+            # second command shape that skipped it would be a gate hole.
             if not await approval_impl.authorize_approval(ws, cmd):
                 log.warning(
                     "ws_approval_not_authorized",
                     path=path,
+                    command=ctype,
                     call_id=cmd.get("call_id"),
+                    call_ids=_approval_call_ids(cmd),
                     turn_id=cmd.get("turn_id"),
                 )
                 await _send_error(
@@ -542,18 +652,7 @@ def mount_websocket_route(
                     "this connection is not permitted to answer approval prompts",
                 )
                 return None
-
-            async def _resume(cancel_evt: asyncio.Event) -> None:
-                async with session.resume_with_approval(
-                    cmd["turn_id"],
-                    cmd["call_id"],
-                    decision=str(cmd.get("decision", "deny")),
-                    edited_args=cmd.get("edited_args"),
-                    reason=cmd.get("reason"),
-                ) as stream:
-                    await _drain_stream_into_ws(ws, stream, cancel_evt)
-
-            return await _stream_with_cancel_watch(ws, _resume)
+            return await _stream_with_cancel_watch(ws, _approval_resume(ws, session, cmd))
 
         if ctype == "cancel":
             # No active turn — nothing to cancel. Acknowledge and continue.
