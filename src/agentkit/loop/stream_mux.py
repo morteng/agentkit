@@ -18,6 +18,7 @@ from agentkit.events import (
     Errored,
     MessageCompleted,
     MessageStarted,
+    ProviderActivity,
     TextDelta,
     ThinkingDelta,
     ToolCallStarted,
@@ -81,9 +82,16 @@ class StreamMux:
 
                 case "tool_call_start":
                     pending_tool_starts[ev.call_id] = {"tool_name": ev.tool_name}
+                    # Consumers still see nothing until the call completes, but
+                    # the chunk must produce *an* event: the stall timeout is
+                    # measuring this iterator, and a tool call that generates
+                    # for longer than the timeout is otherwise indistinguishable
+                    # from a dead provider. See ProviderActivity.
+                    yield self._mk(ProviderActivity)
 
                 case "tool_call_delta":
-                    pass  # consumers don't see argument deltas; complete event carries final args
+                    # consumers don't see argument deltas; complete event carries final args
+                    yield self._mk(ProviderActivity)
 
                 case "tool_call_complete":
                     risk_value = self._risk_for(ev.tool_name)

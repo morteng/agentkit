@@ -11,12 +11,13 @@ Two parts:
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 
 import agentkit.events  # noqa: F401 — ensures all submodules are imported so subclasses register
 from agentkit._messages import Usage
+from agentkit.events import Event
 from agentkit.events.approval import (
     ApprovalDenied,
     ApprovalGranted,
@@ -307,13 +308,51 @@ def _all_concrete_event_classes() -> set[type[BaseEvent]]:
     }
 
 
+def _wire_event_classes() -> set[type[BaseEvent]]:
+    """The classes that can actually reach a consumer: the ``Event`` union.
+
+    Derived from the union rather than from a hand-kept allowlist, so a class
+    is exempt from needing a snapshot exactly while it is genuinely off the
+    wire. Add it to ``Event`` and it needs a snapshot again, automatically —
+    which is what stops the exemption below from quietly growing to cover a
+    real wire event.
+    """
+    union = get_args(Event)[0]  # Annotated[<union>, Field(...)]
+    return {cls for cls in get_args(union) if isinstance(cls, type)}
+
+
 def test_no_event_class_lacks_snapshot() -> None:
-    """Fail if a concrete BaseEvent subclass is not covered by EVENT_FIXTURES."""
+    """Fail if a wire-reachable BaseEvent subclass is not covered by EVENT_FIXTURES."""
     declared_classes = {cls for cls, _, _ in EVENT_FIXTURES}
-    discovered = _all_concrete_event_classes()
+    discovered = _all_concrete_event_classes() & _wire_event_classes()
     missing = discovered - declared_classes
     assert not missing, (
         f"Event classes have no snapshot fixture: "
         f"{sorted(c.__name__ for c in missing)}\n"
         f"Add them to EVENT_FIXTURES in test_event_snapshots.py."
     )
+
+
+def test_the_snapshot_guard_still_sees_every_wire_event() -> None:
+    """Control for the intersection above.
+
+    Narrowing the guard to the ``Event`` union is only safe if the union is
+    the larger set — if it were empty or partial, the guard would pass
+    vacuously and new wire events would ship unpinned. Pin the relationship,
+    not just the current result.
+    """
+    wire = _wire_event_classes()
+    assert len(wire) >= len(EVENT_FIXTURES), "the Event union no longer covers the fixtures"
+    for cls, _, _ in EVENT_FIXTURES:
+        assert cls in wire, f"{cls.__name__} has a snapshot but is not on the wire"
+
+
+def test_internal_events_are_deliberately_off_the_wire() -> None:
+    """Every concrete event outside the union is one we chose to keep internal.
+
+    Names the current set explicitly. A new class landing here fails the test,
+    which is the prompt to decide whether it belongs on the wire — rather than
+    it silently inheriting an exemption written for something else.
+    """
+    internal = _all_concrete_event_classes() - _wire_event_classes()
+    assert {c.__name__ for c in internal} == {"ProviderActivity"}

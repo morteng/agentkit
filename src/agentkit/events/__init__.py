@@ -23,6 +23,7 @@ from agentkit.events.phase import PhaseChanged
 from agentkit.events.streaming import (
     MessageCompleted,
     MessageStarted,
+    ProviderActivity,
     TextDelta,
     ThinkingDelta,
     UsageRecorded,
@@ -56,6 +57,12 @@ Event = Annotated[
 
 EVENT_ADAPTER: TypeAdapter[Event] = TypeAdapter(Event)
 
+# ``ProviderActivity`` is deliberately absent from ``Event``. It is an internal
+# liveness tick that ``_consume_stream`` drops before the consumer queue, so it
+# is never serialised and no consumer ever has to know it exists. Adding it to
+# the union would put it on the wire contract and oblige every consumer to
+# handle a frame that, by construction, they cannot receive.
+
 
 __all__ = [
     "EVENT_ADAPTER",
@@ -70,6 +77,7 @@ __all__ = [
     "MessageCompleted",
     "MessageStarted",
     "PhaseChanged",
+    "ProviderActivity",
     "SubagentEnded",
     "SubagentEvent",
     "SubagentStarted",

@@ -28,6 +28,30 @@ class ThinkingDelta(BaseEvent):
     delta: str
 
 
+class ProviderActivity(BaseEvent):
+    """Internal liveness tick: the provider sent a chunk that produces no
+    user-facing event.
+
+    **Never reaches a consumer.** ``_consume_stream`` treats it as a timer
+    reset and drops it before the queue put; it exists only to travel the
+    same iterator the stall timeout is measuring.
+
+    The timeout wraps ``anext()`` on the *muxed* stream, so it measures the
+    gap between muxed events and not the gap between provider chunks. Those
+    are the same number right up until the model emits a tool call:
+    ``StreamMux`` yields nothing for ``tool_call_start`` and nothing for each
+    ``tool_call_delta``, so a long argument buffer — a batch of calls, or one
+    call carrying a long URL — is silence on the iterator while the wire is
+    busy. A turn that asks for enough work then dies at exactly the chunk
+    timeout, deterministically, and reports it as the provider going quiet.
+
+    Emitting a tick from those arms restores the invariant the timeout was
+    written against: every provider chunk produces a muxed event.
+    """
+
+    type: Literal["provider_activity"] = Field(default="provider_activity")  # type: ignore[reportIncompatibleVariableOverride]
+
+
 class MessageCompleted(BaseEvent):
     type: Literal["message_completed"] = Field(default="message_completed")  # type: ignore[reportIncompatibleVariableOverride]
     message_id: MessageId

@@ -27,7 +27,7 @@ from agentkit._content import TextBlock, ToolUseBlock
 from agentkit._ids import EventId, new_id
 from agentkit._logging import get_logger
 from agentkit._messages import Message, MessageRole
-from agentkit.events import ErrorCode, Errored, TextDelta, ToolCallStarted
+from agentkit.events import ErrorCode, Errored, ProviderActivity, TextDelta, ToolCallStarted
 from agentkit.loop.context import TurnContext
 from agentkit.loop.handlers.finalize_check import (
     _inject_correction,  # pyright: ignore[reportPrivateUsage]
@@ -343,6 +343,15 @@ async def _consume_stream(
             ctx.metadata["last_error_message"] = out.error_event.message
             ctx.metadata["last_error_code"] = out.error_event.code.value
             break
+
+        if isinstance(event, ProviderActivity):
+            # Proof of life, not output. Reaching this line already restarted
+            # the timeout above, which is the entire purpose of the event; it
+            # must not reach the queue, because no consumer knows this type and
+            # it carries nothing anyone could render. Dropped before `queue.put`
+            # rather than filtered by the consumer, so "never user-visible" is a
+            # property of this loop and not of every consumer's dispatcher.
+            continue
 
         if isinstance(event, Errored):
             # Hold the error rather than forwarding it immediately: a clean,
