@@ -72,11 +72,18 @@ ToolRegistry(taint_policy=NullTaintPolicy())  # opt out, explicitly
 ```
 
 The flag latches for the turn, survives an approval suspend/resume through the
-checkpoint, and propagates to subagent children (a tainted parent cannot
-launder untrusted content through a fresh child). `ApprovalNeeded.taint` lists
-what tainted the turn, so an approval card can name the tool whose output the
-model read before it proposed the action. Note that the guard sits *below*
-approval: a human "approve" does not lift it, and the call is still refused.
+checkpoint, and propagates across `kit.subagent.spawn` in **both** directions:
+a tainted parent cannot launder untrusted content through a fresh child
+(`fresh_child_context` copies `tainted`/`taint_sources` down when the child is
+created), and a child cannot launder it back up either — `SubagentDispatcher.spawn`
+propagates the child's taint state onto the parent's `TurnContext` before
+returning, from a `finally` so it still happens if the child errored out or
+ended suspended on an approval it had no way to resolve. `ApprovalNeeded.taint`
+lists what tainted the turn — including a tool a subagent called several
+levels down, not just `kit.subagent.spawn` itself — so an approval card can
+name the tool whose output the model read before it proposed the action. Note
+that the guard sits *below* approval: a human "approve" does not lift it, and
+the call is still refused.
 
 ## Execution-time tool gates
 

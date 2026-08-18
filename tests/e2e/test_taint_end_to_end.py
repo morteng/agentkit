@@ -314,3 +314,88 @@ async def test_concurrent_sessions_do_not_share_taint():
     assert _results(dirty_events)["docs.write"].status == "denied"
     assert _results(clean_events)["docs.write"].status == "ok"
     assert clean_tools.executed == ["docs.write"]
+
+
+# ---- taint through a spawned subagent ---------------------------------------
+#
+# The attack this pins: a child spawned via ``kit.subagent.spawn`` reads
+# untrusted content on the parent's behalf, summarises it, and returns —
+# and the *parent* turn must come back tainted, not just the child's own
+# (discarded) context. Every other test in this file taints the turn with a
+# tool the parent calls directly; these go through the one indirection where
+# that used to not happen at all.
+
+
+async def test_a_subagents_untrusted_read_taints_the_parent_turns_writes():
+    """Full attack, reproduced end to end: a subagent ingests a malicious
+    page, summarises it back to the parent, and the parent's own write in
+    the *same* turn must still be refused — not just the child's, which the
+    taint guard already covered before this fix."""
+    provider = FakeProvider().script(
+        FakeProvider.tool_call(
+            "kit.subagent.spawn",
+            {"prompt": "summarise example.com", "tools": ["web.fetch"], "context": {}},
+        ),
+        FakeProvider.tool_call("web.fetch", {}),  # inside the child
+        FakeProvider.tool_call("kit.finalize", _FINALIZE_ARGS),  # ends the child's turn
+        FakeProvider.tool_call("docs.write", {}),  # back in the parent, same turn
+        FakeProvider.tool_call("kit.finalize", _FINALIZE_ARGS),  # ends the parent's turn
+    )
+    session, tools = _session(provider)
+
+    async with session.run("delegate the research, then save a note") as stream:
+        events = await _collect(stream)
+
+    assert isinstance(events[-1], TurnEnded)
+    assert events[-1].reason is TurnEndReason.COMPLETED
+
+    # The child really ran web.fetch — otherwise this test would pass
+    # vacuously (nothing to launder).
+    assert "web.fetch" in tools.executed
+    # The write the parent asked for immediately after must be refused.
+    assert "docs.write" not in tools.executed
+
+    denial = _results(events)["docs.write"]
+    assert denial.status == "denied"
+    assert denial.error is not None
+    assert denial.error.code == TAINT_DENIAL_CODE
+
+
+async def test_a_subagents_untrusted_read_names_itself_on_the_parents_approval_card():
+    """Fidelity, not just the boolean: the approval card the parent's turn
+    raises afterward must name ``web.fetch`` — the tool three levels down
+    that actually ingested the untrusted content — not a bare "tainted" or
+    the generic ``kit.subagent.spawn`` call that merely carried it up."""
+    provider = FakeProvider().script(
+        FakeProvider.tool_call(
+            "kit.subagent.spawn",
+            {"prompt": "summarise example.com", "tools": ["web.fetch"], "context": {}},
+        ),
+        FakeProvider.tool_call("web.fetch", {}),
+        FakeProvider.tool_call("kit.finalize", _FINALIZE_ARGS),
+        FakeProvider.tool_call("devices.delete", {"id": "x"}),
+        FakeProvider.tool_call("kit.finalize", _FINALIZE_ARGS),
+    )
+    session, tools = _session(provider)
+
+    needed: ApprovalNeeded | None = None
+    async with session.run("delegate the research, then delete device x") as stream:
+        async for ev in stream:
+            if isinstance(ev, ApprovalNeeded):
+                needed = ev
+            elif isinstance(ev, TurnEnded):
+                assert ev.reason is TurnEndReason.AWAITING_APPROVAL
+
+    assert needed is not None
+    names = [s.tool_name for s in needed.taint]
+    # "web.fetch" is the real cause and must be present — that is the whole
+    # point of propagating the child's actual TaintSource instead of a bare
+    # boolean. "kit.subagent.spawn" trails it: the parent's own dispatch of
+    # that call is *also* marked untrusted (its ToolResult carries the same
+    # provenance forward for the persisted transcript — see
+    # ``tools/builtin/subagent.py``), and the registry's normal per-call
+    # taint marking records that as a second, generic source. Belt and
+    # suspenders, not a contradiction: the model reading this card sees the
+    # real tool, not just the wrapper that carried it up.
+    assert names[0] == "web.fetch", names
+    assert "devices.delete" not in tools.executed

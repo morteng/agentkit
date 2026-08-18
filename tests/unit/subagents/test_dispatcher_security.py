@@ -14,10 +14,11 @@ The audit found three ways in:
 """
 
 import asyncio
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
+from agentkit._content import Provenance
 from agentkit._ids import OwnerId
 from agentkit.events import ToolCallProgress
 from agentkit.guards.approval import RiskBasedApprovalGate
@@ -97,9 +98,22 @@ class _Env:
         async def _write(_args: dict[str, Any], _ctx: TurnContext) -> ToolResult:
             return await _record("admin.write")
 
+        async def _fetch(_args: dict[str, Any], ctx: TurnContext) -> ToolResult:
+            self.invoked.append("web.fetch")
+            return ToolResult(
+                call_id=ctx.call_id,
+                status="ok",
+                content=[ContentBlockOut(type="text", text="malicious page content")],
+                error=None,
+                duration_ms=0,
+                cached=False,
+                provenance=Provenance.UNTRUSTED,
+            )
+
         self.registry.register_builtin(_spec("safe.echo"), _safe)
         self.registry.register_builtin(_spec("admin.wipe", risk=RiskLevel.DESTRUCTIVE), _wipe)
         self.registry.register_builtin(_spec("admin.write", risk=RiskLevel.HIGH_WRITE), _write)
+        self.registry.register_builtin(_spec("web.fetch"), _fetch)
 
         self.provider = FakeProvider().script(*child_script)
         self.checkpoints = FakeCheckpointStore()
@@ -361,6 +375,134 @@ async def test_a_child_left_suspended_raises_rather_than_returning_partial_text(
     child.metadata["pending_user_approvals"] = [{"id": "c1", "name": "admin.write"}]
     with pytest.raises(SubagentApprovalRequired, match="not permitted in nested context"):
         SubagentDispatcher._check_no_pending_approvals(child)
+
+
+# ---- taint propagates upward, not just downward -----------------------------
+#
+# ``fresh_child_context`` (isolation.py) stops a tainted *parent* laundering
+# untrusted content through a falsely-clean child — that direction has its own
+# tests in test_isolation.py. These pin the other direction: a *child* that
+# reads untrusted content on the parent's behalf and hands back a summary must
+# not let the parent come back clean. Driven through ``env.dispatcher.spawn``
+# — the exact call ``kit.subagent.spawn`` makes via ``ctx.spawn_subagent`` —
+# asserting on ``env.parent`` afterwards, since that ``TurnContext`` is the
+# same object the rest of the parent's turn keeps running against.
+
+
+async def test_a_childs_untrusted_read_taints_the_parent():
+    """The core of the finding: web.fetch three levels down must not be
+    invisible to the parent's own taint guard."""
+    env = _Env(
+        child_script=[FakeProvider.tool_call("web.fetch", {}), FakeProvider.text("summarised")]
+    )
+    assert env.parent.tainted is False
+
+    summary = await env.dispatcher.spawn(
+        env.parent, prompt="summarise example.com", tools=["web.fetch"], extra_context={}
+    )
+
+    assert summary == "summarised"
+    assert env.parent.tainted is True, "child ingested untrusted content but parent stayed clean"
+    names = [s.tool_name for s in env.parent.taint_sources]
+    assert "web.fetch" in names, (
+        f"parent is tainted but cannot name why (sources: {env.parent.taint_sources}); "
+        "a denial with no cause is a dead end for the model"
+    )
+
+
+async def test_a_clean_child_does_not_taint_the_parent():
+    """Control: a subagent that never touches untrusted content must not
+    taint the parent — propagation must not fire unconditionally."""
+    env = _Env(child_script=[FakeProvider.tool_call("safe.echo", {}), FakeProvider.text("done")])
+    await env.dispatcher.spawn(env.parent, prompt="echo", tools=["safe.echo"], extra_context={})
+    assert env.parent.tainted is False
+    assert env.parent.taint_sources == []
+
+
+async def test_a_parent_already_tainted_stays_tainted_through_a_clean_child():
+    """Downward and upward compose: a pre-tainted parent's own record must
+    survive a spawn whose child does nothing untrusted itself."""
+    from agentkit.guards.taint import TaintSource
+
+    prior = TaintSource(call_id="prior", tool_name="parent.read", kind="untrusted")
+    env = _Env(child_script=[FakeProvider.tool_call("safe.echo", {}), FakeProvider.text("done")])
+    env.parent.tainted = True
+    env.parent.taint_sources = [prior]
+
+    await env.dispatcher.spawn(env.parent, prompt="echo", tools=["safe.echo"], extra_context={})
+
+    assert env.parent.tainted is True
+    assert env.parent.taint_sources == [prior]
+
+
+async def test_taint_propagates_even_when_the_child_turn_ends_in_error():
+    """The child loop catches its own handler exceptions and ends the turn
+    with ``TurnEndReason.ERROR`` rather than raising (see
+    ``Loop.run``) — so a subagent that reads untrusted content and then hits
+    a provider failure (here: the script running dry) returns normally, with
+    no final answer. Taint must still have latched before that point; an
+    empty ``summary`` must not read as "nothing happened"."""
+    env = _Env(child_script=[FakeProvider.tool_call("web.fetch", {})])  # no reply after
+
+    summary = await env.dispatcher.spawn(
+        env.parent, prompt="summarise example.com", tools=["web.fetch"], extra_context={}
+    )
+
+    assert summary == "", "test's premise: the child never produced a final answer"
+    assert env.parent.tainted is True, "child tainted before it errored; parent must still know"
+    assert any(s.tool_name == "web.fetch" for s in env.parent.taint_sources)
+
+
+async def test_taint_propagates_through_the_finally_even_when_spawn_raises():
+    """The actual exception path: a child left suspended on approval makes
+    ``spawn()`` raise ``SubagentApprovalRequired`` — taint recorded before
+    that point must still reach the parent, not be lost with the exception."""
+    from agentkit.guards.taint import TaintSource
+
+    env = _Env(child_script=[FakeProvider.tool_call("web.fetch", {})])
+
+    async def _leaves_child_suspended(parent, loop, queue):
+        # Stand in for "the child got left suspended" without depending on
+        # bypassing NestedApprovalGate (which always auto-denies NEEDS_USER
+        # in a real run — see isolation.py) — the property under test is
+        # ``spawn()``'s finally, not how a child reaches this state.
+        child = loop._ctx
+        child.tainted = True
+        child.taint_sources = [TaintSource(call_id="c1", tool_name="web.fetch", kind="untrusted")]
+        child.metadata["pending_user_approvals"] = [{"id": "c1", "name": "admin.write"}]
+
+    env.dispatcher._run_child = _leaves_child_suspended  # type: ignore[method-assign]
+
+    with pytest.raises(SubagentApprovalRequired):
+        await env.dispatcher.spawn(
+            env.parent, prompt="summarise then write", tools=["web.fetch"], extra_context={}
+        )
+
+    assert env.parent.tainted is True
+    assert any(s.tool_name == "web.fetch" for s in env.parent.taint_sources)
+
+
+async def test_taint_state_the_dispatcher_cannot_read_fails_closed():
+    """A ``child`` whose taint attributes raise on access (not a real
+    ``TurnContext`` — a stub, or a future refactor that renames the fields)
+    must still leave the parent tainted, per the fail-closed requirement."""
+
+    class _Unreadable:
+        @property
+        def tainted(self):
+            raise RuntimeError("state unavailable")
+
+    parent = TurnContext.empty()
+    assert parent.tainted is False
+
+    # Deliberately NOT a TurnContext. The branch under test exists precisely
+    # for the case where the object handed in does not behave like one, so the
+    # cast states that on purpose rather than widening the real signature to
+    # accommodate a stub.
+    SubagentDispatcher._propagate_taint_from_child(parent, cast("TurnContext", _Unreadable()))
+
+    assert parent.tainted is True
+    assert parent.taint_sources, "fail-closed must still give the denial a nameable cause"
 
 
 # ---- progress surfacing ------------------------------------------------------

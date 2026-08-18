@@ -19,6 +19,14 @@ assumption:
   no orphan checkpoint can be written, and a child that somehow still ends
   suspended raises :class:`SubagentApprovalRequired` instead of silently
   returning a truncated answer.
+* Taint is anti-laundering in **both** directions. ``fresh_child_context``
+  already stops a tainted parent from spawning a falsely-clean child (see
+  ``subagents/isolation.py``); :meth:`SubagentDispatcher.spawn` closes the
+  other direction so a clean parent cannot come back falsely-clean after a
+  child it spawned reads untrusted content. Propagation runs from a
+  ``finally``, so it fires whether the child finished, raised, or ended
+  suspended on an approval it could never resolve — a subagent cannot buy the
+  parent a false all-clear by failing instead of returning.
 """
 
 import asyncio
@@ -26,12 +34,13 @@ import contextlib
 from collections.abc import AsyncIterator, Sequence
 from typing import TYPE_CHECKING, Any
 
-from agentkit._content import TextBlock
+from agentkit._content import Provenance, TextBlock
 from agentkit._logging import get_logger
 from agentkit._messages import MessageRole
 from agentkit.errors import AgentkitError
 from agentkit.events import TextDelta, ToolCallStarted
 from agentkit.events.base import BaseEvent
+from agentkit.guards.taint import TaintSource, is_tainted, mark_taint, taint_sources
 from agentkit.loop.context import TurnContext
 from agentkit.loop.handlers.approval_wait import handle_approval_wait
 from agentkit.loop.handlers.context_build import handle_context_build
@@ -52,6 +61,7 @@ from agentkit.subagents.isolation import (
     fresh_child_context,
     reserved_keys_in,
 )
+from agentkit.tools.spec import ToolResult
 
 if TYPE_CHECKING:
     from agentkit.tools.registry import ToolRegistry
@@ -209,17 +219,91 @@ class SubagentDispatcher:
         child_deps = self._child_deps(allowed)
         loop = Loop(ctx=child, handlers=_CHILD_HANDLERS, deps=child_deps)
 
-        await self._run_child(parent, loop, child.event_queue)
-        self._check_no_pending_approvals(child)
-        await self._surface_denied_approvals(parent, child)
+        try:
+            await self._run_child(parent, loop, child.event_queue)
+            self._check_no_pending_approvals(child)
+            await self._surface_denied_approvals(parent, child)
 
-        # Extract the final assistant message text.
-        for msg in reversed(child.history):
-            if msg.role is MessageRole.ASSISTANT:
-                texts = [b.text for b in msg.content if isinstance(b, TextBlock)]
-                if texts:
-                    return "\n".join(texts)
-        return ""
+            # Extract the final assistant message text.
+            for msg in reversed(child.history):
+                if msg.role is MessageRole.ASSISTANT:
+                    texts = [b.text for b in msg.content if isinstance(b, TextBlock)]
+                    if texts:
+                        return "\n".join(texts)
+            return ""
+        finally:
+            # Runs whether the block above returned, raised (including
+            # SubagentApprovalRequired below), or the child loop itself
+            # blew up — taint must reach the parent regardless of how this
+            # call ends, or a subagent that errors out after reading a
+            # malicious page buys the parent a false all-clear.
+            self._propagate_taint_from_child(parent, child)
+
+    @staticmethod
+    def _propagate_taint_from_child(parent: TurnContext, child: TurnContext) -> None:
+        """Anti-laundering, the other direction: mark ``parent`` for whatever
+        untrusted content ``child`` ingested during its own run.
+
+        ``fresh_child_context`` already copies the parent's *pre-existing*
+        taint down onto a fresh child (see ``subagents/isolation.py``) — that
+        is the half that was implemented. This is the other half: a child
+        started clean (or already tainted by inheritance) can *itself* ingest
+        untrusted content via its own tool calls, and that must latch back
+        onto ``parent`` before control returns to it, or the parent's turn
+        continues believing it never read anything untrusted.
+
+        Goes through :func:`~agentkit.guards.taint.mark_taint` — the same
+        function every ordinary tool call is marked through — rather than
+        setting ``parent.tainted`` directly, so this stays the one place the
+        latch-and-record logic lives. One synthetic, zero-content
+        :class:`~agentkit.tools.spec.ToolResult` is built per child
+        :class:`~agentkit.guards.taint.TaintSource` and fed through it,
+        carrying the source's own ``call_id`` and ``tool_name`` forward so an
+        ``ApprovalNeeded`` card on the parent's turn can still name the real
+        tool (``web.fetch``, three levels down) rather than a bare
+        ``kit.subagent.spawn``. ``mark_taint`` dedupes by value, so a source
+        the parent already recorded (inherited taint, echoed back by the
+        child) is not written twice.
+
+        Fails closed: if the child's taint state cannot even be read, or it
+        is tainted but recorded no source at all (e.g. restored from a
+        checkpoint written before sources existed), the parent is still
+        latched, with a fallback source naming ``kit.subagent.spawn`` itself
+        — a denial must always have a cause to show, never a bare "tainted".
+        """
+        try:
+            child_tainted = is_tainted(child)
+            sources = taint_sources(child) if child_tainted else []
+        except Exception:
+            log.warning(
+                "subagent_taint_state_unreadable",
+                session_id=str(parent.session_id),
+            )
+            child_tainted, sources = True, []
+
+        if not child_tainted:
+            return
+
+        if not sources:
+            sources = [
+                TaintSource(
+                    call_id=f"subagent:{parent.call_id or parent.turn_id}",
+                    tool_name="kit.subagent.spawn",
+                    kind=Provenance.UNTRUSTED.value,
+                )
+            ]
+
+        for source in sources:
+            synthetic = ToolResult(
+                call_id=source.call_id,
+                status="ok",
+                content=[],
+                error=None,
+                duration_ms=0,
+                cached=False,
+                provenance=Provenance.UNTRUSTED,
+            )
+            mark_taint(parent, synthetic, tool_name=source.tool_name)
 
     # ---- Wiring ------------------------------------------------------------
 

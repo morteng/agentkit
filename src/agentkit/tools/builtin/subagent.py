@@ -7,6 +7,8 @@ This builtin is a thin shim that calls that injected coroutine.
 
 from typing import Any
 
+from agentkit._content import Provenance
+from agentkit.guards.taint import is_tainted
 from agentkit.loop.context import TurnContext
 from agentkit.tools.spec import (
     ApprovalPolicy,
@@ -59,6 +61,14 @@ async def subagent_spawn_handler(args: dict[str, Any], ctx: TurnContext) -> Tool
         list(args.get("tools", [])),
         dict(args.get("context", {})),
     )
+    # SubagentDispatcher.spawn() has already latched any taint the child
+    # picked up onto ``ctx`` directly (guards/taint.mark_taint, from a
+    # ``finally`` so it happens even if the child errored out or ended
+    # suspended). Mirroring that onto this call's own provenance means the
+    # persisted transcript message for *this* result — not just the turn's
+    # tainted flag — records that its content passed through something
+    # untrusted, same as any tool that read untrusted bytes directly would.
+    provenance = Provenance.UNTRUSTED if is_tainted(ctx) else Provenance.SYSTEM
     return ToolResult(
         call_id=ctx.call_id,
         status="ok",
@@ -66,4 +76,5 @@ async def subagent_spawn_handler(args: dict[str, Any], ctx: TurnContext) -> Tool
         error=None,
         duration_ms=0,
         cached=False,
+        provenance=provenance,
     )
