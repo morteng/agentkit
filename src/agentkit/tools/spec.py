@@ -9,6 +9,32 @@ from pydantic import BaseModel, Field
 from agentkit._content import Provenance
 from agentkit.pii.types import RehydratePolicy
 
+#: `Provenance` and `RehydratePolicy` are re-exports, and they are the two a
+#: tool author reaches for beside `RiskLevel` — `ToolResult` carries a
+#: provenance, so this module is where callers look for the enum. Without a
+#: name in `__all__` a re-exported symbol is private as far as a strict type
+#: checker is concerned, so every such import raised `reportPrivateImportUsage`
+#: (eight of them in one downstream service) and the suggested remedy was to
+#: import from `agentkit._content` — an underscore module — instead. Declaring
+#: the export states what was already true rather than pushing callers into a
+#: private module.
+__all__ = [
+    "DEFAULT_TOOL_TIMEOUT_SECONDS",
+    "ApprovalPolicy",
+    "ContentBlockOut",
+    "Provenance",
+    "RehydratePolicy",
+    "RiskLevel",
+    "SideEffects",
+    "ToolCall",
+    "ToolError",
+    "ToolResult",
+    "ToolSpec",
+    "invalid_arguments_message",
+    "unknown_tool_message",
+    "validate_tool_arguments",
+]
+
 DEFAULT_TOOL_TIMEOUT_SECONDS = 60.0
 """Fallback wall-clock budget for a single tool invocation.
 
