@@ -4,6 +4,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from agentkit._redaction import scrub_free_text
 from agentkit.mcp_client.base import MCPClient, ProgressCallback
 from agentkit.tools.spec import ToolError, ToolResult, ToolSpec
 from agentkit.tools.validation import validate_arguments
@@ -79,7 +80,15 @@ class InProcessMCPClient(MCPClient):
                 call_id="",
                 status="error",
                 content=[],
-                error=ToolError(code="handler_exception", message=str(exc)),
+                # scrub_free_text, not str(exc): this message reaches an HTTP
+                # surface and from there a browser. httpx embeds the full
+                # request URL in its exception text, so an unscrubbed
+                # str(exc) here has shipped an internal host, a port and an
+                # api_key query param to a user's screen (observed
+                # 2026-08-18 in a downstream consumer). Masking must happen where the
+                # string is MADE — every consumer defending itself
+                # separately is how one of them ends up not doing it.
+                error=ToolError(code="handler_exception", message=scrub_free_text(str(exc))),
                 duration_ms=elapsed,
                 cached=False,
             )

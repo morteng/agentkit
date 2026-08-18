@@ -36,6 +36,46 @@ _STRIPPED_CATEGORIES = frozenset({"Cc", "Cf"})
 rendered string lie about its content."""
 
 
+_URL_QUERY_RE = re.compile(r"(https?://[^\s'\"<>]*)\?[^\s'\"<>]*")
+"""A URL and everything after its ``?``. Credentials ride in query strings."""
+
+_BEARER_RE = re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._\-+/=]{8,}")
+
+_INLINE_SECRET_RE = re.compile(
+    r"(?i)\b([a-z0-9_.-]*(?:pass|pwd|token|secret|key|auth|cookie)[a-z0-9_.-]*)"
+    r"\s*[=:]\s*[\"']?([^\s,;)\"'&]{4,})"
+)
+
+
+def scrub_free_text(text: str) -> str:
+    """Strip credentials out of a string nobody composed for display.
+
+    ``is_secret_key`` above masks by KEY NAME, which only works when the value
+    arrives in a structured field someone already labelled. An exception
+    message is not that: it is free text, and the credential is inside it.
+    ``str(httpx.HTTPStatusError)`` embeds the full request URL, so a failed
+    call carries its own query string — and a ``TOKEN=``-style key-name mask
+    never sees it, because there is no key.
+
+    Masking therefore happens on the VALUE. Three shapes, all observed in real
+    exception text:
+
+    * ``https://host/path?api_key=…``  -> query string dropped wholesale.
+      Nothing downstream needs it, and enumerating which params are secret is
+      the mistake (``api_key`` vs ``apikey`` vs ``t``/``s``).
+    * ``Authorization: Bearer <token>`` -> the token.
+    * ``password=hunter2`` loose in a sentence -> the value.
+
+    This does NOT hide hostnames or paths: they are useful for diagnosis and
+    are not credentials. Callers that must not egress an internal hostname need
+    a different function, and should say so rather than assuming this one.
+    """
+    text = _URL_QUERY_RE.sub(r"\1?" + REDACTED, text)
+    text = _BEARER_RE.sub(lambda m: f"{m.group(1)} {REDACTED}", text)
+    text = _INLINE_SECRET_RE.sub(lambda m: f"{m.group(1)}={REDACTED}", text)
+    return text
+
+
 def is_secret_key(key: str) -> bool:
     return SECRET_KEY_PATTERN.search(key) is not None
 
