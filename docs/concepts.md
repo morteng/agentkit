@@ -18,6 +18,19 @@ Provider-agnostic tool definition. Adapters translate to each SDK's format.
 Includes `risk`, `idempotent`, `side_effects`, `requires_approval`,
 `cache_ttl_seconds`, `timeout_seconds`.
 
+`idempotent` is load-bearing in two places. It decides whether a call may join
+a concurrent batch, and — for `idempotent=False` — it makes the dispatcher
+answer an identical repeat within the same turn with the first call's result
+instead of executing again. The loop can re-open a finished question through
+ordinary control flow (a rejected `finalize_response` is a fresh model call
+with the full catalogue attached, against a history where the write already
+succeeded), so a tool that must not run twice needs the flag rather than a
+sentence in the prompt. Declare `idempotent=True` only when a second execution
+is harmless on the far side, not merely in the arguments you send: a
+create-or-update endpoint is idempotent in its request and destructive in the
+resource it replaces. Disable with
+`ToolDispatchConfig(guard_nonidempotent_replay=False)`.
+
 ## RiskLevel
 
 `READ | LOW_WRITE | HIGH_WRITE | DESTRUCTIVE`. Drives the default approval

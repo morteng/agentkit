@@ -41,6 +41,78 @@ from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
   comment that the name was "genuinely unknown here"; expired approvals now
   audit and render with a name like any other.
 
+### Fixed
+
+- **`ToolSpec.idempotent` is now enforced. Until this release it was
+  decorative, and one user request could perform the same irreversible action
+  twice.**
+
+  Read this entry even if you have never touched the flag — the bug it
+  describes is invisible from the outside, and the fix changes what your
+  existing `idempotent` values mean.
+
+  *The symptom.* One request to create something produces two of it. There is
+  no error at any layer, both calls return `status="ok"`, and the transcript
+  shown to the user mentions the action once. Where the remote API treats a
+  create as an upsert, the second call silently invalidates the first: the
+  resource the user was told about stops working the moment it is handed over,
+  and the artifacts already distributed for it (a link, a token, a config file)
+  are dead with nothing logged to say so. Diffing against the provider is no
+  help either — the end state looks exactly like one correct call.
+
+  *Why prompt wording cannot fix it.* The flag was declared on every spec and
+  consulted in exactly one place, `_safe_for_parallel`, which uses it to decide
+  whether a batch may run concurrently. Nothing prevented sequential
+  re-execution. That gap is reachable through the loop's ordinary control flow,
+  not through an error path: a rejected `finalize_response` injects a
+  correction and returns `Phase.CONTEXT_BUILD`, which is a fresh model call
+  with the full tool catalogue still attached, evaluated against a history in
+  which the write has already succeeded. `max_finalize_retries` plus
+  `max_missing_finalize_reprompts` allow three such extra generations, and
+  every tool result returns to a new model call besides. An instruction telling
+  the model to call something exactly once is powerless, because the thing
+  re-opening the question is the loop, not the model's memory. If you added
+  such an instruction and considered the matter closed, it is worth
+  re-checking; likewise a retry wrapper of your own, which multiplies the same
+  window rather than closing it.
+
+  *What now happens.* A successful call by a spec declaring
+  `idempotent=False` is recorded in a per-turn ledger keyed by tool name plus
+  canonicalised arguments. An identical repeat within the same turn returns the
+  first call's result instead of executing, with a note prepended saying the
+  action already happened. The guard sits in the single funnel both the
+  parallel and sequential paths pass through; the parallel-dispatch use of the
+  flag is untouched. Only `status="ok"` is recorded, so a failed or denied call
+  stays retryable. Unknown specs are never guarded, so a hallucinated tool name
+  still produces the unknown-tool error that tells the model it was wrong.
+
+  The repeat is answered with the **earlier result, not a denial**, and this is
+  deliberate: a model told "denied" concludes the effect did not land and goes
+  looking for a third route to it, which is the same bug arriving through a
+  different door.
+
+  **What you should check on your side.** Your `idempotent` values are now
+  load-bearing. Anything declared `idempotent=True` is not guarded, and before
+  this release nothing made that claim wrong in a way you could observe — so
+  audit the tools that write, rather than assuming the flag was set with this
+  consequence in mind. Two shapes to look for: a tool declared idempotent
+  because *calling* it twice is harmless, when what is not harmless is the
+  remote side's response to the second call; and a create-or-update endpoint,
+  which is idempotent in the arguments you send and destructive in the resource
+  it silently replaces.
+
+  The ledger keys on arguments, so two genuinely different calls to the same
+  tool both run, and the guard is per turn — it is not a defence against a user
+  asking for the same thing twice, which is a question only your tool can
+  answer. A tool whose second invocation is destructive should still say so
+  itself; the guard removes the machinery's contribution to the problem, not
+  the need for the tool to know its own preconditions.
+
+  Off by `ToolDispatchConfig.guard_nonidempotent_replay`, defaulting on. Turn
+  it off to reproduce the old behaviour; the suppression tests are paired with
+  a flag-off control that runs the same scenario twice, so the flag is a
+  supported way back and not just a kill switch.
+
 ### Known gap
 
 - **`WSApprovalAuthority.authorize_approval` still cannot name what it is
