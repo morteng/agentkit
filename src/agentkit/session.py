@@ -1439,7 +1439,12 @@ class AgentSession:
             "approval_gate": gc.approval or RiskBasedApprovalGate(),
             "dispatcher": ToolDispatcher(
                 registry=self.registry,
-                policy=DispatchPolicy(max_parallel=self.config.tool_dispatch.max_parallel),
+                policy=DispatchPolicy(
+                    max_parallel=self.config.tool_dispatch.max_parallel,
+                    guard_nonidempotent_replay=(
+                        self.config.tool_dispatch.guard_nonidempotent_replay
+                    ),
+                ),
                 audit=self.audit_sink,
             ),
             # Also in deps so a subagent's dispatcher — and any handler that

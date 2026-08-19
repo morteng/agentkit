@@ -154,6 +154,54 @@ from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
 ### Fixed
 
+- **`ToolSpec.idempotent` did not stop a non-idempotent tool running twice in
+  one turn.** The flag has existed since the first tool spec, and exactly one
+  line in the runtime read it: `ToolDispatcher._safe_for_parallel`, deciding
+  whether a batch could be dispatched concurrently. Nothing anywhere prevented
+  re-execution, so a tool that declared itself unsafe to repeat was repeated
+  whenever the model asked twice.
+
+  The loop asks twice on its own. `Phase.CONTEXT_BUILD` is re-entered several
+  times per turn by design — a finalize envelope the validator rejects returns
+  there with a correction (`max_finalize_retries`, plus
+  `max_missing_finalize_reprompts`), and so does every tool result
+  (`max_iterations`). Each re-entry hands the model the full tool catalog again
+  over a history in which the write has already succeeded. A consumer's
+  device-provisioning tool was called once by the user, run, rejected at
+  finalize, and called again on the re-entry: two external resources allocated,
+  the second silently invalidating the first, and no error raised at any layer,
+  because re-entry is a normal phase transition and not an error path. A system
+  prompt saying "call this exactly once" is powerless against it — what
+  re-opened the question was the loop, not the model's judgement.
+
+  `ToolDispatcher._invoke_guarded` — the single funnel both the parallel and
+  the sequential path pass through — now keeps a per-turn ledger of
+  successfully executed calls whose spec says `idempotent=False`, keyed by
+  `(tool name, canonicalised arguments)`, and answers a repeat with the first
+  call's own result rather than invoking the handler again. The result is
+  returned with the *new* `call_id` and a plain-language note that the call
+  already ran this turn: a model told only that it was refused concludes the
+  effect never landed and goes hunting for a third route to it.
+
+  Deliberately narrow. Specs with `idempotent=True` are untouched (repeating
+  them is safe by declaration, and answering a deliberate re-read from a store
+  would hide the very change it was re-read to find). A call with **no** spec is
+  untouched, so `registry.invoke` still produces its own unknown-tool error. A
+  call that failed, timed out, was cancelled or was denied is never recorded —
+  it consumed nothing, and recording it would turn one transient failure into a
+  permanent one for the rest of the turn. Scope is one turn and one turn only:
+  the ledger lives in `ctx.metadata`, which `AgentSession.send` builds fresh per
+  turn, so a later turn — the principal asking again — always executes. It is
+  stored as JSON-safe dicts so it survives an approval suspend/resume, which
+  rebuilds the *same* turn from a checkpoint.
+
+  Audit rows for a suppressed repeat carry `detail["replayed"] = True`; the flag
+  is present on every row, not only the suppressed ones, so a reader cannot mistake
+  an older row's silence for a "no". A structured `tool_replay_suppressed` log
+  line is emitted alongside. Set
+  `AgentConfig.tool_dispatch.guard_nonidempotent_replay = False` for the previous
+  behaviour.
+
 - **One tool-name decode miss poisoned an OpenRouter session permanently.**
   Canonical dotted names (`torrent.torrent_add`) are advertised to
   OpenAI-grammar providers under `__` aliases (`torrent__torrent_add`). When a

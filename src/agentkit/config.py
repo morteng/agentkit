@@ -69,6 +69,32 @@ class LoopConfig(BaseModel):
 
 class ToolDispatchConfig(BaseModel):
     max_parallel: int = 8
+    # Suppress a repeat of a call the CURRENT turn already ran successfully,
+    # for tools whose spec declares ``idempotent=False``.
+    #
+    # Until this existed, ``idempotent`` was read in exactly one place — the
+    # decision to dispatch a batch in parallel — and nothing anywhere stopped
+    # the same non-idempotent tool running twice in one turn. The loop
+    # re-enters Phase.CONTEXT_BUILD several times per turn by design: a
+    # rejected finalize envelope does it (``max_finalize_retries``, plus
+    # ``max_missing_finalize_reprompts``), and so does every tool result
+    # (``max_iterations``). Each re-entry hands the model the full tool catalog
+    # again, over a history in which the write has already succeeded. A model
+    # that re-issues the call there causes the effect a second time, and
+    # nothing objects, because re-entry is a normal phase transition and not an
+    # error path — one such repeat allocated a second external resource that
+    # silently invalidated the first, with no error raised at any layer. A
+    # system prompt saying "call this exactly once" cannot fix it either: what
+    # re-opens the question is the loop, not the model's judgement.
+    #
+    # The repeat is answered with the FIRST call's own result rather than an
+    # error. A model told the call was refused concludes the effect never
+    # landed and goes hunting for a third route to it; told the effect already
+    # happened, it moves on.
+    #
+    # Scoped to one turn, and only one turn: a later turn is the principal
+    # asking again, which must run. Set False for the pre-guard behaviour.
+    guard_nonidempotent_replay: bool = True
 
 
 class EventsConfig(BaseModel):
