@@ -167,6 +167,8 @@ async def handle_finalize_check(ctx: TurnContext, deps: dict[str, Any]) -> Phase
     ctx.metadata["finalize_retries"] = retries + 1
     correction = verdict.feedback or "Reconsider before finalizing."
     ctx.metadata["finalize_correction"] = correction
+    if deps.get("force_finalize_on_missing_reprompt"):
+        ctx.metadata["force_finalize_tool_choice"] = True
     _inject_correction(
         ctx,
         "Your finalize_response call was rejected:\n\n"

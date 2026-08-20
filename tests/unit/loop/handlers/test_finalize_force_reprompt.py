@@ -63,6 +63,46 @@ async def test_missing_finalize_reprompt_does_not_arm_force_by_default():
     assert "force_finalize_tool_choice" not in ctx.metadata
 
 
+@pytest.mark.asyncio
+async def test_rejected_finalize_retry_arms_force_tool_choice_when_enabled():
+    """When a finalize envelope is rejected, the retry turn is also constrained."""
+    ctx = TurnContext.empty()
+    ctx.add_message(_user("do something"))
+    ctx.finalize_called = True
+    ctx.finalize_args = {
+        "status": "done",
+        "intent_kind": "action",
+        "actions_performed": [],  # Rule 4 violation: empty_on_done
+    }
+    deps = {
+        "finalize_validator": StructuralFinalizeValidator(),
+        "force_finalize_on_missing_reprompt": True,
+        "max_finalize_retries": 2,
+    }
+    await handle_finalize_check(ctx, deps)
+    assert ctx.metadata.get("force_finalize_tool_choice") is True
+    assert ctx.metadata.get("finalize_retries") == 1
+
+
+@pytest.mark.asyncio
+async def test_rejected_finalize_retry_does_not_arm_force_by_default():
+    ctx = TurnContext.empty()
+    ctx.add_message(_user("do something"))
+    ctx.finalize_called = True
+    ctx.finalize_args = {
+        "status": "done",
+        "intent_kind": "action",
+        "actions_performed": [],
+    }
+    deps = {
+        "finalize_validator": StructuralFinalizeValidator(),
+        "max_finalize_retries": 2,
+    }
+    await handle_finalize_check(ctx, deps)
+    assert "force_finalize_tool_choice" not in ctx.metadata
+    assert ctx.metadata.get("finalize_retries") == 1
+
+
 # ---- streaming applies the forced tool choice, one-shot ----
 
 
