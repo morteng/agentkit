@@ -43,6 +43,14 @@ from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
 ### Fixed
 
+- **`force_finalize_on_missing_reprompt` now also constrains rejected-finalize
+  retries.** When a `finalize_response` envelope was rejected by the
+  structural validator, the retry turn was unconstrained even when
+  `force_finalize_on_missing_reprompt` was enabled — allowing the model to
+  re-narrate or attempt new tool calls instead of emitting a corrected
+  envelope. The retry turn now sets `force_finalize_tool_choice` matching the
+  missing-finalize behavior.
+
 - **`ToolSpec.idempotent` is now enforced. Until this release it was
   decorative, and one user request could perform the same irreversible action
   twice.**
