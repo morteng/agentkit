@@ -14,6 +14,7 @@ from agentkit.envelope import (
     ToolCallSummary,
 )
 from agentkit.finalize_validator import validate_envelope
+from agentkit.providers.openrouter.tool_name_codec import ToolNameCodec
 
 if TYPE_CHECKING:
     from agentkit._messages import Message
@@ -499,3 +500,40 @@ def test_rule9_default_turn_summaries_falls_back_to_tool_calls():
     ok_read = _summary("search", is_error=False, is_write=False)
     result = validate_envelope(env, [ok_read])  # turn_summaries omitted
     assert result.ok
+
+
+def test_rule1_normalizes_the_wire_spelling_of_a_qualified_name():
+    """A dot is illegal in an OpenAI function name, so a namespaced tool is
+    advertised to the model as ``<server>__<tool>`` and that alias is the ONLY
+    spelling it has ever seen. It writes that spelling into the envelope; the
+    call log holds the canonical dotted name the codec decodes back to. Rule 1
+    handling only the dot rejected every faithfully-reported namespaced write.
+
+    The wire name comes from the real codec rather than a literal, so the day
+    the encoding changes this test fails instead of quietly testing a spelling
+    nothing produces.
+    """
+    codec = ToolNameCodec.from_names(["acme.save_memory"])
+    wire = codec.canonical_to_wire["acme.save_memory"]
+    assert wire == "acme__save_memory"  # guards the premise, not the behaviour
+
+    env = Envelope(
+        status="done",
+        intent_kind="action",
+        actions_performed=[Action(tool=wire, target=None, description="ok")],
+    )
+    result = validate_envelope(env, [_summary("acme.save_memory")])
+    assert result.ok, result.violations
+
+
+def test_rule1_still_fires_for_a_wire_spelling_that_never_ran():
+    """The control. Decoding the alias must not turn Rule 1 into a rule that
+    credits any name ending in a tool that ran — a write the model invented
+    under a namespace it never called is still fabricated."""
+    env = Envelope(
+        status="done",
+        intent_kind="action",
+        actions_performed=[Action(tool="acme__delete_everything", target=None, description="x")],
+    )
+    result = validate_envelope(env, [_summary("acme.save_memory")])
+    assert "fabricated_tool" in {v.rule for v in result.violations}

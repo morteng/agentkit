@@ -51,18 +51,44 @@ on evidence of an honest envelope being rejected, not on brainstormed verbs.
 
 
 def _bare_name(name: str) -> str:
-    """Strip a single ``<server>.`` registry qualifier from a tool name.
+    """Strip a single ``<server>`` registry qualifier from a tool name.
 
-    Tools registered through a server namespace are presented to the model
-    as ``<server>.<tool>`` (e.g. ``acme.save_memory``). The model often
-    echoes that qualified form back in ``actions_performed[].tool``, while the
-    turn's call-log summaries are keyed by the bare name. Rule 1 matches the
-    two against each other, so both sides must be normalized to the bare form
-    or a faithfully-reported write is misread as fabricated. Bare tool names
-    are snake_case and never contain a dot, so splitting on the first dot is
-    safe.
+    Tools registered through a server namespace are presented to the model as
+    ``<server>.<tool>`` (e.g. ``acme.save_memory``). The model often echoes
+    that qualified form back in ``actions_performed[].tool``, while the turn's
+    call-log summaries are keyed by the bare name. Rule 1 matches the two
+    against each other, so both sides must be normalized to the bare form or a
+    faithfully-reported write is misread as fabricated.
+
+    **Two spellings of the qualifier, not one.** A dot is illegal in an OpenAI
+    function name, so ``providers/openrouter/tool_name_codec.py`` advertises
+    every dotted tool under a ``<server>__<tool>`` alias. That alias is the
+    only spelling of a namespaced tool the model has ever been shown, so it is
+    the spelling it writes into the envelope — while the call log, which is
+    keyed off the *canonical* name the codec decodes back to, holds the dotted
+    one. Handling only the dot meant Rule 1 compared ``acme__save_memory``
+    against ``save_memory``, found no match, and reported a write that had
+    genuinely happened as fabricated. Retries then exhausted and the caller was
+    told the action failed — after it had already taken effect, which is the
+    worst direction for this rule to fail in.
+
+    ``tools/spec.py``'s unknown-tool hint already resolves both spellings for
+    exactly this reason; this is the same rule reaching the second reader.
+
+    Splitting on the first separator is safe for the dot, because bare tool
+    names are snake_case and never contain one. A bare name *may* contain a
+    double underscore, so that split can in principle over-strip — but both
+    sides of the comparison run through this same function, so the two still
+    agree; the only reachable effect is that a bare ``a__b`` and a qualified
+    ``a.b`` would share a key. That makes Rule 1 marginally more permissive in
+    a case that has never occurred, where the alternative is rejecting real
+    writes in a case that occurs whenever a namespaced tool writes anything.
     """
-    return name.split(".", 1)[-1]
+    if "." in name:
+        return name.split(".", 1)[1]
+    if "__" in name:
+        return name.split("__", 1)[1]
+    return name
 
 
 def _is_default_write(name: str) -> bool:
