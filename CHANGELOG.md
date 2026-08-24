@@ -10,6 +10,57 @@ from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
 ### Added
 
+- **Provenance on the memory path — `save()` → `recall()` no longer launders
+  untrusted content into trusted context.** `MemoryStore.save()` took no
+  provenance, so a value the taint system had already classified as
+  `UNTRUSTED` lost that classification the moment it was written down. On the
+  next `recall()` it came back indistinguishable from a fact the host wrote
+  itself. Recalled memories are injected as context at the start of a turn, so
+  memory is a persistence layer for context: an untrusted tool result that
+  reached a memory write became *trusted context in a later turn, in a
+  different session*, with nothing on the read side able to tell.
+
+  What is recognisable in your own system: a fact the agent "remembers" that
+  originally came off a web page, an inbox, or another tenant's records, and
+  which no longer trips the taint guard. There is no symptom to search for —
+  the guard is silent by design, and everything looks like it worked.
+
+  Three changes, and the read half matters as much as the write half:
+
+  - `MemoryValue` gains `provenance: Provenance = Provenance.SYSTEM`, so both
+    read paths (`recall`, and `search` via `MemoryHit.value`) surface it with
+    no signature change. Rows written before the field existed validate to
+    `SYSTEM`; no migration.
+  - `MemoryStore.save()` gains a keyword-only `provenance: Provenance | None =
+    None`. The default means **keep the label already on the value**, not
+    "trusted" — a literal `SYSTEM` default would overwrite a classification
+    the caller had already made, which is the same bug one step further in.
+    Route your own implementation's write through
+    `agentkit.store.stamp_provenance` so the keyword means the same thing
+    everywhere. Existing implementations stay valid against the
+    `runtime_checkable` protocol, which is why the argument is optional.
+  - The builtin memory tools never take the default. `kit.memory.save` records
+    `UNTRUSTED` in a tainted turn and `PRINCIPAL` otherwise — never `SYSTEM`,
+    which asserts the *runtime* produced bytes that a model composed.
+    `kit.memory.recall` and `kit.memory.search` put the stored label back on
+    the `ToolResult`, so recalling an untrusted fact taints the turn that
+    recalls it.
+
+  **Behaviour change to expect**: nothing already stored changes standing, but
+  memory written from now on through `kit.memory.*` during a tainted turn will
+  taint the later turns that read it. That is the point, and it is only
+  reachable at all for hosts that raised `max_risk_when_tainted` or installed
+  `NullTaintPolicy` — under the default policy `kit.memory.save` was already
+  denied in a tainted turn. If you have been defending this by forbidding
+  model-reachable memory writes entirely, that workaround can now be narrowed
+  to the thing it was standing in for.
+
+  **Still open, deliberately**: `kit.memory.list` and `kit.memory.forget`
+  return *keys*, and a key is model-authored too. Classifying them means one
+  `recall` per key — an N round-trip read — or provenance in the `list_keys`
+  return type, a wider protocol change than this. Drop `MEMORY_LIST_SPEC` from
+  your registration if you treat a key string as a carrier.
+
 - **`ErrorCode.POLICY_REFUSED`, and an exception that can name its own code.**
   `Orchestrator._record_turn_error` is the single funnel every turn-ending
   failure passes through, and it hard-coded `ErrorCode.INTERNAL`. `code` is the

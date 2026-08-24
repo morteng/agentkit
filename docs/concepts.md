@@ -98,6 +98,37 @@ name the tool whose output the model read before it proposed the action. Note
 that the guard sits *below* approval: a human "approve" does not lift it, and
 the call is still refused.
 
+### Provenance and memory
+
+Taint is per-turn, but memory is not: recalled facts are injected as context at
+the start of a later turn, which makes a memory store a *persistence layer for
+context*. So `MemoryValue` carries a `provenance` too, and `MemoryStore.save`
+takes it as a keyword:
+
+```python
+await store.save(scope, key, value, provenance=Provenance.UNTRUSTED)
+```
+
+The keyword defaults to `None`, meaning *keep the label already on the value* —
+not "trusted". A literal `SYSTEM` default would overwrite a classification the
+caller had already made, which is the same laundering one step further in.
+Values and stored rows written before the field existed read back as `SYSTEM`,
+so nothing needs migrating.
+
+The builtin memory tools never take the default. `kit.memory.save` records
+`UNTRUSTED` when the turn is tainted and `PRINCIPAL` otherwise — never
+`SYSTEM`, which would assert the runtime authored text a model composed — and
+`kit.memory.recall` / `kit.memory.search` put the stored label back on the
+`ToolResult`, so recalling an untrusted fact taints the turn that recalls it.
+`kit.memory.list` and `kit.memory.forget` return keys rather than remembered
+text and are not labelled; drop `MEMORY_LIST_SPEC` from your registration if
+you treat a model-chosen key string as a carrier.
+
+If you implement `MemoryStore` yourself, route the write through
+`agentkit.store.stamp_provenance` so the keyword means the same thing in your
+backend as in the shipped ones. A store that accepts the argument and discards
+it leaves the gap exactly where it was.
+
 ## Execution-time tool gates
 
 Filtering the advertised catalog is advisory — a model can name a tool it was

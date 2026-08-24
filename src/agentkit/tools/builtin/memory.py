@@ -34,11 +34,38 @@ gate DESTRUCTIVE behind an administrator, and "only an admin may delete your
 memory of me" inverts who the control is for. It is also why forgetting is
 exposed as ``kit.memory.forget`` rather than ``…delete`` — the word a person
 would use, in a tool name that reaches user-facing surfaces.
+
+WHY THESE HANDLERS CARRY PROVENANCE (added 2026-08-24)
+------------------------------------------------------
+This module is the *model-reachable* end of the memory path, so it is the one
+place that must never take a trust default. Nothing written here was authored
+by the runtime or the operator — which is exactly what ``Provenance.SYSTEM``
+asserts — it is text a model composed out of whatever was in its context.
+Writes are therefore labelled explicitly, and reads hand the stored label back
+to the taint guard on the ``ToolResult``.
+
+Both halves are needed. Labelling a write and dropping it on read records a
+fact nothing consults; surfacing on read with an unlabelled write surfaces a
+constant. Together they close ``save()`` → ``recall()``: untrusted text that
+reaches memory taints the later turn that recalls it, the same way the
+original tool result tainted the turn that fetched it.
+
+STILL OPEN, DELIBERATELY: ``kit.memory.list`` and ``kit.memory.forget`` return
+**keys**, and a key is model-authored too, so a key invented during a tainted
+turn is a narrow channel back into a later one. Neither handler is labelled
+here, because ``MemoryStore.list_keys`` returns bare strings and classifying
+them would mean one ``recall`` per key — turning the cheap listing into an N
+round-trip read. Closing it properly needs provenance in the ``list_keys``
+return type, which is a wider protocol change than the laundering path this
+module was fixed for. Hosts that consider a key string a meaningful carrier
+should drop ``MEMORY_LIST_SPEC`` from their registration.
 """
 
 from datetime import UTC, datetime
 from typing import Any
 
+from agentkit._content import Provenance
+from agentkit.guards.taint import is_tainted
 from agentkit.loop.context import TurnContext
 from agentkit.store.memory import MemoryValue
 from agentkit.store.redis.keys import validate_memory_key
@@ -206,6 +233,47 @@ def _check_key(key: str, ctx: TurnContext) -> ToolResult | None:
     return None
 
 
+def _write_provenance(ctx: TurnContext) -> Provenance:
+    """The trust label for a fact a model asked to remember.
+
+    ``UNTRUSTED`` once the turn is tainted: from that moment the model has read
+    third-party text, so a memory write may be dictated by an injected
+    instruction and must not come back trusted in a later session.
+
+    ``PRINCIPAL`` otherwise — never ``SYSTEM``. An untainted turn contains only
+    the principal's own words and trusted tool output, so the fact is the
+    principal's; but the runtime did not author it, and ``SYSTEM`` would claim
+    it did.
+
+    NOTE FOR ANYONE MUTATION-TESTING THIS: under the default
+    :class:`~agentkit.guards.taint.RiskBasedTaintPolicy` the ``UNTRUSTED``
+    branch is unreachable through the registry, because ``kit.memory.save`` is
+    ``LOW_WRITE`` and a tainted turn already denies it. It is reachable — and
+    load-bearing — for a host that raises ``max_risk_when_tainted`` or installs
+    ``NullTaintPolicy``, which is precisely the host that has nothing else
+    standing between an injected instruction and a durable memory. So it is a
+    second independent guard, and an end-to-end test cannot distinguish it from
+    the first. Its test drives this handler directly for that reason.
+    """
+    return Provenance.UNTRUSTED if is_tainted(ctx) else Provenance.PRINCIPAL
+
+
+def _read_provenance(values: list[MemoryValue]) -> Provenance:
+    """The trust label for a result carrying stored memory back to the model.
+
+    Any untrusted value makes the whole result untrusted: the content blocks
+    are concatenated into one result, and the taint axis is binary, so a
+    mixture cannot honestly claim to be the principal's. Falls back to
+    ``SYSTEM`` — the ``ToolResult`` default — rather than inventing a level for
+    an empty read.
+    """
+    if any(v.provenance is Provenance.UNTRUSTED for v in values):
+        return Provenance.UNTRUSTED
+    if values and all(v.provenance is Provenance.PRINCIPAL for v in values):
+        return Provenance.PRINCIPAL
+    return Provenance.SYSTEM
+
+
 async def memory_save_handler(args: dict[str, Any], ctx: TurnContext) -> ToolResult:
     if (err := _need_store(ctx)) is not None:
         return err
@@ -219,7 +287,16 @@ async def memory_save_handler(args: dict[str, Any], ctx: TurnContext) -> ToolRes
         updated_at=now,
     )
     assert ctx.memory_store is not None and ctx.memory_scope is not None
-    await ctx.memory_store.save(ctx.memory_scope, str(args["key"]), value)
+    # Passed, never defaulted. The protocol default means "keep the label the
+    # value already carries", and a freshly built MemoryValue carries SYSTEM —
+    # so omitting this argument here is what wrote model-authored text down as
+    # runtime-authored fact.
+    await ctx.memory_store.save(
+        ctx.memory_scope,
+        str(args["key"]),
+        value,
+        provenance=_write_provenance(ctx),
+    )
     return ToolResult(
         call_id=ctx.call_id,
         status="ok",
@@ -253,6 +330,11 @@ async def memory_recall_handler(args: dict[str, Any], ctx: TurnContext) -> ToolR
         error=None,
         duration_ms=0,
         cached=False,
+        # The stored label travels back onto the result, so an untrusted fact
+        # taints this turn the way the tool result that produced it tainted the
+        # turn it was written in. Without this the write-side label is a note
+        # nothing reads.
+        provenance=_read_provenance([value]),
     )
 
 
@@ -285,6 +367,9 @@ async def memory_search_handler(args: dict[str, Any], ctx: TurnContext) -> ToolR
         error=None,
         duration_ms=0,
         cached=False,
+        # One untrusted hit taints the result: the hits are concatenated into a
+        # single block, and there is no way for the model to read half of it.
+        provenance=_read_provenance([hit.value for hit in hits]),
     )
 
 

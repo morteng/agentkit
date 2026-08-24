@@ -8,7 +8,13 @@ from agentkit.store.checkpoint import (
     approval_checkpoint_id,
     turn_id_from_approval_checkpoint,
 )
-from agentkit.store.memory import MemoryHit, MemoryScope, MemoryStore, MemoryValue
+from agentkit.store.memory import (
+    MemoryHit,
+    MemoryScope,
+    MemoryStore,
+    MemoryValue,
+    stamp_provenance,
+)
 from agentkit.store.session import Session, SessionStore, SessionSummary
 
 __all__ = [
@@ -24,5 +30,6 @@ __all__ = [
     "SessionStore",
     "SessionSummary",
     "approval_checkpoint_id",
+    "stamp_provenance",
     "turn_id_from_approval_checkpoint",
 ]

@@ -5,7 +5,14 @@ Stores values as JSON at scoped keys. Keeps a per-scope SET of keys so
 ``MemoryValue.text`` — fine for the default; vector search is opt-in.
 """
 
-from agentkit.store.memory import MemoryHit, MemoryScope, MemoryStore, MemoryValue
+from agentkit._content import Provenance
+from agentkit.store.memory import (
+    MemoryHit,
+    MemoryScope,
+    MemoryStore,
+    MemoryValue,
+    stamp_provenance,
+)
 from agentkit.store.redis.client import RedisClient
 from agentkit.store.redis.keys import validate_memory_key
 from agentkit.store.redis.serialization import from_versioned_json, to_versioned_json
@@ -17,14 +24,26 @@ class RedisMemoryStore(MemoryStore):
     def __init__(self, client: RedisClient) -> None:
         self._c = client
 
-    async def save(self, scope: MemoryScope, key: str, value: MemoryValue) -> None:
+    async def save(
+        self,
+        scope: MemoryScope,
+        key: str,
+        value: MemoryValue,
+        *,
+        provenance: Provenance | None = None,
+    ) -> None:
         # Validated at the write path too, not only in the builtin tool: any
         # host code can call save() directly, and an empty or 10 MB key should
         # fail loudly here rather than become a row nothing can address.
         validate_memory_key(key)
+        # The label goes into the serialised payload, not beside it: recall()
+        # reconstructs the value with model_validate, so anything not in the
+        # JSON is gone. Payloads written before the field existed validate to
+        # the SYSTEM default, so no migration is needed.
+        stamped = stamp_provenance(value, provenance)
         await self._c.redis.set(  # type: ignore[no-untyped-call]
             self._c.keys.memory(scope, key),
-            to_versioned_json(value.model_dump(mode="json"), schema_version=_SCHEMA_V),
+            to_versioned_json(stamped.model_dump(mode="json"), schema_version=_SCHEMA_V),
         )
         await self._c.redis.sadd(self._c.keys.memory_index(scope), key)  # type: ignore[no-untyped-call]
 
