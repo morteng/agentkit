@@ -22,7 +22,7 @@ from agentkit._content import ToolUseBlock
 from agentkit._ids import EventId, MessageId, new_id
 from agentkit._logging import get_logger
 from agentkit._messages import Usage
-from agentkit.errors import InvalidPhaseTransition
+from agentkit.errors import InvalidPhaseTransition, error_code_for
 from agentkit.events import (
     ErrorCode,
     Errored,
@@ -114,6 +114,7 @@ class Loop:
                     kind=type(exc).__name__,
                     message=str(exc),
                     log_it=False,
+                    exc=exc,
                 )
                 if (evt := self._mk_phase_changed(phase, Phase.ERRORED, duration)) is not None:
                     yield evt
@@ -128,6 +129,7 @@ class Loop:
                     phase,
                     kind=type(exc).__name__,
                     message=str(exc),
+                    exc=exc,
                 )
                 if (evt := self._mk_phase_changed(phase, Phase.ERRORED, duration)) is not None:
                     yield evt
@@ -159,12 +161,22 @@ class Loop:
         kind: str,
         message: str,
         log_it: bool = True,
+        exc: BaseException | None = None,
     ) -> None:
         """Make a turn failure observable: log, stash, emit.
 
         Called from every path that forces ERRORED. ``log_it=False`` is passed by
         the handler-exception path, which already logged with the traceback via
         ``log.exception``.
+
+        ``exc`` is the exception that ended the turn, when there is one, and it
+        is read for one thing: the :class:`ErrorCode` it asks for. This used to
+        be hard-coded ``INTERNAL`` for every path through here, which made a
+        deliberate refusal — the PII firewall declining to route a call, say —
+        indistinguishable on the wire from an unhandled crash, and left a
+        consumer no option but to pattern-match exception names out of the free
+        text in ``message``. Paths with no exception (a phase with no handler)
+        pass nothing and still get ``INTERNAL``, which is what they mean.
         """
         if log_it:
             log.error(
@@ -175,18 +187,22 @@ class Loop:
                 session_id=str(self._ctx.session_id),
                 turn_id=str(self._ctx.turn_id),
             )
-        # Plain strings only: this rides along in the checkpoint payload.
+        code = error_code_for(exc) if exc is not None else ErrorCode.INTERNAL
+        # Plain strings only: this rides along in the checkpoint payload. The
+        # code is stored too, so a turn read back from history discriminates the
+        # failure the same way the live event did.
         self._ctx.metadata["turn_error"] = {
             "phase": phase.value,
             "type": kind,
             "message": message,
+            "code": code.value,
         }
         queue = self._ctx.event_queue
         if queue is None:
             return
         evt = self._mk(
             Errored,
-            code=ErrorCode.INTERNAL,
+            code=code,
             message=f"{phase.value}: {kind}: {message}",
             recoverable=False,
         )

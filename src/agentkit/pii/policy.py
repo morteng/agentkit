@@ -4,6 +4,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from agentkit._codes import ErrorCode
+from agentkit.errors import AgentkitError
+
 
 class PiiPolicy(BaseModel):
     """Per-workspace firewall policy. Consumer-supplied.
@@ -42,20 +45,35 @@ class PiiPolicy(BaseModel):
     """
 
 
-class ZdrRouteUnavailable(Exception):
+class ZdrRouteUnavailable(AgentkitError):
     """Raised when a PII-flagged call cannot be routed to a compliant
     (zero-data-retention / no-train) provider.
 
     The firewall fails closed rather than silently downgrading to a
     non-compliant route.
+
+    Reaches the consumer as ``ErrorCode.POLICY_REFUSED``. The distinction earns
+    its keep because the remedy is specific and the caller can state it — *the
+    model you chose has no zero-retention endpoint; pick another, or relax the
+    requirement* — where a generic failure notice can only apologise. It is also
+    not worth retrying: the route does not exist, and it will not exist on the
+    second attempt either.
     """
 
+    code = ErrorCode.POLICY_REFUSED
 
-class BlockedModelError(Exception):
+
+class BlockedModelError(AgentkitError):
     """Raised when a PII-carrying request targets a model in ``blocked_models``.
 
     ``blocked_models`` was a policy field nothing ever read: the firewall would
     happily send PII to a model the operator had explicitly forbidden. It is
     now enforced at the egress boundary, before the request is scrubbed or
     sent.
+
+    Reaches the consumer as ``ErrorCode.POLICY_REFUSED``, for the same reason as
+    :class:`ZdrRouteUnavailable`: the operator forbade this model, so the call
+    failed exactly as configured and a different model is the way through.
     """
+
+    code = ErrorCode.POLICY_REFUSED

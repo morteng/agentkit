@@ -61,6 +61,65 @@ from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
   return type, a wider protocol change than this. Drop `MEMORY_LIST_SPEC` from
   your registration if you treat a key string as a carrier.
 
+- **`ErrorCode.POLICY_REFUSED`, and an exception that can name its own code.**
+  `Orchestrator._record_turn_error` is the single funnel every turn-ending
+  failure passes through, and it hard-coded `ErrorCode.INTERNAL`. `code` is the
+  only structured field on `Errored` and the only one a consumer can safely put
+  in front of a person — `message` is free text composed on the far side of the
+  wire and may carry a provider's HTTP body, an internal hostname or a stack
+  frame. So every raised exception arrived indistinguishable from an unhandled
+  crash, including agentkit's own deliberate refusals.
+
+  The observed cost: a `ZdrRouteUnavailable` — the PII firewall declining to
+  route a PII-carrying call because the selected model has no zero-retention
+  endpoint — reached the browser as `internal`, and the reader was shown a
+  generic "something went wrong". The sentence that would have helped, *this
+  model has no zero-retention endpoint; pick another or relax the requirement*,
+  was unreachable. The only workaround available to a consumer was to
+  pattern-match the exception name out of `message`, which couples a UI to
+  `repr` output, re-breaks whenever wording changes, and parses precisely the
+  untrusted field the code/message split exists to keep out of the render path.
+
+  `AgentkitError` now carries `code: ErrorCode`, defaulting to `INTERNAL`, and
+  the orchestrator reads it. Existing behaviour is unchanged for anything that
+  does not set one — including the two funnel paths that have no exception to
+  ask (a phase with no handler) or genuinely mean `INTERNAL` (an illegal phase
+  transition). `ProviderError`, `ToolError` and `ApprovalTimeout` now resolve to
+  `PROVIDER_FAULT`, `TOOL_FAULT` and `APPROVAL_TIMEOUT`; an instance may
+  override the class value where one class covers outcomes that differ (a 429
+  raised as `ProviderError`).
+
+  `error_code_for(exc)` is exported from `agentkit.errors` and is deliberately
+  duck-typed rather than gated on `AgentkitError`: a consumer's own exception
+  cannot inherit from a class it does not control, and setting
+  `code = ErrorCode.TOOL_FAULT` on it is enough. The `isinstance` check is what
+  makes that safe — `.code` is a common attribute name on third-party
+  exceptions and is usually a bare string (`openai.APIStatusError.code` is
+  `"not_found"`), so only a real `ErrorCode` member is honoured and a foreign
+  `.code` is ignored rather than coerced into a wrong answer or a `ValueError`
+  raised on a failure path.
+
+  `POLICY_REFUSED` is new because neither existing member fits: nothing
+  malfunctioned, so not `INTERNAL`; and `INTENT_REJECTED` is the intent gate
+  judging the *request*, where this is the egress boundary judging the *route*.
+  `ZdrRouteUnavailable` and `BlockedModelError` use it — and both now inherit
+  from `AgentkitError`, which the module docstring had claimed of every
+  exception in the library since before they existed.
+
+  **Consumers gain a field's worth of resolution and lose nothing.** An
+  un-updated consumer that switches on `code` falls through on `policy_refused`
+  to whatever it already does for an unrecognised value, which is the generic
+  error it was showing anyway. `ctx.metadata["turn_error"]` gained a `"code"`
+  key so a turn read back from history discriminates the same way the live
+  event did; `Errored.message` is byte-for-byte unchanged.
+
+  `ErrorCode` moved to the leaf module `agentkit._codes` so that
+  `agentkit.errors` can import it — `events/__init__` reaches through the
+  approval events into `guards` and then into the tool registry, which imports
+  `agentkit.errors`, and a leaf cannot close that cycle. It is still re-exported
+  from `agentkit.events` and from `agentkit.events.lifecycle`, which remain the
+  supported import paths.
+
 - **`tool_name` on every event that reports how a call or an approval ended.**
   `ApprovalNeeded` and `ToolCallStarted` have always carried the tool's name.
   `ToolCallResult`, `ApprovalGranted`, `ApprovalDenied` and `ApprovalResolved`

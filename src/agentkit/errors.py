@@ -2,9 +2,52 @@
 
 from collections.abc import Mapping, Sequence
 
+from agentkit._codes import ErrorCode
+
 
 class AgentkitError(Exception):
-    """Base for every exception raised by this library."""
+    """Base for every exception raised by this library.
+
+    ``code`` is the :class:`~agentkit.events.ErrorCode` the loop puts on the
+    :class:`~agentkit.events.Errored` event when this exception ends a turn.
+
+    It exists because ``code`` is the only structured field on that event, and
+    the only one a consumer can safely render: ``message`` is free text composed
+    on the far side of the wire and may carry a provider's HTTP body, an
+    internal hostname or a stack frame. Before this, every raised exception
+    reached the consumer as ``INTERNAL`` — a deliberate policy refusal was
+    indistinguishable from an unhandled crash, and the only way to tell them
+    apart was to pattern-match the exception's name out of ``message``. That
+    couples a UI to ``repr`` output, re-breaks whenever wording changes, and
+    parses precisely the untrusted field the code/message split exists to keep
+    out of the render path.
+
+    Subclasses set it as a class attribute; an instance may override it when the
+    same class covers outcomes that differ (a ``ProviderError`` raised for a 429,
+    say). ``INTERNAL`` remains the default, so an exception that says nothing
+    behaves exactly as it did before.
+    """
+
+    code: ErrorCode = ErrorCode.INTERNAL
+
+
+def error_code_for(exc: BaseException) -> ErrorCode:
+    """The ``ErrorCode`` an exception asks for, or ``INTERNAL``.
+
+    Deliberately duck-typed rather than gated on :class:`AgentkitError`: a
+    consumer's own exception — one raised from a tool, or from a provider
+    decorator it wrote — cannot inherit from a class it does not control, and it
+    has as much right to name its failure as agentkit's do. Setting
+    ``code = ErrorCode.TOOL_FAULT`` on it is enough.
+
+    The ``isinstance`` check is what makes that safe. ``.code`` is a common
+    attribute name on third-party exceptions and it is usually a bare string —
+    ``openai.APIStatusError.code`` is ``"not_found"``, for one. Only a real
+    ``ErrorCode`` member is honoured, so a foreign ``.code`` is ignored rather
+    than coerced into a wrong answer or a ``ValueError`` on a failure path.
+    """
+    code = getattr(exc, "code", None)
+    return code if isinstance(code, ErrorCode) else ErrorCode.INTERNAL
 
 
 class ConfigurationError(AgentkitError):
@@ -23,9 +66,13 @@ class InvalidPhaseTransition(AgentkitError):
 class ProviderError(AgentkitError):
     """Underlying LLM provider returned an error."""
 
+    code = ErrorCode.PROVIDER_FAULT
+
 
 class ToolError(AgentkitError):
     """Tool dispatch or execution failed."""
+
+    code = ErrorCode.TOOL_FAULT
 
 
 class ApprovalTimeout(AgentkitError):
@@ -49,6 +96,8 @@ class ApprovalTimeout(AgentkitError):
     restarting at 0 and colliding with events the suspended turn already
     emitted (e.g. ``TurnStarted``, sequence 0).
     """
+
+    code = ErrorCode.APPROVAL_TIMEOUT
 
     def __init__(
         self,

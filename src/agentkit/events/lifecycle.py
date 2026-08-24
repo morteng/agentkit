@@ -6,6 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from agentkit._codes import ErrorCode
 from agentkit._ids import MessageId
 from agentkit.events.base import BaseEvent
 
@@ -26,15 +27,6 @@ class TurnEndReason(StrEnum):
     #: completion path, leaving the reader looking at a conversation that ends
     #: on a row of tool calls with no reply and no sign anything went wrong.
     NO_RESPONSE = "no_response"
-
-
-class ErrorCode(StrEnum):
-    PROVIDER_FAULT = "provider_fault"
-    TOOL_FAULT = "tool_fault"
-    RATE_LIMITED = "rate_limited"
-    INTENT_REJECTED = "intent_rejected"
-    APPROVAL_TIMEOUT = "approval_timeout"
-    INTERNAL = "internal"
 
 
 class TurnMetrics(BaseModel):
