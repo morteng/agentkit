@@ -5,7 +5,11 @@ Three outcomes, all reached only when a ``finalize_validator`` is configured
 
 * finalize_response was called and the validator accepts -> MEMORY_EXTRACT.
 * finalize_response was called but the validator rejects -> CONTEXT_BUILD,
-  bounded by ``max_finalize_retries``.
+  bounded by ``max_finalize_retries``. Once that budget is spent the turn ends
+  as ``TurnEndReason.FINALIZE_REJECTED``. It used to end COMPLETED, for want of
+  an enum member that fit: NO_RESPONSE would have been false (the model did
+  answer and did finalize), so the degraded outcome went unrecorded anywhere a
+  consumer could read it — see the branch below.
 * finalize_response was NOT called -> CONTEXT_BUILD with a re-prompt asking
   the model to finalize, bounded by ``max_missing_finalize_reprompts``. Once
   that budget is spent the turn ends as ``TurnEndReason.NO_RESPONSE``. A turn
@@ -151,10 +155,22 @@ async def handle_finalize_check(ctx: TurnContext, deps: dict[str, Any]) -> Phase
     if retries >= max_retries:
         # Deliberately NOT marked NO_RESPONSE. The model did answer and did
         # finalize; only the envelope failed validation, so the user has
-        # content in front of them and "no response" would be a lie. The turn
-        # is still ending in a degraded state that nothing else records, hence
-        # the warning — this path was previously invisible in the logs.
+        # content in front of them and "no response" would be a lie.
+        #
+        # Declining NO_RESPONSE used to leave only COMPLETED, which is a
+        # different lie: MEMORY_EXTRACT is the ordinary completion path, so the
+        # turn ended indistinguishable from one that finished cleanly. The
+        # degraded state was recorded solely in ``finalize_exhausted`` below —
+        # a flag with no reader anywhere in ``src``, and one that never leaves
+        # ``ctx.metadata``, so a consumer could not recover it even by digging.
+        # FINALIZE_REJECTED says on the wire what this comment already knew.
+        #
+        # setdefault, not assignment: an existing suspend_reason
+        # (AWAITING_APPROVAL, MAX_ITERATIONS) explains more about why the turn
+        # is ending than the rejected envelope does, and has priority — the
+        # same rule the missing-finalize path above follows.
         ctx.metadata["finalize_exhausted"] = True
+        ctx.metadata.setdefault("suspend_reason", TurnEndReason.FINALIZE_REJECTED.value)
         log.warning(
             "finalize_validation_exhausted",
             session_id=str(ctx.session_id),
