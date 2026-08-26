@@ -27,6 +27,20 @@ class TurnEndReason(StrEnum):
     #: completion path, leaving the reader looking at a conversation that ends
     #: on a row of tool calls with no reply and no sign anything went wrong.
     NO_RESPONSE = "no_response"
+    #: The model produced content and *did* call ``finalize_response``, but the
+    #: envelope was rejected on every attempt within ``max_finalize_retries``.
+    #: Distinct from NO_RESPONSE, which asserts the model never finalized at
+    #: all — saying that here would be wrong, because the user has content in
+    #: front of them and only the envelope failed.
+    #:
+    #: A separate member rather than COMPLETED for the same reason NO_RESPONSE
+    #: is one: COMPLETED asserts the model finished, and a turn whose every
+    #: envelope was rejected demonstrably has not. The degraded state was
+    #: recorded only in ``ctx.metadata["finalize_exhausted"]``, which never
+    #: leaves the runtime and has no reader anywhere in ``src``, so on the wire
+    #: this was byte-identical to success and a consumer branching on this enum
+    #: could not reach the case at all.
+    FINALIZE_REJECTED = "finalize_rejected"
 
 
 class TurnMetrics(BaseModel):

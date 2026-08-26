@@ -153,6 +153,33 @@ from v1.0.0 onward. Pre-1.0 minor versions may include breaking changes.
 
 ### Fixed
 
+- **A turn whose finalize envelope was rejected until the retry budget ran out
+  ended as `COMPLETED` — indistinguishable on the wire from a turn the model
+  actually finished.** `TurnEndReason` had no member that could describe it.
+  `NO_RESPONSE` would have been false (the model *did* answer and *did* call
+  `finalize_response`; only the envelope failed validation), so the branch
+  deliberately declined it — and declining left only `COMPLETED`, because the
+  exhausted path returns `MEMORY_EXTRACT`, the ordinary completion phase. The
+  degraded outcome was recorded solely in `ctx.metadata["finalize_exhausted"]`,
+  a flag with no reader anywhere in `src` and one that never leaves the
+  runtime, so a consumer could not recover the state even by digging.
+
+  What this looks like downstream: a UI that branches on `TurnEnded.reason` to
+  tell the reader their turn stopped short cannot reach this case at all. With
+  the default `max_finalize_retries=2` the model finalizes three times, is
+  rejected three times, and the reader is shown a turn that ended cleanly.
+
+  The exhausted branch now records
+  `TurnEndReason.FINALIZE_REJECTED` (`"finalize_rejected"`), the same
+  `metadata["suspend_reason"]` mechanism `MAX_ITERATIONS` and `NO_RESPONSE`
+  already use, and with the same `setdefault` precedence: an
+  `AWAITING_APPROVAL` or `MAX_ITERATIONS` reason recorded earlier in the turn
+  explains more and still wins.
+
+  **This adds an enum member.** A consumer that switches exhaustively on
+  `TurnEndReason` needs a branch for it; one with a default branch starts
+  rendering the case honestly with no change.
+
 - **`force_finalize_on_missing_reprompt` now also constrains rejected-finalize
   retries.** When a `finalize_response` envelope was rejected by the
   structural validator, the retry turn was unconstrained even when
