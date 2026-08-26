@@ -149,3 +149,80 @@ def test_unconfigured_says_so_rather_than_passing_quietly(
     assert result.returncode == 0
     assert "skipped" in result.stdout
     assert "nothing was checked" in result.stdout
+
+
+# A blocklist term made only of [0-9a-f]. Matching is plain substring, so such a
+# term can appear inside a SHA by chance — which is exactly how the forge's
+# fabricated merge commit turns into a finding nobody can act on.
+HEX_SECRET = "beadface"
+
+
+@pytest.fixture
+def clean_repo(tmp_path: Path) -> Path:
+    """A repo with no forbidden name anywhere, so any hit comes from the test."""
+    r = tmp_path / "clean"
+    r.mkdir()
+    _git(r, "init", "-q", "-b", "main")
+    (r / "ok.py").write_text("X = 1\n", encoding="utf-8")
+    _git(r, "add", "ok.py")
+    _git(r, "commit", "-qm", "initial")
+    return r
+
+
+@pytest.fixture
+def hex_configured(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("AGENTKIT_PRIVATE_IDENTIFIERS", HEX_SECRET)
+    monkeypatch.delenv("AGENTKIT_PRIVATE_IDENTIFIERS_FILE", raising=False)
+
+
+def test_the_forges_fabricated_merge_commit_is_not_a_finding(
+    clean_repo: Path, hex_configured
+) -> None:
+    """A PR run scans a commit the forge invented and deletes again.
+
+    Its message is two random SHAs, so a hex-shaped blocklist term matches it
+    sooner or later. Reporting that tells the author to rewrite the history of
+    a commit they cannot even fetch.
+    """
+    left = HEX_SECRET + "0" * (40 - len(HEX_SECRET))
+    right = "8bd66c945f7b9bb4a101cf7e79be4e181ee9c98e"
+    _git(clean_repo, "commit", "-q", "--allow-empty", "-m", f"Merge {left} into {right}")
+
+    result = _run(clean_repo, "--history")
+    assert result.returncode == 0, result.stderr
+
+
+def test_a_real_merge_commit_is_still_scanned(clean_repo: Path, hex_configured) -> None:
+    """The skip is the forge's exact template and nothing wider."""
+    _git(
+        clean_repo,
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        f"Merge branch 'topic'\n\nbrought over from {HEX_SECRET}\n",
+    )
+
+    result = _run(clean_repo, "--history")
+    assert result.returncode == 1
+    assert "(message)" in result.stderr
+
+
+def test_a_finding_names_the_commit_that_carries_it(clean_repo: Path, hex_configured) -> None:
+    """Not the newest one.
+
+    The commit scan used to split the log on NUL-NUL, a delimiter git never
+    emits, so every message arrived as a single record and every finding was
+    attributed to whichever commit happened to be at the tip. That is the
+    difference between "rewrite this commit" and "rewrite a commit you have
+    never seen".
+    """
+    _git(clean_repo, "commit", "-q", "--allow-empty", "-m", f"carries {HEX_SECRET}")
+    guilty = _git(clean_repo, "rev-parse", "HEAD").strip()
+    _git(clean_repo, "commit", "-q", "--allow-empty", "-m", "innocent tip")
+    tip = _git(clean_repo, "rev-parse", "HEAD").strip()
+
+    result = _run(clean_repo, "--history")
+    assert result.returncode == 1
+    assert guilty[:12] in result.stderr
+    assert tip[:12] not in result.stderr
