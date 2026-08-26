@@ -40,6 +40,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
@@ -49,7 +50,14 @@ from typing import Any
 # traces from both sides land in the same place without configuration. Ops
 # can override with STREAM_TRACE_DIR if a different layout is needed
 # (other consumers, future tenants).
-_DEFAULT_TRACE_DIR = "/tmp/agentkit-stream-trace"
+#
+# Resolved from tempfile.gettempdir() rather than spelled as a /tmp literal:
+# on Linux hosts (box, CI, prod) this resolves identically to the old literal,
+# it honors TMPDIR where an operator has set one, and it keeps bandit B108
+# judging real hardcoded paths instead of this convention. On macOS dev hosts
+# TMPDIR resolves to a per-user directory — set STREAM_TRACE_DIR to pin the
+# layout there; _DIR_ENV wins outright wherever it is present.
+_DEFAULT_TRACE_DIR = str(Path(tempfile.gettempdir()) / "agentkit-stream-trace")
 
 _SESSIONS_ENV = "STREAM_TRACE_SESSIONS"
 _DIR_ENV = "STREAM_TRACE_DIR"

@@ -88,6 +88,17 @@ ALLOWED_PATHS = {
 #: The author's own name, which is supposed to be here.
 AUTHOR_RE = re.compile(r"morten gulden", re.IGNORECASE)
 
+# The commit a forge fabricates to test a pull request — its message is the
+# literal "Merge <sha> into <sha>" and nothing else. It is not in this
+# repository, it is deleted when the PR closes, and no human wrote a word of
+# it, so the only thing it can ever contribute is a false positive: matching is
+# plain substring, and a blocklist term made of [0-9a-f] will eventually appear
+# inside eighty random hex characters. That is not a hypothetical — it is how
+# this check first fired, on a PR whose own tree and commits were clean, and it
+# reported a commit the author could not even fetch. Skipping it loses no
+# coverage: both its parents are scanned on their own.
+SYNTHETIC_MERGE_RE = re.compile(r"Merge [0-9a-f]{40} into [0-9a-f]{40}")
+
 #: Fields in a ``git cat-file --batch`` header line: "<sha> <type> <size>".
 #: Anything else is a "<sha> missing" style response and is skipped.
 BATCH_HEADER_FIELDS = 3
@@ -211,11 +222,21 @@ def check_history(forbidden: list[str]) -> tuple[list[str], int]:
             terms = ",".join(f"#{i}" for i in sorted(seen))
             hits.append(f"blob {sha}  [terms {terms}]")
 
-    messages = _git("log", "--all", "--format=%H%x00%B%x00")
-    for record in messages.split("\x00\x00"):
+    # %x1e (ASCII record separator) delimits commits, not %x00. git log ends
+    # every record with a newline of its own, so a NUL-NUL delimiter never
+    # appears: the whole log arrived as ONE record, every message was scanned
+    # as one blob of text, and the SHA printed beside a finding was simply the
+    # newest commit in the repository. The check still fired — it just named a
+    # commit that had nothing to do with it, and on a pull request that is the
+    # forge's fabricated merge, which the author cannot fetch, let alone
+    # rewrite. Found 2026-08-27 while chasing exactly that report.
+    messages = _git("log", "--all", "--format=%H%x00%B%x1e")
+    for record in messages.split("\x1e"):
         if "\x00" not in record:
             continue
         commit, _, body = record.strip().partition("\x00")
+        if SYNTHETIC_MERGE_RE.fullmatch(body.strip()):
+            continue
         seen = {idx for _ln, idx in scan_text(body, forbidden)}
         if seen:
             terms = ",".join(f"#{i}" for i in sorted(seen))
