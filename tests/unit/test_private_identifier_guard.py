@@ -226,3 +226,103 @@ def test_a_finding_names_the_commit_that_carries_it(clean_repo: Path, hex_config
     assert result.returncode == 1
     assert guilty[:12] in result.stderr
     assert tip[:12] not in result.stderr
+
+
+def _plant_clean_content(repo: Path) -> None:
+    """A tracked file whose CONTENT is clean, planted under a bad NAME."""
+    docs = repo / "docs"
+    docs.mkdir()
+    (docs / f"{SECRET}-notes.md").write_text("clean prose\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "add docs")
+
+
+def test_a_private_name_in_a_tracked_path_fails(repo: Path, configured) -> None:
+    """The forge publishes a branch's file tree; the content scans never look at paths.
+
+    This is how one survived: its file's content was scrubbed and pushed while
+    the filename itself stayed, and every scan read only what was inside.
+    """
+    _plant_clean_content(repo)
+
+    result = _run(repo)
+    assert result.returncode == 1
+    lines = [line.strip() for line in result.stderr.splitlines()]
+    assert any(line.startswith("path ") for line in lines)
+    assert "[terms #0]" in result.stderr
+    assert SECRET not in result.stdout + result.stderr
+
+
+def test_the_scope_line_counts_ref_names_too(repo: Path, configured) -> None:
+    _plant_clean_content(repo)
+
+    result = _run(repo)
+    assert ", ref names)" in result.stdout + result.stderr or "ref names)" in result.stderr
+
+
+@pytest.mark.parametrize("mode", [(), ("--history",)])
+def test_a_private_name_in_a_local_ref_fails(repo: Path, configured, mode) -> None:
+    """Branch and tag lists are public. Local heads/tags are still fixable."""
+    _git(repo, "branch", f"feature-{SECRET}")
+    _git(repo, "tag", f"v1-{SECRET}")
+
+    result = _run(repo, *mode)
+    assert result.returncode == 1
+    lines = [line.strip() for line in result.stderr.splitlines()]
+    labels = [line for line in lines if line.startswith("ref name ")]
+    assert len(labels) == 2, "one local branch and one tag"
+    for line in labels:
+        assert "[terms #0]" in line
+        assert SECRET not in line, "the name must not echo, ever"
+
+
+def _benign_repo(tmp_path: Path) -> Path:
+    """A repo with no bad content anywhere; name findings only."""
+    r = tmp_path / "benign"
+    r.mkdir()
+    _git(r, "init", "-q", "-b", "main")
+    (r / "app.py").write_text("X = 1\n", encoding="utf-8")
+    _git(r, "add", "app.py")
+    _git(r, "commit", "-qm", "base")
+    return r
+
+
+def test_an_inherited_remote_tracking_ref_warns_but_does_not_block(
+    tmp_path: Path, configured
+) -> None:
+    """refs/remotes/** is already public and fixing it is the maintainer's call.
+
+    Wiring those to turn CI red would re-create the permanent red-dot failure
+    this whole guard exists to end: an advisory that says 'stale backlog' and
+    clears on its own as cleanup lands, without breaking every PR meanwhile.
+    """
+    repo = _benign_repo(tmp_path)
+    _git(repo, "update-ref", f"refs/remotes/origin/{SECRET}-release", "HEAD")
+
+    result = _run(repo)
+    assert result.returncode == 0, "warnings must not fail CI"
+    assert "ok — no blocking private identifiers" in result.stdout
+    lines = [line.strip() for line in result.stderr.splitlines()]
+    warning = [line for line in lines if line.startswith("WARNING ref name ")]
+    assert len(warning) == 1
+    assert "[terms #0]" in warning[0]
+    assert SECRET not in result.stdout + result.stderr
+
+
+def test_verbose_unmasks_name_surfaces_locally_only(
+    repo: Path, configured, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Default output masks; --verbose prints raw names for list-holders locally.
+
+    Whoever holds the blocklist may see the offending names — on their own
+    terminal. CI logs are public, so CI must never run with this on.
+    """
+    _plant_clean_content(repo)
+
+    masked = _run(repo)
+    assert SECRET not in masked.stdout + masked.stderr
+
+    monkeypatch.setenv("AGENTKIT_GUARD_VERBOSE", "1")
+    verbose = _run(repo)
+    assert verbose.returncode == 1
+    assert f"{SECRET}-notes.md" in verbose.stderr
