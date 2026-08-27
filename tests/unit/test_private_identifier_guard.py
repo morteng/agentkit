@@ -17,6 +17,7 @@ proves nothing about a caller that never reaches it.
 from __future__ import annotations
 
 import importlib.util
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -326,3 +327,111 @@ def test_verbose_unmasks_name_surfaces_locally_only(
     verbose = _run(repo)
     assert verbose.returncode == 1
     assert f"{SECRET}-notes.md" in verbose.stderr
+
+
+def _published_scrubbed_fixture(tmp_path: Path) -> Path:
+    """A tag whose tree carries an offending PATH whose CONTENT is clean.
+
+    This is the shape of the real leak: somebody scrubbed the file and pushed,
+    leaving only the name behind. Blobs are pathless, so only a tree walk can
+    see this — the branch itself was deleted, exactly like a rewritten source.
+    """
+    r = tmp_path / "pub"
+    r.mkdir()
+    _git(r, "init", "-q", "-b", "main")
+    (r / "app.py").write_text("X = 1\n", encoding="utf-8")
+    _git(r, "add", "app.py")
+    _git(r, "commit", "-qm", "base")
+    _git(r, "checkout", "-qb", "side")
+    docs = r / "docs"
+    docs.mkdir()
+    (docs / f"{SECRET}-notes.md").write_text("clean prose\n", encoding="utf-8")
+    _git(r, "add", "-A")
+    _git(r, "commit", "-qm", "side commit")
+    _git(r, "tag", "leaky-side")
+    _git(r, "checkout", "-q", "main")
+    _git(r, "branch", "-qD", "side")
+    return r
+
+
+def test_a_scrubbed_published_tree_is_reported_even_when_content_is_clean(
+    tmp_path: Path, configured
+) -> None:
+    """Blobs carry no path: without this walk the motivating finding is invisible."""
+    repo = _published_scrubbed_fixture(tmp_path)
+
+    result = _run(repo, "--history")
+    assert result.returncode == 0, "published trees warn, they never block"
+    assert "ok — no blocking private identifiers" in result.stdout
+    assert re.search(r"\d+/\d+ ref trees read \(\d+ paths\)", result.stdout)
+    lines = [line.strip() for line in result.stderr.splitlines()]
+    warning = [line for line in lines if line.startswith("WARNING path ")]
+    assert len(warning) == 1
+    assert "[terms #0]" in warning[0]
+    assert re.search(r"in 1 of \d+ readable refs", warning[0])
+    assert SECRET not in result.stdout + result.stderr
+
+
+def test_an_unreadable_ref_is_counted_and_flagged_never_clean(tmp_path: Path, configured) -> None:
+    """The measuring bug twice over: resolution failures read like clean scans.
+
+    A ref may exist yet not resolve (here: pointing at a blob). If resolver or
+    ls-tree errors were folded into empty-success, every such ref would silently
+    scan clean and the published exposure would be undercounted by instrument.
+    """
+    repo = _benign_repo(tmp_path)
+    # A ref that EXISTS and points at an existing object of the wrong type
+    # (a blob): for-each-ref publishes it, rev-parsing its commit fails.
+    # Written through update-ref like any real-world truncated push leaves.
+    proc = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input="junk",
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    _git(repo, "update-ref", f"refs/remotes/origin/{SECRET}-ghost", proc.stdout.strip())
+
+    result = _run(repo, "--history")
+    assert result.returncode == 0
+    combined = result.stdout + result.stderr
+    assert "NOT counted as clean" in combined
+    assert ", 1 unreadable" in result.stdout
+    assert re.search(r"1/2 ref trees read", result.stdout), (
+        "attempted must exceed resolved when a ref cannot be read"
+    )
+    assert SECRET not in combined
+
+
+def test_verbose_lists_the_raw_scrubbed_path_and_its_contributing_refs(
+    tmp_path: Path, configured, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _published_scrubbed_fixture(tmp_path)
+
+    masked = _run(repo, "--history")
+    assert f"{SECRET}-notes.md" not in masked.stdout + masked.stderr
+    assert "leaky-side" not in masked.stdout + masked.stderr
+
+    monkeypatch.setenv("AGENTKIT_GUARD_VERBOSE", "1")
+    verbose = _run(repo, "--history")
+    assert verbose.returncode == 0
+    err = verbose.stderr
+    assert f"{SECRET}-notes.md" in err, "the offending path unmasks locally"
+    assert "refs/tags/leaky-side" in err, "and each contributing ref is listed"
+
+
+def test_resolver_and_tree_reader_failures_are_never_folded_into_success(
+    tmp_path: Path, configured
+) -> None:
+    """Unit-level lock on the resolution trap.
+
+    The e2e warnings only fire if these two primitives keep their failure
+    contract. Swallowing either one back into empty-success recreates the
+    measuring-instrument bug that undercounted the published exposure twice:
+    an unresolvable ref reading exactly like a clean scan.
+    """
+    _benign_repo(tmp_path)  # chdirs; the return value is unused in this test
+    assert guard._resolve_commit("refs/heads/does-not-exist") is None
+    ok, paths = guard._tree_paths("0" * 40)
+    assert ok is False and paths == []
