@@ -431,7 +431,7 @@ def test_resolver_and_tree_reader_failures_are_never_folded_into_success(
     measuring-instrument bug that undercounted the published exposure twice:
     an unresolvable ref reading exactly like a clean scan.
     """
-    repo = _benign_repo(tmp_path)
+    _benign_repo(tmp_path)  # chdirs; the return value is unused in this test
     assert guard._resolve_commit("refs/heads/does-not-exist") is None
     ok, paths = guard._tree_paths("0" * 40)
     assert ok is False and paths == []
