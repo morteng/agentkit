@@ -49,6 +49,31 @@ Two properties this file learned the hard way, on 2026-08-16:
    still served. `--history` is the mode that answers the question the guard's
    name implies, and CI runs it on main.
 
+3. THE NAMES OF THINGS ARE PUBLISHED TOO. A tracked file's path shows in the
+   forge's file tree of any branch, and a ref name shows in the branch list and
+   in every CI log that prints a checkout or a status. The two content scans
+   above never look at either surface, which is exactly how a filename survived:
+   its content was scrubbed and pushed by someone who had every reason to
+   believe they were done — the passing guard was their evidence. Measured on
+   2026-08-27 against the real blocklist: one distinct bad filename across all
+   remote refs, and one ref carrying a term outright. The guard now reads path
+   names and ref names alongside everything else.
+
+   A name finding needs stricter masking than a content finding, because the
+   offending string IS what would normally be printed as the location label.
+   So these findings print an opaque sha256 prefix of the name plus term
+   indices; --verbose unmasks locally only (never set it in CI), so whoever
+   holds the list can resolve labels to files. Severity follows control:
+   tracked paths and local branches/tags block — renaming takes seconds and
+   they have not left the machine yet. refs/remotes/** warns but does not fail,
+   because that namespace is already public and fixing it is the maintainer's
+   call, not CI's; a detector wired to turn those red re-creates the permanent
+   red-dot problem this file exists to end. The warnings vanish on their own as
+   the backlog gets cleaned. There is deliberately no ALLOWED_REFS, for the
+   same reason ALLOWED_PATHS's empty space matters: nothing functional can
+   require a private identifier inside a ref name, so allowlisting stays the
+   expensive option.
+
 Scope note: the maintainer's own name (LICENSE, NOTICE, pyproject author) and
 the contact address in SECURITY.md / CODE_OF_CONDUCT.md are deliberate. The
 author's name is stripped from each line before matching, so a surname that is
@@ -58,6 +83,7 @@ also part of a forbidden domain does not trip on its own.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import re
 import subprocess
@@ -107,6 +133,10 @@ BATCH_HEADER_FIELDS = 3
 #: hundreds of blobs saying the same thing; the count below is the real signal.
 MAX_REPORTED = 200
 
+#: Local-only unmasking for the name surfaces (see principle 3). CI must never
+#: set this: verbose output contains the raw offending paths and ref names.
+VERBOSE_ENV = "AGENTKIT_GUARD_VERBOSE"
+
 
 def load_forbidden() -> list[str]:
     """Lowercased substrings that must not appear in tracked files.
@@ -138,20 +168,52 @@ def scan_text(text: str, forbidden: list[str]) -> list[tuple[int, int]]:
     """(1-based line number, blocklist index) for every match in ``text``."""
     found: list[tuple[int, int]] = []
     for lineno, line in enumerate(text.splitlines(), 1):
-        # Strip the author's name first so a surname that also appears inside a
-        # forbidden domain never trips on its own.
-        probe = AUTHOR_RE.sub("", line).lower()
+        probe = _probe(line)
         for idx, needle in enumerate(forbidden):
             if needle in probe:
                 found.append((lineno, idx))
     return found
 
 
-def check_worktree(forbidden: list[str]) -> tuple[list[str], int]:
+def _probe(line: str) -> str:
+    """The author's name stripped, then lowercased — shared by every surface."""
+    return AUTHOR_RE.sub("", line).lower()
+
+
+def _hit_indices(name: str, forbidden: list[str]) -> set[int]:
+    """Blocklist indices whose term appears inside a *name* (path or ref)."""
+    probe = _probe(name)
+    return {i for i, needle in enumerate(forbidden) if needle in probe}
+
+
+def _masked_label(verbose: bool, name: str) -> str:
+    """The name itself when unmasking locally; otherwise a stable sha256 prefix.
+
+    For these surfaces the offending string is also the natural location label,
+    so printing it verbatim would publish exactly what the guard exists to
+    protect. A short hash keeps repeat local runs correlatable at zero cost to
+    anonymity.
+    """
+    if verbose:
+        return name
+    return hashlib.sha256(name.encode()).hexdigest()[:12]
+
+
+def check_worktree(forbidden: list[str], verbose: bool = False) -> tuple[list[str], int]:
     """Scan the files git currently tracks. Fast; what pre-commit wants."""
     files = [line for line in _git("ls-files").splitlines() if line]
     hits: list[str] = []
     for path in files:
+        # Name first, BEFORE the allowlist skip: ALLOWED_PATHS permits deliberate
+        # prose inside listed files, never a forbidden token embedded in a path.
+        seen_names = _hit_indices(path, forbidden)
+        if seen_names:
+            terms = ",".join(f"#{i}" for i in sorted(seen_names))
+            hits.append(f"path {_masked_label(verbose, path)}  [terms {terms}]")
+            # Scanning this file's content too would echo the offending path
+            # through the `path:lineno` label below. The name finding already
+            # carries everything this report may say about the file.
+            continue
         if path in ALLOWED_PATHS:
             continue
         try:
@@ -161,6 +223,39 @@ def check_worktree(forbidden: list[str]) -> tuple[list[str], int]:
         for lineno, idx in scan_text(text, forbidden):
             hits.append(f"{path}:{lineno}  [term #{idx}]")
     return hits, len(files)
+
+
+def check_ref_names(
+    forbidden: list[str], verbose: bool = False
+) -> tuple[list[str], list[str], int]:
+    """Scan ref names: the forge publishes them in branch/tag lists and logs.
+
+    Returns (blocking_hits, warnings, refs_scanned). Blocking covers the
+    namespaces the author still controls (local heads and tags); anything under
+    refs/remotes/** has already left every machine behind it, so it warns
+    without failing CI — see principle 3 for why this split exists.
+    """
+    refs = [r for r in _git("for-each-ref", "--format=%(refname)").splitlines() if r]
+    hits: list[str] = []
+    warnings: list[str] = []
+    for refname in refs:
+        short = refname
+        for prefix in ("refs/heads/", "refs/remotes/", "refs/tags/"):
+            if short.startswith(prefix):
+                short = short[len(prefix) :]
+                break
+        seen = _hit_indices(short, forbidden)
+        if not seen:
+            continue
+        terms = ",".join(f"#{i}" for i in sorted(seen))
+        where = _masked_label(verbose, refname)
+        if refname.startswith(("refs/heads/", "refs/tags/")):
+            hits.append(f"ref name {where}  [terms {terms}]")
+        else:
+            warnings.append(
+                f"WARNING ref name {where} (remote namespace; maintainer's call)  [terms {terms}]"
+            )
+    return hits, warnings, len(refs)
 
 
 def _all_blobs() -> list[str]:
@@ -252,6 +347,12 @@ def main() -> int:
         help="scan every blob and commit message in the object database, "
         "not just the files currently tracked",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="unmask name-surface findings locally (paths, ref names). Never "
+        f"set this in CI; env equivalent: {VERBOSE_ENV}=1",
+    )
     args = parser.parse_args()
 
     forbidden = load_forbidden()
@@ -268,15 +369,34 @@ def main() -> int:
         )
         return 0
 
+    verbose = args.verbose or os.environ.get(VERBOSE_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
     if args.history:
-        hits, scanned = check_history(forbidden)
-        scope = f"{scanned} blobs in history"
+        hits, blobs = check_history(forbidden)
+        scope = f"{blobs} blobs in history"
     else:
-        hits, scanned = check_worktree(forbidden)
-        scope = f"{scanned} tracked files"
+        hits, files = check_worktree(forbidden, verbose=verbose)
+        scope = f"{files} tracked files"
+
+    ref_hits, ref_warnings, n_refs = check_ref_names(forbidden, verbose=verbose)
+    hits = hits + ref_hits
+    scope = f"{scope}, {n_refs} ref names"
 
     if not hits:
-        print(f"ok — no private identifiers in {scope}")
+        if ref_warnings:
+            print(
+                f"ok — no blocking private identifiers in {scope}; "
+                f"{len(ref_warnings)} inherited remote-ref warning(s) below"
+            )
+        else:
+            print(f"ok — no private identifiers in {scope}")
+        for warning in ref_warnings[:MAX_REPORTED]:
+            print(f"  {warning}", file=sys.stderr)
         return 0
 
     # Locations and term indices only. Never the term, never the matching line:
@@ -286,12 +406,21 @@ def main() -> int:
         print(f"  {hit}", file=sys.stderr)
     if len(hits) > MAX_REPORTED:
         print(f"  ... and {len(hits) - MAX_REPORTED} more", file=sys.stderr)
+    for warning in ref_warnings[:MAX_REPORTED]:
+        print(f"  {warning}", file=sys.stderr)
+    if len(ref_warnings) > MAX_REPORTED:
+        print(f"  ... and {len(ref_warnings) - MAX_REPORTED} more", file=sys.stderr)
     print(
         f"\n{len(hits)} hit(s). This repo is publishable; those names are not.\n"
         "Term indices are positions in your blocklist file — resolve them locally,\n"
         'with `sed -n "$((N+1))p"` against it. They are printed instead of the words\n'
         "because this output is public whenever CI is.\n"
         "For a blob, `git log --all --find-object=<sha>` names the commits and path.\n"
+        "`path <hash>` / `ref name <hash>` findings are sha256 prefixes of the\n"
+        "offending name (the name itself would be the leak). Rerun locally with\n"
+        "--verbose to unmask them; CI must never do that. Remote-namespace ref\n"
+        "warnings are the inherited backlog: fixing them is the maintainer's call,\n"
+        "not this check's.\n"
         "Keep the lesson, drop the identity: say 'a downstream consumer', not\n"
         "which one. If a hit is legitimate, add its path to ALLOWED_PATHS in\n"
         "scripts/check_no_private_identifiers.py and say why in the commit message.\n"
