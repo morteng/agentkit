@@ -74,6 +74,20 @@ Two properties this file learned the hard way, on 2026-08-16:
    require a private identifier inside a ref name, so allowlisting stays the
    expensive option.
 
+   And what sits INSIDE published trees: blobs are pathless, so history-mode
+   content findings can say that a term exists but never where it lived. In
+   --history mode the guard therefore also walks every ref's tree via ls-tree,
+   reporting offending path NAMES as warnings. Severity is warn-only because
+   this surface is inherited public state (45 of 59 measured on 2026-08-27
+   carry one filename whose content was already scrubbed; removal is the
+   maintainer's call); findings clear as cleanup lands instead of redden ing
+   main forever. This walk carries its own hard rule learned from that
+   measurement, twice miscounted by an instrument that swallowed resolver and
+   ls-tree failures as "clean": every ref is rev-parsed BEFORE use, a failed
+   resolution or tree read produces a WARNING saying NOT counted as clean,
+   stderr is captured rather than discarded, and attempted/resolved/path counts
+   are printed so absence is always distinguishable from coverage.
+
 Scope note: the maintainer's own name (LICENSE, NOTICE, pyproject author) and
 the contact address in SECURITY.md / CODE_OF_CONDUCT.md are deliberate. The
 author's name is stripped from each line before matching, so a surname that is
@@ -258,6 +272,98 @@ def check_ref_names(
     return hits, warnings, len(refs)
 
 
+def _resolve_commit(refname: str) -> str | None:
+    """Rev-parse a ref to the commit it names; None means unreadable."""
+    proc = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{refname}^{{commit}}"],
+        capture_output=True,
+        text=True,
+        check=False,  # non-zero IS the signal here; nothing is swallowed
+    )
+    if proc.returncode != 0:
+        # Deliberately NOT swallowed-as-empty: the caller warns + counts this.
+        return None
+    return proc.stdout.strip()
+
+
+def _tree_paths(rev: str) -> tuple[bool, list[str]]:
+    """Every path in a commit's tree. False => ls-tree failed loudly-not-cleanly.
+
+    Returncode decides; stderr is captured for humans if needed and NEVER
+    discarded into /dev/null. A false is reported upstream as unreadable —
+    folding it to an empty success would make an unresolvable ref read exactly
+    like a clean scan, which is how the real exposure got undercounted twice.
+    """
+    proc = subprocess.run(
+        ["git", "ls-tree", "-r", "--name-only", rev],
+        capture_output=True,
+        text=True,
+        check=False,  # non-zero IS the signal here; nothing is swallowed
+    )
+    if proc.returncode != 0:
+        return False, []
+    return True, [p for p in proc.stdout.splitlines() if p]
+
+
+def _print_warnings(warnings: list[str]) -> None:
+    """Opaque warning lines, truncated like findings; this output is public."""
+    for warning in warnings[:MAX_REPORTED]:
+        print(f"  {warning}", file=sys.stderr)
+    if len(warnings) > MAX_REPORTED:
+        print(f"  ... and {len(warnings) - MAX_REPORTED} more", file=sys.stderr)
+
+
+def check_published_trees(
+    forbidden: list[str], verbose: bool = False
+) -> tuple[list[str], int, int, int, int]:
+    """--history companion: scan EVERY ref's file tree for offending path names.
+
+    Returns (warnings, refs_attempted, refs_resolved, refs_unreadable,
+    paths_examined). Offending paths are aggregated per distinct name so a
+    leak spread across many refs prints once with its reach count instead of
+    hundreds of lines saying the same thing; verbose detail lines list each
+    contributing ref. Everything here warns — see principle 3 — but coverage
+    is always explicit: {resolved}/{attempted} trees read, path total shown,
+    unreadable refs flagged individually, never folded into 'clean'.
+    """
+    refs = [r for r in _git("for-each-ref", "--format=%(refname)").splitlines() if r]
+    attempted = len(refs)
+    resolved = unreadable = 0
+    paths_examined = 0
+    warnings: list[str] = []
+    agg: dict[str, dict] = {}
+    for refname in refs:
+        rev = _resolve_commit(refname)
+        ok, paths = (False, []) if rev is None else _tree_paths(rev)
+        if not ok:
+            unreadable += 1
+            warnings.append(
+                f"WARNING ref unreadable {_masked_label(verbose, refname)} "
+                f"(resolver or ls-tree failed; NOT counted as clean)"
+            )
+            continue
+        resolved += 1
+        paths_examined += len(paths)
+        for path in paths:
+            idxs = _hit_indices(path, forbidden)
+            if not idxs:
+                continue
+            entry = agg.setdefault(path.lower(), {"refs": set(), "indices": set(), "count": 0})
+            entry["indices"].update(idxs)
+            entry["refs"].add(_masked_label(verbose, refname))
+            entry["count"] += 1
+    for key, entry in sorted(agg.items()):
+        terms = ",".join(f"#{i}" for i in sorted(entry["indices"]))
+        where = _masked_label(verbose, key)
+        line = (
+            f"WARNING path {where}  [terms {terms}] in {entry['count']} of {resolved} readable refs"
+        )
+        if verbose:
+            line += ": " + ", ".join(sorted(entry["refs"]))
+        warnings.append(line)
+    return warnings, attempted, resolved, unreadable, paths_examined
+
+
 def _all_blobs() -> list[str]:
     """Every blob in the object database, reachable or not.
 
@@ -294,7 +400,17 @@ def _read_blobs(shas: list[str]) -> list[tuple[str, bytes]]:
     return out
 
 
-def check_history(forbidden: list[str]) -> tuple[list[str], int]:
+def _unmask_requested(args) -> bool:
+    """--verbose or AGENTKIT_GUARD_VERBOSE; locals only, CI must never set it."""
+    return args.verbose or os.environ.get(VERBOSE_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def check_history(forbidden: list[str]) -> tuple[list[str], int, bool]:
     """Scan every blob and every commit message in the object database.
 
     Deliberately blob-oriented rather than commit-oriented: a blob shared by
@@ -302,6 +418,10 @@ def check_history(forbidden: list[str]) -> tuple[list[str], int]:
     read. Blobs carry no path, which is why findings name the object — and
     ``git log --all --find-object=<sha>`` turns that back into a path locally,
     for whoever is allowed to know.
+
+    Returns (hits, blobs_scanned, message_sweep_skipped). A single unreadable
+    ref makes `git log --all` refuse outright (exit 128); that must degrade the
+    sweep loudly — flagged True, never swallowed into a fake-clean exit code.
     """
     hits: list[str] = []
     blobs = _all_blobs()
@@ -325,7 +445,14 @@ def check_history(forbidden: list[str]) -> tuple[list[str], int]:
     # commit that had nothing to do with it, and on a pull request that is the
     # forge's fabricated merge, which the author cannot fetch, let alone
     # rewrite. Found 2026-08-27 while chasing exactly that report.
-    messages = _git("log", "--all", "--format=%H%x00%B%x1e")
+    try:
+        messages = _git("log", "--all", "--format=%H%x00%B%x1e")
+        message_sweep_skipped = False
+    except subprocess.CalledProcessError:
+        # One unreadable ref must not zero out history coverage silently.
+        messages = ""
+        message_sweep_skipped = True
+
     for record in messages.split("\x1e"):
         if "\x00" not in record:
             continue
@@ -336,7 +463,7 @@ def check_history(forbidden: list[str]) -> tuple[list[str], int]:
         if seen:
             terms = ",".join(f"#{i}" for i in sorted(seen))
             hits.append(f"commit {commit[:12]} (message)  [terms {terms}]")
-    return hits, len(blobs)
+    return hits, len(blobs), message_sweep_skipped
 
 
 def main() -> int:
@@ -369,34 +496,43 @@ def main() -> int:
         )
         return 0
 
-    verbose = args.verbose or os.environ.get(VERBOSE_ENV, "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    verbose = _unmask_requested(args)
+
+    warnings: list[str] = []
 
     if args.history:
-        hits, blobs = check_history(forbidden)
+        hits, blobs, msgs_skipped = check_history(forbidden)
         scope = f"{blobs} blobs in history"
+        if msgs_skipped:
+            warnings.append(
+                "WARNING commit-message sweep skipped (git log --all hit an "
+                "unreadable ref); NOT counted as covered"
+            )
+        tree_warnings, attempted, resolved, unreadable, n_paths = check_published_trees(
+            forbidden, verbose=verbose
+        )
+        warnings += tree_warnings
+        scope += f", {resolved}/{attempted} ref trees read ({n_paths} paths)"
+        if unreadable:
+            scope += f", {unreadable} unreadable"
     else:
         hits, files = check_worktree(forbidden, verbose=verbose)
         scope = f"{files} tracked files"
 
-    ref_hits, ref_warnings, n_refs = check_ref_names(forbidden, verbose=verbose)
+    ref_hits, ref_name_warnings, n_refs = check_ref_names(forbidden, verbose=verbose)
     hits = hits + ref_hits
     scope = f"{scope}, {n_refs} ref names"
+    warnings += ref_name_warnings
 
     if not hits:
-        if ref_warnings:
+        if warnings:
             print(
                 f"ok — no blocking private identifiers in {scope}; "
-                f"{len(ref_warnings)} inherited remote-ref warning(s) below"
+                f"{len(warnings)} inherited public-state warning(s) below"
             )
         else:
             print(f"ok — no private identifiers in {scope}")
-        for warning in ref_warnings[:MAX_REPORTED]:
-            print(f"  {warning}", file=sys.stderr)
+        _print_warnings(warnings)
         return 0
 
     # Locations and term indices only. Never the term, never the matching line:
@@ -406,10 +542,7 @@ def main() -> int:
         print(f"  {hit}", file=sys.stderr)
     if len(hits) > MAX_REPORTED:
         print(f"  ... and {len(hits) - MAX_REPORTED} more", file=sys.stderr)
-    for warning in ref_warnings[:MAX_REPORTED]:
-        print(f"  {warning}", file=sys.stderr)
-    if len(ref_warnings) > MAX_REPORTED:
-        print(f"  ... and {len(ref_warnings) - MAX_REPORTED} more", file=sys.stderr)
+    _print_warnings(warnings)
     print(
         f"\n{len(hits)} hit(s). This repo is publishable; those names are not.\n"
         "Term indices are positions in your blocklist file — resolve them locally,\n"
@@ -420,7 +553,9 @@ def main() -> int:
         "offending name (the name itself would be the leak). Rerun locally with\n"
         "--verbose to unmask them; CI must never do that. Remote-namespace ref\n"
         "warnings are the inherited backlog: fixing them is the maintainer's call,\n"
-        "not this check's.\n"
+        "not this check's. Tree-path warnings aggregate per distinct name with\n"
+        "their reach count; `ref trees read` coverage is printed with the scope\n"
+        "so nothing can pass silently unreadable.\n"
         "Keep the lesson, drop the identity: say 'a downstream consumer', not\n"
         "which one. If a hit is legitimate, add its path to ALLOWED_PATHS in\n"
         "scripts/check_no_private_identifiers.py and say why in the commit message.\n"
