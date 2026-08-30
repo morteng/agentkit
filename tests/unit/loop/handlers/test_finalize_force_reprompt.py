@@ -184,3 +184,64 @@ async def test_streaming_force_flag_without_finalize_tool_falls_back_to_auto():
     assert provider.last_request is not None
     assert provider.last_request.tool_choice == "auto"
     assert "force_finalize_tool_choice" not in ctx.metadata
+
+
+@pytest.mark.asyncio
+async def test_the_forced_tool_must_be_one_the_request_actually_offers():
+    """A `tool_selector` that drops the finalize tool must not leave the
+    request naming it.
+
+    The name used to be resolved from the REGISTRY while the request was built
+    from whatever the selector left, so the two could disagree. A payload whose
+    `tool_choice` names a tool absent from its own `tools` list is rejected or
+    ignored by providers — and the flag has already been popped, so nothing
+    tries again. The re-prompt budget is then spent on an unconstrained turn
+    that is indistinguishable, from the outside, from a forced turn the model
+    ignored.
+
+    Asserted on what the provider RECEIVED, because the flag and the registry
+    both look correct in the failing case; only the request disagrees.
+    """
+    provider = _CapturingProvider()
+    provider.script(FakeProvider.text("ok"))
+    ctx = TurnContext.empty()
+    ctx.add_message(_user("finalize now"))
+    ctx.event_queue = asyncio.Queue()
+    ctx.metadata["force_finalize_tool_choice"] = True
+    deps = _streaming_deps(provider)
+    # The registry still HAS the finalize tool. The selector does not offer it.
+    deps["tool_selector"] = lambda _ctx, _specs: []
+
+    await handle_streaming(ctx, deps)
+
+    assert provider.last_request is not None
+    assert provider.last_request.tool_choice == "auto", (
+        "tool_choice named a tool the request does not carry"
+    )
+    assert provider.last_request.tools == []
+    assert "force_finalize_tool_choice" not in ctx.metadata
+
+
+@pytest.mark.asyncio
+async def test_a_selector_that_keeps_finalize_still_forces_it():
+    """Control for the test above.
+
+    Without this, "tool_choice is auto whenever a selector is installed" would
+    satisfy it, and the fix would be indistinguishable from switching the
+    forcing off for every consumer that uses a selector at all.
+    """
+    provider = _CapturingProvider()
+    provider.script(FakeProvider.text("ok"))
+    ctx = TurnContext.empty()
+    ctx.add_message(_user("finalize now"))
+    ctx.event_queue = asyncio.Queue()
+    ctx.metadata["force_finalize_tool_choice"] = True
+    deps = _streaming_deps(provider)
+    deps["tool_selector"] = lambda _ctx, specs: list(specs)
+
+    await handle_streaming(ctx, deps)
+
+    assert provider.last_request is not None
+    assert isinstance(provider.last_request.tool_choice, NamedToolChoice)
+    assert provider.last_request.tool_choice.name == "kit.finalize"
+    assert [t.name for t in provider.last_request.tools] == ["kit.finalize"]

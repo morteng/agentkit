@@ -37,13 +37,14 @@ from agentkit.loop.stream_mux import StreamMux
 from agentkit.providers.base import NamedToolChoice, ProviderRequest
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Sequence
 
     from agentkit.events.base import BaseEvent
     from agentkit.guards.success_claim import SuccessClaimGuard
     from agentkit.loop.message_builder import MessageBuilder
     from agentkit.providers.base import Provider
     from agentkit.tools.registry import ToolRegistry
+    from agentkit.tools.spec import ToolSpec
 
 
 log = get_logger(__name__)
@@ -65,14 +66,26 @@ _CLAIM_CORRECTION_TEMPLATE = (
 )
 
 
-def _finalize_tool_name(registry: "ToolRegistry") -> str | None:
-    """Resolve the finalize tool's fully-qualified name from the registry.
+def _finalize_tool_name(specs: "Sequence[ToolSpec]") -> str | None:
+    """Resolve the finalize tool's fully-qualified name from the specs OFFERED.
 
-    Returns None when no finalize tool is registered (consumer opted out), so
-    the caller falls back to an unconstrained re-prompt rather than forcing a
-    tool that does not exist.
+    Returns None when no finalize tool is among them, so the caller falls back
+    to an unconstrained re-prompt rather than forcing a tool the request does
+    not carry.
+
+    ``specs``, not the registry, and the distinction is the bug this signature
+    exists to prevent. The request is built from whatever the per-turn
+    ``tool_selector`` left, which may be a subset of the registry or empty. A
+    name resolved from the registry can therefore name a tool that is not in
+    ``payload["tools"]`` — which providers reject or ignore — and if the
+    selector returned nothing at all the builder omits ``tool_choice``
+    entirely, because it is only emitted alongside tools. Either way the
+    forcing silently does not happen, and the flag has already been popped, so
+    there is no second attempt: the re-prompt budget is spent on an
+    unconstrained turn that looks from the outside exactly like a forced one
+    the model ignored.
     """
-    for spec in registry.list_specs():
+    for spec in specs:
         if spec.name.split(".", 1)[-1] in _FINALIZE_BARE_NAMES:
             return spec.name
     return None
@@ -106,7 +119,11 @@ def _build_stream_request(
         model_override=model_override,
     )
     if ctx.metadata.pop("force_finalize_tool_choice", False):
-        finalize_name = _finalize_tool_name(registry)
+        # `available_specs`, which is what the request actually carries — see
+        # `_finalize_tool_name`. Resolving from the registry here would let a
+        # tool_selector produce a request whose tool_choice names a tool its
+        # own `tools` list does not contain.
+        finalize_name = _finalize_tool_name(available_specs)
         if finalize_name is not None:
             request.tool_choice = NamedToolChoice(name=finalize_name)
     return request
