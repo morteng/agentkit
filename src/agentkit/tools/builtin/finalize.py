@@ -61,6 +61,14 @@ from agentkit.tools.spec import (
     ToolSpec,
 )
 
+# The bare (namespace-stripped) names a finalize tool may register under.
+# Lives here, beside the tool, because two independent places need to recognise
+# a finalize tool among arbitrary specs: `loop.handlers.streaming` when it
+# constrains a re-prompt turn to it, and `loop.handlers.finalize_check` when it
+# reads this spec's `required` list to tell the model what to send. A second
+# copy of this tuple would be a third thing to keep in step with the schema.
+FINALIZE_BARE_NAMES = ("finalize_response", "finalize")
+
 _PREAMBLE = (
     "Signal that you have completed the user's request. "
     "Only call this once you have actually invoked the tools needed to "

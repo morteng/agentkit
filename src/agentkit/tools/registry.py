@@ -13,7 +13,7 @@ import asyncio
 import contextlib
 import time
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
 from agentkit._logging import get_logger
 from agentkit.errors import ToolError as ToolErr
@@ -254,6 +254,21 @@ class ToolRegistry:
             problems = validate_tool_arguments(spec.parameters, call.arguments)
             if problems:
                 msg = invalid_arguments_message(call.name, problems)
+                # The only one of the three gates above that used to return in
+                # silence, which made a schema-rejected call the one refusal
+                # with no trace anywhere: not in the logs, and not in the
+                # persisted messages either, because the store records tool_use
+                # arguments as null. `problems` names argument keys and types,
+                # never their values, so it is safe to log.
+                log.warning("tool_call_invalid_arguments", tool=call.name, problems=problems)
+                # Recorded on the turn as well as logged: a caller downstream
+                # may need to tell "the model never called this tool" from "the
+                # model called it and we refused" — for the finalize tool those
+                # are opposite situations that both leave `finalize_called`
+                # False, since this gate runs before the handler that sets it.
+                rejected = ctx.metadata.setdefault("invalid_argument_calls", {})
+                if isinstance(rejected, dict):
+                    cast("dict[str, str]", rejected)[call.name] = msg
                 return ToolResult(
                     call_id=call.id,
                     status="error",

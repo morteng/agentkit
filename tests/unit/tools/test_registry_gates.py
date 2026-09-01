@@ -387,6 +387,39 @@ async def test_missing_required_argument_is_rejected_before_dispatch():
     assert seen == []
 
 
+async def test_a_refused_call_is_recorded_on_the_turn():
+    """A refusal the caller can find afterwards, not just a ToolResult it may drop.
+
+    The finalize tool is the case that forced this: ``finalize_called`` is set
+    inside the handler, so a finalize call refused here is indistinguishable
+    downstream from one the model never made — and the loop treated the two the
+    same way, ending the turn instead of asking the model to fix its arguments.
+    """
+    reg = ToolRegistry()
+    reg.register_builtin(_spec("fs.read", parameters=SCHEMA), _ok_handler())
+    ctx = TurnContext.empty()
+
+    await reg.invoke(_call("fs.read"), ctx)
+
+    recorded = ctx.metadata["invalid_argument_calls"]
+    assert "fs.read" in recorded
+    # The registry's own account of what was wrong, so a caller can hand it
+    # straight back to the model rather than inventing a generic correction.
+    assert "path" in recorded["fs.read"]
+
+
+async def test_an_accepted_call_records_nothing():
+    """The control: the marker is set by the refusal, not by every dispatch."""
+    reg = ToolRegistry()
+    reg.register_builtin(_spec("fs.read", parameters=SCHEMA), _ok_handler())
+    ctx = TurnContext.empty()
+
+    res = await reg.invoke(_call("fs.read", path="/etc/hosts"), ctx)
+
+    assert res.status == "ok"
+    assert "invalid_argument_calls" not in ctx.metadata
+
+
 async def test_unexpected_argument_rejected_when_additional_properties_false():
     reg = ToolRegistry()
     reg.register_builtin(_spec("fs.read", parameters=SCHEMA), _ok_handler())

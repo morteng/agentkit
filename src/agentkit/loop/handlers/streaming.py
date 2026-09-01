@@ -35,6 +35,7 @@ from agentkit.loop.handlers.finalize_check import (
 from agentkit.loop.phase import Phase
 from agentkit.loop.stream_mux import StreamMux
 from agentkit.providers.base import NamedToolChoice, ProviderRequest
+from agentkit.tools.builtin.finalize import FINALIZE_BARE_NAMES
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
@@ -52,7 +53,9 @@ log = get_logger(__name__)
 
 # Bare tool-name suffixes recognized as the finalize tool — the same
 # convention the finalize validator uses (see finalize_validator.py).
-_FINALIZE_BARE_NAMES = ("finalize_response", "finalize")
+# Re-exported from the tool module so this handler and `finalize_check` cannot
+# disagree about what counts as a finalize tool.
+_FINALIZE_BARE_NAMES = FINALIZE_BARE_NAMES
 
 # Wrapper around the guard's suggested correction. The model has already
 # streamed the claim to the user, so the correction has to say what happens
