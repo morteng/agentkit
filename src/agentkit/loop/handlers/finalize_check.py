@@ -37,7 +37,7 @@ turn-boundary walkers (e.g. ``_summaries_since_last_user_turn``) can tell it
 apart from a genuine human prompt and not mistake it for a new turn.
 """
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from agentkit._content import TextBlock
 from agentkit._ids import MessageId, new_id
@@ -51,29 +51,107 @@ from agentkit._messages import (
 from agentkit.events.lifecycle import TurnEndReason
 from agentkit.loop.context import TurnContext
 from agentkit.loop.phase import Phase
-from agentkit.tools.spec import ToolCall
+from agentkit.tools.builtin.finalize import FINALIZE_BARE_NAMES, FINALIZE_SPEC
+from agentkit.tools.spec import ToolCall, ToolSpec
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from agentkit.guards.finalize import FinalizeValidator
 
 log = get_logger(__name__)
 
 
-_MISSING_FINALIZE_REPROMPT = (
+_DEFAULT_CORRECTION = "Reconsider before finalizing."
+
+_MISSING_FINALIZE_REPROMPT_TEMPLATE = (
     "You ended your turn without calling finalize_response. Every turn MUST "
     "end with exactly one finalize_response call so the system can record "
     "the outcome — including turns where you stopped to ask the user a "
     "question.\n\n"
-    "Call finalize_response now. Do not repeat your previous message:\n"
+    "Call finalize_response now. {required_clause} Do not repeat your "
+    "previous message:\n"
     '  • If you completed work that wrote data, use intent_kind="action" '
+    'with status="done" (or status="partial" if some of it did not happen) '
     "and list every write in actions_performed.\n"
     "  • If you answered a question and made no writes, use "
-    'intent_kind="answer".\n'
+    'intent_kind="answer" with status="done".\n'
     "  • If your message asked the user a question, offered them a choice, "
     "or needs their decision before you can continue, use "
     'intent_kind="clarify" with status="blocked" and put the question in '
     "pending_confirmation."
 )
+
+# Read off the builtin spec rather than written out, and used only when the
+# registry cannot answer. A literal list here would be a fourth copy of the
+# schema's `required`.
+_FALLBACK_REQUIRED_ARGUMENTS: tuple[str, ...] = tuple(
+    str(k) for k in (FINALIZE_SPEC.parameters or {}).get("required", [])
+)
+
+
+def _finalize_required_arguments(deps: dict[str, Any]) -> tuple[str, ...]:
+    """The finalize tool's required arguments, read from the registered spec.
+
+    Read rather than restated, because the re-prompt below is instructions for
+    calling a tool whose schema lives in another module, and the two drifted:
+    the text named ``intent_kind`` in all three of its branches and ``status``
+    in one, while the registry required both. A model that followed the
+    "answer" or "action" branch to the letter produced a call the schema
+    refused — so the correction for a missing finalize was itself capable of
+    producing another one, and the loop had no budget left to notice.
+
+    Falls back to the builtin spec when no registry is in ``deps`` (unit tests
+    drive this handler directly) or when the registry has no finalize tool.
+    """
+    lister = getattr(deps.get("registry"), "list_specs", None)
+    if callable(lister):
+        for spec in cast("Sequence[ToolSpec]", lister()):
+            if spec.name.split(".", 1)[-1] not in FINALIZE_BARE_NAMES:
+                continue
+            params = spec.parameters or {}
+            raw_required = params.get("required")
+            if isinstance(raw_required, list):
+                return tuple(str(k) for k in cast("list[Any]", raw_required))
+    return _FALLBACK_REQUIRED_ARGUMENTS
+
+
+def _missing_finalize_reprompt(deps: dict[str, Any]) -> str:
+    """The correction text, with every required argument named explicitly."""
+    required = _finalize_required_arguments(deps)
+    if not required:
+        clause = ""
+    else:
+        names = ", ".join(repr(name) for name in required)
+        clause = (
+            f"Every call must carry {names} — a call missing any of them is "
+            "rejected before it runs, which looks to you like nothing "
+            "happening."
+        )
+    return _MISSING_FINALIZE_REPROMPT_TEMPLATE.format(required_clause=clause)
+
+
+def _schema_rejected_finalize(ctx: TurnContext, deps: dict[str, Any]) -> str | None:
+    """The registry's own words about a finalize call it refused to dispatch.
+
+    ``ToolRegistry`` validates arguments *before* dispatch, and the handler
+    that sets ``ctx.finalize_called`` runs inside dispatch. So a finalize call
+    the schema rejects leaves the flag False — identical, from this handler's
+    side, to a turn where the model never finalized at all. It is the opposite
+    situation, and the two want opposite treatment: one needs telling that it
+    forgot, the other needs telling which argument was wrong.
+
+    Returns the rejection message and clears it, so a marker from this
+    iteration cannot re-route the next one.
+    """
+    raw = ctx.metadata.get("invalid_argument_calls")
+    if not isinstance(raw, dict):
+        return None
+    rejected = cast("dict[str, Any]", raw)
+    for name in list(rejected):
+        if str(name).split(".", 1)[-1] in FINALIZE_BARE_NAMES:
+            return str(rejected.pop(name))
+    return None
 
 
 def _inject_correction(ctx: TurnContext, text: str) -> None:
@@ -104,6 +182,20 @@ async def handle_finalize_check(ctx: TurnContext, deps: dict[str, Any]) -> Phase
         return Phase.MEMORY_EXTRACT
 
     if not ctx.finalize_called:
+        # First: did the model actually call finalize, and did the registry
+        # refuse to dispatch it? `finalize_called` is set inside the handler,
+        # which argument validation runs before — so a schema-rejected call is
+        # indistinguishable here from no call at all, and used to be treated as
+        # one. That misfiling is the whole defect: it charged the wrong budget
+        # (`max_missing_finalize_reprompts`, 1 by default, rather than
+        # `max_finalize_retries`, 2) and replaced the registry's account of
+        # which argument was wrong with a generic "you forgot to finalize" —
+        # so the model was told to do the thing it had just done, once, and
+        # then the turn ended as NO_RESPONSE. The user saw an empty reply.
+        rejection = _schema_rejected_finalize(ctx, deps)
+        if rejection is not None:
+            return _retry_rejected_finalize(ctx, deps, rejection)
+
         # The model ended the turn without finalizing. Re-prompt it once so
         # it emits a real envelope (it may need intent_kind="clarify").
         reprompts = ctx.metadata.get("missing_finalize_reprompts", 0)
@@ -136,7 +228,7 @@ async def handle_finalize_check(ctx: TurnContext, deps: dict[str, Any]) -> Phase
             # emits the envelope immediately instead of spending another
             # free-form turn. The streaming handler consumes this flag.
             ctx.metadata["force_finalize_tool_choice"] = True
-        _inject_correction(ctx, _MISSING_FINALIZE_REPROMPT)
+        _inject_correction(ctx, _missing_finalize_reprompt(deps))
         return Phase.CONTEXT_BUILD
 
     finalize_call = ToolCall(
@@ -149,7 +241,18 @@ async def handle_finalize_check(ctx: TurnContext, deps: dict[str, Any]) -> Phase
     verdict = await validator.validate(finalize_call, ctx)
     if verdict.accept:
         return Phase.MEMORY_EXTRACT
+    return _retry_rejected_finalize(ctx, deps, verdict.feedback or _DEFAULT_CORRECTION)
 
+
+def _retry_rejected_finalize(ctx: TurnContext, deps: dict[str, Any], correction: str) -> Phase:
+    """Ask the model to finalize again, with the reason its last call failed.
+
+    Shared by both ways a finalize call can fail: the validator rejecting a
+    dispatched envelope, and the registry rejecting the arguments before
+    dispatch. Both are "the model finalized and it did not stick", both get
+    ``max_finalize_retries`` attempts, and both end as FINALIZE_REJECTED rather
+    than NO_RESPONSE — the model did answer, so "no response" would be a lie.
+    """
     retries = ctx.metadata.get("finalize_retries", 0)
     max_retries = deps.get("max_finalize_retries", 2)
     if retries >= max_retries:
@@ -181,7 +284,6 @@ async def handle_finalize_check(ctx: TurnContext, deps: dict[str, Any]) -> Phase
         )
         return Phase.MEMORY_EXTRACT
     ctx.metadata["finalize_retries"] = retries + 1
-    correction = verdict.feedback or "Reconsider before finalizing."
     ctx.metadata["finalize_correction"] = correction
     if deps.get("force_finalize_on_missing_reprompt"):
         ctx.metadata["force_finalize_tool_choice"] = True
