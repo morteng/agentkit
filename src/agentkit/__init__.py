@@ -11,6 +11,7 @@ except PackageNotFoundError:  # running from a source tree without an install
     __version__ = "0.0.0+unknown"
 
 from agentkit._content import Provenance
+from agentkit._logging import configure_default_logging
 from agentkit.audit import (
     ACTION_APPROVAL_RESOLVED,
     ACTION_TOOL_CALL,
@@ -113,6 +114,7 @@ __all__ = [
     "__version__",
     "build_history_items",
     "compact_history",
+    "configure_default_logging",
     "default_detector",
     "load_history_page",
     "validate_envelope",
