@@ -1,5 +1,6 @@
 """Canonical tool types — provider-agnostic."""
 
+import re
 from collections.abc import Iterable
 from enum import StrEnum
 from typing import Any, Literal, cast
@@ -30,6 +31,7 @@ __all__ = [
     "ToolError",
     "ToolResult",
     "ToolSpec",
+    "coerce_tool_arguments",
     "invalid_arguments_message",
     "unknown_tool_message",
     "validate_tool_arguments",
@@ -199,6 +201,106 @@ def _type_matches(json_type: str, value: Any) -> bool:
     if json_type in ("integer", "number") and isinstance(value, bool):
         return False
     return isinstance(value, expected)
+
+
+#: A string that is EXACTLY an integer and nothing else. No exponent, no
+#: decimal point, no ``0x``. Anything this does not match is left alone rather
+#: than guessed at.
+_INTEGER_TEXT = re.compile(r"^[+-]?[0-9]+$")
+
+#: A string that is exactly a decimal number. Deliberately narrower than
+#: ``float()``, which also accepts ``"nan"``, ``"inf"``, ``"infinity"`` and
+#: ``"1_0"``. A model that wrote "nan" did not mean a number.
+_NUMBER_TEXT = re.compile(r"^[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$")
+
+
+def _coerce_scalar(json_type: str, value: str) -> Any:
+    """Return ``value`` as ``json_type``, or ``value`` unchanged.
+
+    The contract is narrow on purpose: this may only ever recover a value the
+    string *already is*. It never parses loosely, never rounds, never guesses,
+    and never widens what a schema accepts.
+    """
+    text = value.strip()
+    if json_type == "integer":
+        return int(text) if _INTEGER_TEXT.match(text) else value
+    if json_type == "number":
+        if not _NUMBER_TEXT.match(text):
+            return value
+        # An integral decimal stays an int, so ``number`` and ``integer`` do
+        # not disagree about ``"5"`` and produce two different Python types
+        # from one wire value.
+        return int(text) if _INTEGER_TEXT.match(text) else float(text)
+    if json_type == "boolean":
+        # Exactly the two JSON spellings. Not "yes", not "1", not "True" --
+        # each of those is a guess about intent, and a wrong guess here
+        # silently flips a flag on a write.
+        if text == "true":
+            return True
+        if text == "false":
+            return False
+    return value
+
+
+def coerce_tool_arguments(
+    schema: dict[str, Any] | None, arguments: dict[str, Any]
+) -> dict[str, Any]:
+    """Recover schema-typed scalars that arrived as strings.
+
+    WHY THIS EXISTS. Some models emit their tool calls in a text dialect that
+    tags every parameter as a string, and the provider forwards those values
+    as strings because that is what the wire said they were. The call then
+    reaches :func:`validate_tool_arguments` carrying ``{"size_bytes":
+    "4508876800"}`` against ``{"type": "integer"}`` and is refused before the
+    handler runs.
+
+    Neither side is wrong. The validator is correct to refuse: a real JSON
+    Schema validator refuses it too, and loosening it would let a genuinely
+    wrong type through for every tool. The dialect is not lying either; it is
+    a text format, and in a text format everything is text. What was missing
+    is the step between them, and it belongs here rather than in each tool,
+    because a tool-by-tool fix is one tool at a time and every tool with an
+    integer argument has the same problem.
+
+    ⛔ THIS MAY ONLY EVER NARROW, NEVER WIDEN. The rules:
+
+    * only when the schema declares a single scalar ``type`` of ``integer``,
+      ``number`` or ``boolean``;
+    * only when the value is a ``str``;
+    * only when that string is exactly the value and nothing else, so the
+      conversion is lossless -- ``"7"`` yes, ``" 7 "`` yes by a strip,
+      ``"about 7"`` no, ``"7.5"`` no for an integer, ``"nan"`` no;
+    * NEVER when the schema declares a LIST of alternative types, because a
+      list that includes ``string`` makes the string already legal, and
+      converting a value that is not broken is how a fix becomes a defect.
+
+    Anything not covered is passed through untouched for the validator to
+    judge, so a call this cannot repair fails exactly as it did before. It
+    returns a new mapping; the input is not modified.
+    """
+    if schema is None or not arguments:
+        return arguments
+    declared_type = schema.get("type")
+    if declared_type is not None and declared_type != "object":
+        return arguments
+    raw_properties = schema.get("properties")
+    if not isinstance(raw_properties, dict):
+        return arguments
+    properties = cast("dict[str, Any]", raw_properties)
+
+    out: dict[str, Any] = dict(arguments)
+    for key, value in arguments.items():
+        if not isinstance(value, str):
+            continue
+        prop = properties.get(key)
+        if not isinstance(prop, dict):
+            continue
+        expected = cast("dict[str, Any]", prop).get("type")
+        if not isinstance(expected, str):
+            continue
+        if expected in ("integer", "number", "boolean"):
+            out[key] = _coerce_scalar(expected, value)
+    return out
 
 
 def validate_tool_arguments(schema: dict[str, Any] | None, arguments: dict[str, Any]) -> list[str]:

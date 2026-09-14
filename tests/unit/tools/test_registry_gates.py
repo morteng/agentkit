@@ -482,3 +482,161 @@ async def test_spec_for_resolves_builtins_and_misses_cleanly():
 
     assert reg.spec_for("kit.read") is spec
     assert reg.spec_for("nope") is None
+
+
+# ---- Arguments that arrived as text -----------------------------------------
+#
+# Some models emit tool calls in a text dialect that tags every parameter as a
+# string, and the provider forwards the values as strings because that is what
+# the wire said they were. The call then met the gate above with a quoted
+# integer and was refused BEFORE the handler ran, which is the worst place for
+# it to fail: the schema gate runs ahead of the handler, so nothing downstream
+# that records what a tool did ever saw the call at all.
+#
+# The repair may only ever narrow. Every widening it must not do has an arm.
+
+COERCE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "path": {"type": "string"},
+        "size_bytes": {"type": "integer"},
+        "ratio": {"type": "number"},
+        "paused": {"type": "boolean"},
+        # Declared as a list of alternatives, so a string is ALREADY legal here
+        # and nothing may convert it.
+        "either": {"type": ["integer", "string"]},
+    },
+    "required": ["path"],
+    "additionalProperties": False,
+}
+
+
+async def test_a_quoted_integer_reaches_the_handler_as_an_integer():
+    """The incident, in one arm: a big integer arrives quoted and gets through."""
+    seen: list[dict[str, Any]] = []
+
+    async def handler(args: dict[str, Any], ctx: TurnContext) -> ToolResult:
+        seen.append(args)
+        return ToolResult(call_id=ctx.call_id, status="ok")
+
+    reg = ToolRegistry()
+    reg.register_builtin(_spec("fs.read", parameters=COERCE_SCHEMA), handler)
+
+    res = await reg.invoke(
+        _call("fs.read", path="/x", size_bytes="4508876800"), TurnContext.empty()
+    )
+
+    assert res.status == "ok"
+    # Not merely accepted: the HANDLER must see an int. Asserting only on the
+    # status would pass against a build that repaired the copy the validator
+    # reads and dispatched the original, which moves the failure deeper
+    # instead of fixing it.
+    assert seen == [{"path": "/x", "size_bytes": 4508876800}]
+    assert isinstance(seen[0]["size_bytes"], int)
+
+
+async def test_number_and_boolean_arrive_as_themselves_too():
+    seen: list[dict[str, Any]] = []
+
+    async def handler(args: dict[str, Any], ctx: TurnContext) -> ToolResult:
+        seen.append(args)
+        return ToolResult(call_id=ctx.call_id, status="ok")
+
+    reg = ToolRegistry()
+    reg.register_builtin(_spec("fs.read", parameters=COERCE_SCHEMA), handler)
+
+    res = await reg.invoke(
+        _call("fs.read", path="/x", ratio="0.5", paused="true"), TurnContext.empty()
+    )
+
+    assert res.status == "ok"
+    assert seen[0]["ratio"] == 0.5
+    assert seen[0]["paused"] is True
+
+
+async def test_a_string_that_is_not_exactly_the_value_is_left_alone():
+    """The control that stops this becoming a parser.
+
+    Each of these is a string a loose conversion would happily accept and a
+    careful one must not: a number with words around it, a decimal where an
+    integer was declared, and the three float spellings `float()` takes that
+    nobody meant as a size. All must still be refused by the gate, unchanged.
+    """
+    reg = ToolRegistry()
+    reg.register_builtin(_spec("fs.read", parameters=COERCE_SCHEMA), _ok_handler())
+
+    for bad in ("about 7", "7.5", "nan", "inf", "0x10", "1_0", "", "7e2"):
+        res = await reg.invoke(_call("fs.read", path="/x", size_bytes=bad), TurnContext.empty())
+        assert res.status == "error", f"{bad!r} was converted and should not have been"
+        assert res.error is not None
+        assert res.error.code == "invalid_arguments"
+
+
+async def test_a_string_stays_a_string_where_the_schema_allows_one():
+    """A list of alternatives including `string` makes the value already legal.
+
+    Repairing a value that is not broken is how a fix becomes a defect: the
+    caller asked for the text "42" and must receive the text "42".
+    """
+    seen: list[dict[str, Any]] = []
+
+    async def handler(args: dict[str, Any], ctx: TurnContext) -> ToolResult:
+        seen.append(args)
+        return ToolResult(call_id=ctx.call_id, status="ok")
+
+    reg = ToolRegistry()
+    reg.register_builtin(_spec("fs.read", parameters=COERCE_SCHEMA), handler)
+
+    res = await reg.invoke(_call("fs.read", path="/x", either="42"), TurnContext.empty())
+
+    assert res.status == "ok"
+    assert seen[0]["either"] == "42"
+    assert isinstance(seen[0]["either"], str)
+
+
+async def test_a_declared_string_is_never_converted():
+    """The widening this must never do: `path` is a string and stays one."""
+    seen: list[dict[str, Any]] = []
+
+    async def handler(args: dict[str, Any], ctx: TurnContext) -> ToolResult:
+        seen.append(args)
+        return ToolResult(call_id=ctx.call_id, status="ok")
+
+    reg = ToolRegistry()
+    reg.register_builtin(_spec("fs.read", parameters=COERCE_SCHEMA), handler)
+
+    await reg.invoke(_call("fs.read", path="12345"), TurnContext.empty())
+
+    assert seen[0]["path"] == "12345"
+    assert isinstance(seen[0]["path"], str)
+
+
+async def test_a_real_type_error_is_still_refused():
+    """The control for the whole feature.
+
+    Without this arm, "the gate still works" is asserted nowhere and a build
+    that simply stopped validating would pass every test above.
+    """
+    reg = ToolRegistry()
+    reg.register_builtin(_spec("fs.read", parameters=COERCE_SCHEMA), _ok_handler())
+
+    # A list where an integer was declared. Nothing about this is repairable.
+    res = await reg.invoke(_call("fs.read", path="/x", size_bytes=[1, 2]), TurnContext.empty())
+
+    assert res.status == "error"
+    assert res.error is not None
+    assert res.error.code == "invalid_arguments"
+
+
+async def test_the_repair_can_be_switched_off():
+    """`coerce_arguments=False` restores the previous behaviour exactly."""
+    reg = ToolRegistry(coerce_arguments=False)
+    reg.register_builtin(_spec("fs.read", parameters=COERCE_SCHEMA), _ok_handler())
+
+    res = await reg.invoke(
+        _call("fs.read", path="/x", size_bytes="4508876800"), TurnContext.empty()
+    )
+
+    assert res.status == "error"
+    assert res.error is not None
+    assert res.error.code == "invalid_arguments"

@@ -30,6 +30,7 @@ from agentkit.tools.spec import (
     ToolCall,
     ToolResult,
     ToolSpec,
+    coerce_tool_arguments,
     invalid_arguments_message,
     unknown_tool_message,
     validate_tool_arguments,
@@ -92,6 +93,7 @@ class ToolRegistry:
         authorizer: ToolAuthorizer | None = None,
         taint_policy: TaintPolicy | None = None,
         validate_arguments: bool = True,
+        coerce_arguments: bool = True,
         default_timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS,
     ) -> None:
         self._builtins: dict[str, tuple[ToolSpec, BuiltinHandler]] = {}
@@ -103,6 +105,12 @@ class ToolRegistry:
             RiskBasedTaintPolicy() if taint_policy is None else taint_policy
         )
         self._validate_arguments = validate_arguments
+        # ON by default, and it is a repair rather than a relaxation: it can
+        # only turn a string that is exactly a number into that number. A
+        # caller that wants the provider's bytes untouched — a wire-fidelity
+        # test, say — can switch it off, and then a quoted integer is refused
+        # by the gate below exactly as it was before this existed.
+        self._coerce_arguments = coerce_arguments
         self._default_timeout_seconds = default_timeout_seconds
 
     def set_authorizer(self, authorizer: ToolAuthorizer | None) -> None:
@@ -250,6 +258,33 @@ class ToolRegistry:
 
         # 3. Arguments: never dispatch a call whose arguments the schema
         # already rejects — the tool would fail deeper and less legibly.
+        #
+        # First, repair what is repairable. Some models emit tool calls in a
+        # text dialect where every parameter is tagged as a string, so an
+        # integer argument arrives quoted and this gate refused it before the
+        # handler ever ran. `coerce_tool_arguments` only ever narrows a string
+        # that is already exactly the value; anything it cannot repair it
+        # passes through unchanged, so a call that used to fail here still
+        # fails here with the same message.
+        #
+        # ⚠️ THE COERCED ARGUMENTS REPLACE THE CALL'S, and they must: fixing
+        # the copy the validator reads while dispatching the original would
+        # move the failure from a legible refusal into the handler, which is
+        # the one outcome the comment above says to avoid. The rebuilt call is
+        # what `_runner_for` and `_execute` below receive.
+        if self._coerce_arguments:
+            coerced = coerce_tool_arguments(spec.parameters, call.arguments)
+            if coerced is not call.arguments and coerced != call.arguments:
+                log.info(
+                    "tool_call_arguments_coerced",
+                    tool=call.name,
+                    # Keys only, never values: an argument value can carry
+                    # anything the model was told, and this line is not the
+                    # place to find out. Same rule as `problems` below.
+                    keys=sorted(k for k in coerced if coerced[k] != call.arguments.get(k)),
+                )
+                call = call.model_copy(update={"arguments": coerced})
+
         if self._validate_arguments:
             problems = validate_tool_arguments(spec.parameters, call.arguments)
             if problems:
